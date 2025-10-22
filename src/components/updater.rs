@@ -40,7 +40,11 @@ impl UpdateWizard {
 impl Component for UpdateWizard {
     fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action> {
         match key {
-            KeyCode::Esc => Some(Action::EnterNormalMode),
+            KeyCode::Esc => {
+                // Cancel any ongoing update check
+                app.is_checking_updates = false;
+                Some(Action::EnterNormalMode)
+            }
             KeyCode::Char(' ') => Some(Action::ToggleUpdateSelection),
             KeyCode::Enter => {
                 if !app.updater.selected_dependencies.is_empty() {
@@ -123,15 +127,25 @@ impl Component for UpdateWizard {
 
         // Dependency list
         if app.updater.outdated_dependencies.is_empty() {
-            let empty_msg = if app.is_checking_updates {
-                " ⟳ Checking for updates...\n\n Please wait... "
+            // Check if dependencies have been checked (have latest_version set)
+            let has_been_checked = if let Some(project) = app.get_selected_project() {
+                !project.dependencies.is_empty() && 
+                project.dependencies.iter().any(|d| d.latest_version.is_some())
             } else {
+                false
+            };
+            
+            let empty_msg = if app.is_checking_updates {
+                " ⟳ Checking for updates...\n\n Please wait or press Esc to cancel "
+            } else if has_been_checked {
                 " ✓ All dependencies are up to date!\n\n Press Esc to close "
+            } else {
+                " ⟳ Initializing...\n\n Press Esc to cancel "
             };
             
             let empty_para = Paragraph::new(empty_msg)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(if app.is_checking_updates {
+                .style(Style::default().fg(if app.is_checking_updates || !has_been_checked {
                     Color::Yellow
                 } else {
                     Color::Green

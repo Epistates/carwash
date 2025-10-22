@@ -246,19 +246,24 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.is_checking_updates = true;
         }
         Action::UpdateDependencies(deps) => {
-            if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
-                if let Some(proj) = state.projects.iter_mut().find(|p| p.name == selected_project_name) {
-                    proj.dependencies = deps.clone();
-                    if state.mode == Mode::UpdateWizard {
+            // Only process if we're still in UpdateWizard mode (not cancelled)
+            if state.mode == Mode::UpdateWizard {
+                if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
+                    if let Some(proj) = state.projects.iter_mut().find(|p| p.name == selected_project_name) {
+                        proj.dependencies = deps.clone();
                         state.updater.outdated_dependencies = deps
                             .into_iter()
                             .filter(|d| d.latest_version.is_some() && d.latest_version.as_ref().unwrap() != &d.current_version)
                             .collect();
-                        state.updater.list_state.select(Some(0));
+                        // Select first item if there are outdated dependencies
+                        if !state.updater.outdated_dependencies.is_empty() {
+                            state.updater.list_state.select(Some(0));
+                        }
                     }
                 }
+                state.is_checking_updates = false;
             }
-            state.is_checking_updates = false;
+            // If mode changed (cancelled), ignore the update results
         }
         Action::CreateTab(title) => {
             state.tabs.push(Tab {
