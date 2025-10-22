@@ -27,9 +27,9 @@ impl Component for StatusBar {
             Mode::Loading => ("LOADING", Color::Yellow, "Scanning for projects..."),
             Mode::Normal => {
                 let hint = if app.tabs.len() > 1 {
-                    "':' command | 'u' updates | ←→/hl tabs | '?' help | 'q' quit"
+                    "':' command | 'u' updates | 'e' toggle empty | ←→/hl tabs | '?' help"
                 } else {
-                    "':' command palette | 'u' updates | '?' help | 'q' quit"
+                    "':' command | 'u' updates | 'e' toggle empty | '?' help | 'q' quit"
                 };
                 ("NORMAL", Color::Green, hint)
             },

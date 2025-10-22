@@ -13,11 +13,20 @@ pub enum ProjectStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyCheckStatus {
+    NotChecked,
+    Checking,
+    Checked,
+}
+
 #[derive(Debug, Clone)]
 pub struct Dependency {
     pub name: String,
     pub current_version: String,
     pub latest_version: Option<String>,
+    pub check_status: DependencyCheckStatus,
+    pub last_checked: Option<std::time::SystemTime>,
 }
 
 impl From<&LockPackage> for Dependency {
@@ -26,6 +35,8 @@ impl From<&LockPackage> for Dependency {
             name: pkg.name.as_str().to_string(),
             current_version: pkg.version.to_string(),
             latest_version: None,
+            check_status: DependencyCheckStatus::NotChecked,
+            last_checked: None,
         }
     }
 }

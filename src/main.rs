@@ -123,6 +123,8 @@ async fn run_app<B: Backend>(
         match scan_result {
             Ok(Ok(projects)) => {
                 let _ = action_tx_clone.send(Action::FinishProjectScan(projects)).await;
+                // Trigger background update check after scan completes
+                let _ = action_tx_clone.send(Action::StartBackgroundUpdateCheck).await;
             }
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - send empty list and continue
@@ -177,6 +179,7 @@ async fn run_app<B: Backend>(
                                 KeyCode::Char('?') => Some(Action::ShowHelp),
                                 KeyCode::Char(':') => Some(Action::ShowCommandPalette),
                                 KeyCode::Char('u') => Some(Action::StartUpdateWizard),
+                                KeyCode::Char('e') => Some(Action::ToggleShowEmptyProjects),
                                 _ => {
                                     let mut project_list = ProjectList::new();
                                     project_list.handle_key_events(key.code, state)
@@ -232,8 +235,13 @@ async fn run_app<B: Backend>(
                     }
                     Action::StartUpdateWizard => {
                         let action_tx_clone = action_tx.clone();
-                        check_for_updates(state, action_tx_clone).await;
+                        check_for_updates(state, action_tx_clone, true).await; // Use cache for manual checks
                         reducer(state, action);
+                    }
+                    Action::StartBackgroundUpdateCheck => {
+                        let action_tx_clone = action_tx.clone();
+                        check_for_updates(state, action_tx_clone, true).await; // Use cache for background checks
+                        // Don't change mode or state - this happens in the background
                     }
                     Action::RunUpdate => {
                         // Build the cargo update command for selected dependencies

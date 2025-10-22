@@ -76,11 +76,20 @@ impl Component for ProjectList {
 
         let selected_count = app.selected_projects.len();
         let total_count = app.projects.len();
+        let all_count = app.all_projects.len();
         
         let title = if selected_count > 0 {
-            format!(" Projects ({}/{} selected) ", selected_count, total_count)
+            if all_count > total_count {
+                format!(" Projects ({}/{} selected, {}/{} shown) ", selected_count, total_count, total_count, all_count)
+            } else {
+                format!(" Projects ({}/{} selected) ", selected_count, total_count)
+            }
         } else {
-            format!(" Projects ({}) ", total_count)
+            if all_count > total_count {
+                format!(" Projects ({}/{} shown) ", total_count, all_count)
+            } else {
+                format!(" Projects ({}) ", total_count)
+            }
         };
 
         let help_text = if area.height > items.len() as u16 + 4 {

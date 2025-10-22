@@ -16,6 +16,8 @@ pub struct AppState<'a> {
     pub mode: Mode,
     pub tree_state: ListState,
     pub projects: Vec<Project>,
+    pub all_projects: Vec<Project>, // All projects before filtering
+    pub show_empty_projects: bool, // Toggle to show/hide projects with no dependencies
     pub selected_projects: HashSet<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
@@ -42,6 +44,8 @@ impl<'a> Clone for AppState<'a> {
             mode: self.mode.clone(),
             tree_state: ListState::default(),
             projects: self.projects.clone(),
+            all_projects: self.all_projects.clone(),
+            show_empty_projects: self.show_empty_projects,
             selected_projects: self.selected_projects.clone(),
             tabs: self.tabs.clone(),
             active_tab: self.active_tab,
@@ -83,6 +87,8 @@ impl<'a> AppState<'a> {
             mode: Mode::Loading,
             tree_state,
             projects: Vec::new(),
+            all_projects: Vec::new(),
+            show_empty_projects: false, // Default to hiding empty projects
             selected_projects: HashSet::new(),
             tabs: Vec::new(),
             active_tab: 0,
@@ -109,7 +115,16 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::EnterNormalMode => state.mode = Mode::Normal,
         Action::ShowHelp => state.mode = Mode::Help,
         Action::FinishProjectScan(projects) => {
-            state.projects = projects;
+            state.all_projects = projects;
+            // Apply filtering based on show_empty_projects
+            state.projects = if state.show_empty_projects {
+                state.all_projects.clone()
+            } else {
+                state.all_projects.iter()
+                    .filter(|p| !p.dependencies.is_empty())
+                    .cloned()
+                    .collect()
+            };
             if !state.projects.is_empty() {
                 state.tree_state.select(Some(0));
             }
@@ -293,6 +308,40 @@ pub fn reducer(state: &mut AppState, action: Action) {
         }
         Action::RunUpdate => {
             // Update execution is handled in main event loop
+        }
+        Action::StartBackgroundUpdateCheck => {
+            // Background update check is handled in main event loop
+        }
+        Action::UpdateDependencyStatus(dep_name, status) => {
+            // Update the status of a specific dependency
+            if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
+                if let Some(proj) = state.projects.iter_mut().find(|p| p.name == selected_project_name) {
+                    if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
+                        dep.check_status = status;
+                    }
+                }
+            }
+        }
+        Action::ToggleShowEmptyProjects => {
+            state.show_empty_projects = !state.show_empty_projects;
+            // Reapply filter
+            state.projects = if state.show_empty_projects {
+                state.all_projects.clone()
+            } else {
+                state.all_projects.iter()
+                    .filter(|p| !p.dependencies.is_empty())
+                    .cloned()
+                    .collect()
+            };
+            // Adjust selection if needed
+            if state.tree_state.selected().is_some() {
+                let current = state.tree_state.selected().unwrap();
+                if current >= state.projects.len() {
+                    state.tree_state.select(Some(state.projects.len().saturating_sub(1)));
+                }
+            } else if !state.projects.is_empty() {
+                state.tree_state.select(Some(0));
+            }
         }
     }
 }

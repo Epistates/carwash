@@ -1,18 +1,20 @@
 use crate::app::AppState;
 use crate::events::Action;
-use crate::project::Project;
+use crate::project::{Project, DependencyCheckStatus};
 use crates_io_api::AsyncClient;
 use std::process::Stdio;
+use std::time::SystemTime;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command as TokioCommand,
     sync::mpsc,
 };
 
-pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
+pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>, use_cache: bool) {
     if let Some(project) = state.get_selected_project() {
         let deps = project.dependencies.clone();
         let tx_clone = tx.clone();
+        let cache_duration = std::time::Duration::from_secs(5 * 60); // 5 minutes
 
         tokio::spawn(async move {
             let deps_fallback = deps.clone();
@@ -30,23 +32,52 @@ pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
                         Ok(client) => {
                             // Check dependencies in parallel for better performance
                             let mut tasks = Vec::new();
+                            let now = SystemTime::now();
                             
                             for dep in deps {
+                                // Check cache if enabled
+                                let should_check = if use_cache {
+                                    if let Some(last_checked) = dep.last_checked {
+                                        if let Ok(elapsed) = now.duration_since(last_checked) {
+                                            elapsed > cache_duration
+                                        } else {
+                                            true // If time comparison fails, check anyway
+                                        }
+                                    } else {
+                                        true // Never checked, so check now
+                                    }
+                                } else {
+                                    true // No cache, always check
+                                };
+                                
                                 let client_clone = client.clone();
                                 let task = tokio::spawn(async move {
-                                    let mut updated_dep = dep;
-                                    // Add per-crate timeout
-                                    match tokio::time::timeout(
-                                        std::time::Duration::from_secs(5),
-                                        client_clone.get_crate(&updated_dep.name)
-                                    ).await {
-                                        Ok(Ok(crate_info)) => {
-                                            updated_dep.latest_version = Some(crate_info.crate_data.max_version);
+                                    let mut updated_dep = dep.clone();
+                                    
+                                    if should_check {
+                                        updated_dep.check_status = DependencyCheckStatus::Checking;
+                                        
+                                        // Add per-crate timeout
+                                        match tokio::time::timeout(
+                                            std::time::Duration::from_secs(5),
+                                            client_clone.get_crate(&updated_dep.name)
+                                        ).await {
+                                            Ok(Ok(crate_info)) => {
+                                                updated_dep.latest_version = Some(crate_info.crate_data.max_version);
+                                                updated_dep.check_status = DependencyCheckStatus::Checked;
+                                                updated_dep.last_checked = Some(SystemTime::now());
+                                            }
+                                            _ => {
+                                                // Timeout or error - mark as checked but no latest version
+                                                updated_dep.check_status = DependencyCheckStatus::Checked;
+                                                updated_dep.last_checked = Some(SystemTime::now());
+                                            }
                                         }
-                                        _ => {
-                                            // Timeout or error - keep current version, no latest
-                                        }
+                                    } else {
+                                        // Using cached data
+                                        updated_dep.check_status = DependencyCheckStatus::Checked;
                                     }
+                                    
                                     updated_dep
                                 });
                                 tasks.push(task);

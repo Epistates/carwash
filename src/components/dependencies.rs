@@ -1,6 +1,7 @@
 use crate::app::AppState;
 use crate::components::Component;
 use crate::events::Action;
+use crate::project::DependencyCheckStatus;
 use crossterm::event::KeyCode;
 use ratatui::{
     layout::Rect,
@@ -43,13 +44,23 @@ impl Component for DependenciesPane {
                     outdated_count += 1;
                 }
                 
-                let (icon, style) = if is_outdated {
-                    ("⚠", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                } else {
-                    ("✓", Style::default().fg(Color::Green))
+                let (icon, style) = match dep.check_status {
+                    DependencyCheckStatus::NotChecked => {
+                        ("⋯", Style::default().fg(Color::DarkGray))
+                    }
+                    DependencyCheckStatus::Checking => {
+                        ("⟳", Style::default().fg(Color::Cyan))
+                    }
+                    DependencyCheckStatus::Checked => {
+                        if is_outdated {
+                            ("⚠", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                        } else {
+                            ("✓", Style::default().fg(Color::Green))
+                        }
+                    }
                 };
                 
-                let line = if is_outdated {
+                let line = if is_outdated && dep.check_status == DependencyCheckStatus::Checked {
                     Line::from(vec![
                         Span::styled(icon, style),
                         Span::raw(" "),
@@ -63,6 +74,12 @@ impl Component for DependenciesPane {
                         ),
                     ])
                 } else {
+                    let status_text = match dep.check_status {
+                        DependencyCheckStatus::NotChecked => " (not checked)",
+                        DependencyCheckStatus::Checking => " (checking...)",
+                        DependencyCheckStatus::Checked => "",
+                    };
+                    
                     Line::from(vec![
                         Span::styled(icon, style),
                         Span::raw(" "),
@@ -71,6 +88,10 @@ impl Component for DependenciesPane {
                         Span::styled(
                             format!("v{}", dep.current_version),
                             Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            status_text,
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
                         ),
                     ])
                 };
