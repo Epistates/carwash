@@ -132,3 +132,4 @@ All notable changes to CarWash will be documented in this file.
 - [ ] Test coverage reporting
 - [ ] Performance profiling view
 
+
