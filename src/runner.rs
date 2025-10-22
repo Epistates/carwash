@@ -12,33 +12,70 @@ use tokio::{
 pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
     if let Some(project) = state.get_selected_project() {
         let deps = project.dependencies.clone();
-        let tx = tx.clone();
+        let tx_clone = tx.clone();
 
         tokio::spawn(async move {
-            let client_result = AsyncClient::new(
-                "carwash (github.com/user/repo)",
-                std::time::Duration::from_millis(1000),
-            );
+            let deps_fallback = deps.clone();
+            
+            // Add timeout to prevent hanging indefinitely
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                async {
+                    let client_result = AsyncClient::new(
+                        "carwash/0.1.0 (https://github.com/yourusername/carwash)",
+                        std::time::Duration::from_secs(1),
+                    );
 
-            match client_result {
-                Ok(client) => {
-                    let mut updated_deps = Vec::new();
-                    for mut dep in deps {
-                        if let Ok(crate_info) = client.get_crate(&dep.name).await {
-                            dep.latest_version = Some(crate_info.crate_data.max_version);
+                    match client_result {
+                        Ok(client) => {
+                            // Check dependencies in parallel for better performance
+                            let mut tasks = Vec::new();
+                            
+                            for dep in deps {
+                                let client_clone = client.clone();
+                                let task = tokio::spawn(async move {
+                                    let mut updated_dep = dep;
+                                    // Add per-crate timeout
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        client_clone.get_crate(&updated_dep.name)
+                                    ).await {
+                                        Ok(Ok(crate_info)) => {
+                                            updated_dep.latest_version = Some(crate_info.crate_data.max_version);
+                                        }
+                                        _ => {
+                                            // Timeout or error - keep current version, no latest
+                                        }
+                                    }
+                                    updated_dep
+                                });
+                                tasks.push(task);
+                            }
+                            
+                            // Wait for all tasks to complete
+                            let mut updated_deps = Vec::new();
+                            for task in tasks {
+                                if let Ok(dep) = task.await {
+                                    updated_deps.push(dep);
+                                }
+                            }
+                            updated_deps
                         }
-                        // Silently ignore fetch errors - network issues are common
-                        updated_deps.push(dep);
+                        Err(_) => {
+                            // Client creation error - return deps unchanged
+                            deps_fallback.clone()
+                        }
                     }
-                    let _ = tx.send(Action::UpdateDependencies(updated_deps)).await;
                 }
-                Err(_) => {
-                    // Silently handle client creation errors
-                    // Send empty update to clear loading state
-                    let _ = tx.send(Action::UpdateDependencies(deps)).await;
-                }
-            }
+            ).await;
+
+            // Send result back regardless of success or timeout
+            let final_deps = result.unwrap_or(deps_fallback);
+            let _ = tx_clone.send(Action::UpdateDependencies(final_deps)).await;
         });
+    } else {
+        // No project selected - send action to clear loading state immediately
+        let _ = tx.send(Action::UpdateDependencies(Vec::new())).await;
     }
 }
 
