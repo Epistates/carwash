@@ -25,7 +25,14 @@ impl Component for StatusBar {
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         let mode_info = match app.mode {
             Mode::Loading => ("LOADING", Color::Yellow, "Scanning for projects..."),
-            Mode::Normal => ("NORMAL", Color::Green, "':' command palette | 'u' updates | '?' help | 'q' quit"),
+            Mode::Normal => {
+                let hint = if app.tabs.len() > 1 {
+                    "':' command | 'u' updates | ←→/hl tabs | '?' help | 'q' quit"
+                } else {
+                    "':' command palette | 'u' updates | '?' help | 'q' quit"
+                };
+                ("NORMAL", Color::Green, hint)
+            },
             Mode::CommandPalette => ("COMMAND", Color::Cyan, "Type to filter | ↑↓ select | Enter run | Esc cancel"),
             Mode::UpdateWizard => ("UPDATE", Color::Magenta, "Space select | ↑↓ navigate | Enter update | Esc cancel"),
             Mode::TextInput => ("INPUT", Color::Blue, "Enter confirm | Esc cancel"),
