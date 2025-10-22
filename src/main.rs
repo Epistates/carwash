@@ -157,16 +157,32 @@ async fn run_app<B: Backend>(
                         }
                     }
                     Mode::Normal => {
-                        match key.code {
-                            KeyCode::Char('q') => Some(Action::Quit),
-                            KeyCode::Char('?') => Some(Action::ShowHelp),
-                            KeyCode::Char(':') => Some(Action::ShowCommandPalette),
-                            KeyCode::Char('u') => Some(Action::StartUpdateWizard),
-                            _ => {
-                                let mut project_list = ProjectList::new();
-                                project_list.handle_key_events(key.code, state)
+                        // Check for tab navigation first if we have multiple tabs
+                        if state.tabs.len() > 1 {
+                            match key.code {
+                                KeyCode::Left | KeyCode::Char('h') if state.active_tab > 0 => {
+                                    Some(Action::SwitchToTab(state.active_tab - 1))
+                                }
+                                KeyCode::Right | KeyCode::Char('l') if state.active_tab < state.tabs.len() - 1 => {
+                                    Some(Action::SwitchToTab(state.active_tab + 1))
+                                }
+                                _ => None,
                             }
-                        }
+                        } else {
+                            None
+                        }.or_else(|| {
+                            // Handle other normal mode keys
+                            match key.code {
+                                KeyCode::Char('q') => Some(Action::Quit),
+                                KeyCode::Char('?') => Some(Action::ShowHelp),
+                                KeyCode::Char(':') => Some(Action::ShowCommandPalette),
+                                KeyCode::Char('u') => Some(Action::StartUpdateWizard),
+                                _ => {
+                                    let mut project_list = ProjectList::new();
+                                    project_list.handle_key_events(key.code, state)
+                                }
+                            }
+                        })
                     }
                     Mode::CommandPalette => {
                         let mut palette = CommandPalette::new();
@@ -187,7 +203,17 @@ async fn run_app<B: Backend>(
                 };
 
                 if let Some(action) = action {
-                    reducer(state, action);
+                    // Some actions need to be sent through the action channel for async processing
+                    match &action {
+                        Action::ExecuteCommand(_) | Action::StartUpdateWizard | Action::RunUpdate => {
+                            // Send through channel for async handling
+                            let _ = action_tx.send(action).await;
+                        }
+                        _ => {
+                            // Handle synchronously through reducer
+                            reducer(state, action);
+                        }
+                    }
                 }
             }
             Some(action) = action_rx.recv() => {
@@ -208,6 +234,38 @@ async fn run_app<B: Backend>(
                         let action_tx_clone = action_tx.clone();
                         check_for_updates(state, action_tx_clone).await;
                         reducer(state, action);
+                    }
+                    Action::RunUpdate => {
+                        // Build the cargo update command for selected dependencies
+                        let selected_deps: Vec<String> = state.updater.selected_dependencies.iter().cloned().collect();
+                        if !selected_deps.is_empty() {
+                            let update_cmd = format!("update -p {}", selected_deps.join(" -p "));
+                            let action_tx_clone = action_tx.clone();
+                            
+                            // Ensure the current project is marked as selected for the update command
+                            if let Some(project) = state.get_selected_project() {
+                                let project_name = project.name.clone();
+                                let was_selected = state.selected_projects.contains(&project_name);
+                                
+                                // Temporarily add to selected if not already there
+                                if !was_selected {
+                                    state.selected_projects.insert(project_name.clone());
+                                }
+                                
+                                // Run the update command
+                                run_command(&update_cmd, state, action_tx_clone, false).await;
+                                
+                                // Restore selection state
+                                if !was_selected {
+                                    state.selected_projects.remove(&project_name);
+                                }
+                                
+                                // Clear the update wizard state and return to normal mode
+                                state.updater.selected_dependencies.clear();
+                                state.updater.outdated_dependencies.clear();
+                                reducer(state, Action::EnterNormalMode);
+                            }
+                        }
                     }
                     _ => {
                         reducer(state, action);
