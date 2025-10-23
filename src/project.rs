@@ -1,6 +1,6 @@
 use cargo_lock::{Lockfile, Package as LockPackage};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -49,13 +49,26 @@ pub struct Project {
     pub version: String,
     pub authors: Vec<String>,
     pub dependencies: Vec<Dependency>,
+    pub workspace_root: Option<PathBuf>,
+    pub workspace_name: Option<String>,
 }
 
 impl Project {
-    fn from_toml(path: &Path, toml: &CargoToml) -> Option<Self> {
+    fn from_toml(path: &Path, toml: &CargoToml, workspace_root: Option<PathBuf>, workspace_name: Option<String>) -> Option<Self> {
         let package = toml.package.as_ref()?;
         let project_path = path.parent()?.to_path_buf();
-        let lockfile_path = project_path.join("Cargo.lock");
+        
+        // For workspace members, try to load Cargo.lock from workspace root first
+        let lockfile_path = if let Some(ref ws_root) = workspace_root {
+            let ws_lockfile = ws_root.join("Cargo.lock");
+            if ws_lockfile.exists() {
+                ws_lockfile
+            } else {
+                project_path.join("Cargo.lock")
+            }
+        } else {
+            project_path.join("Cargo.lock")
+        };
         
         let dependencies = if let Ok(lockfile) = Lockfile::load(&lockfile_path) {
             lockfile.packages.iter()
@@ -74,6 +87,8 @@ impl Project {
             version: package.version.clone(),
             authors,
             dependencies,
+            workspace_root,
+            workspace_name,
         })
     }
 }
@@ -99,9 +114,9 @@ pub struct Workspace {
 
 pub fn find_rust_projects(path: &str) -> Vec<Project> {
     let mut projects = HashMap::new();
-    let mut workspace_paths = HashSet::new();
+    let mut workspaces: HashMap<PathBuf, (String, Vec<PathBuf>)> = HashMap::new();
 
-    // Walk through directory tree looking for Cargo.toml files
+    // First pass: Find all Cargo.toml files and identify workspaces
     for entry in WalkDir::new(path)
         .follow_links(true)
         .into_iter()
@@ -117,50 +132,98 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     {
         let manifest_path = entry.path();
         
-        match fs::read_to_string(manifest_path) {
-            Ok(content) => {
-                match toml::from_str::<CargoToml>(&content) {
-                    Ok(toml) => {
-                        // Handle workspace manifests
-                        if let Some(workspace) = &toml.workspace {
-                            let root_path = manifest_path.parent().unwrap();
-                            for member_glob in &workspace.members {
-                                let full_glob = root_path.join(member_glob).join("Cargo.toml");
-                                if let Some(full_glob_str) = full_glob.to_str().map(|s| s.to_string()) {
-                                    if let Ok(paths) = glob::glob(&full_glob_str) {
-                                        for member_manifest in paths.filter_map(Result::ok) {
-                                            workspace_paths.insert(member_manifest);
-                                        }
-                                    }
-                                    // Silently ignore glob errors during scanning
+        if let Ok(content) = fs::read_to_string(manifest_path) {
+            if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
+                // Check if this is a workspace root
+                if let Some(workspace) = &toml.workspace {
+                    let root_path = manifest_path.parent().unwrap().to_path_buf();
+                    let mut member_paths = Vec::new();
+                    
+                    // Resolve workspace members
+                    for member_glob in &workspace.members {
+                        let full_glob = root_path.join(member_glob).join("Cargo.toml");
+                        if let Some(full_glob_str) = full_glob.to_str() {
+                            if let Ok(paths) = glob::glob(full_glob_str) {
+                                for member_manifest in paths.filter_map(Result::ok) {
+                                    member_paths.push(member_manifest);
                                 }
                             }
                         }
-                        
-                        // Add the project if it has a package section
-                        if let Some(project) = Project::from_toml(manifest_path, &toml) {
-                            projects.insert(manifest_path.to_path_buf(), project);
-                        }
                     }
-                    Err(_) => {
-                        // Silently ignore TOML parse errors - might be config files, etc.
-                    }
+                    
+                    // Get workspace name (use directory name as fallback)
+                    let workspace_name = if let Some(pkg) = &toml.package {
+                        pkg.name.clone()
+                    } else {
+                        root_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("workspace")
+                            .to_string()
+                    };
+                    
+                    workspaces.insert(root_path, (workspace_name, member_paths));
                 }
             }
-            Err(_) => {
-                // Silently ignore file read errors - might be permissions, etc.
+        }
+    }
+
+    // Second pass: Create projects with workspace information
+    for entry in WalkDir::new(path)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| {
+            let file_name = e.file_name().to_string_lossy();
+            !file_name.starts_with('.') && 
+            file_name != "target" && 
+            file_name != "node_modules"
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() == "Cargo.toml")
+    {
+        let manifest_path = entry.path();
+        
+        if let Ok(content) = fs::read_to_string(manifest_path) {
+            if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
+                // Find if this project belongs to a workspace
+                let mut workspace_info: Option<(PathBuf, String)> = None;
+                
+                for (ws_root, (ws_name, members)) in &workspaces {
+                    if members.contains(&manifest_path.to_path_buf()) {
+                        workspace_info = Some((ws_root.clone(), ws_name.clone()));
+                        break;
+                    }
+                }
+                
+                // Add the project if it has a package section
+                if let Some(project) = Project::from_toml(
+                    manifest_path, 
+                    &toml,
+                    workspace_info.as_ref().map(|(root, _)| root.clone()),
+                    workspace_info.as_ref().map(|(_, name)| name.clone())
+                ) {
+                    projects.insert(manifest_path.to_path_buf(), project);
+                }
             }
         }
     }
     
-    // Filter out workspace members, keeping only root workspace or standalone projects
-    let mut result: Vec<Project> = projects.into_iter()
-        .filter(|(path, _)| !workspace_paths.contains(path))
-        .map(|(_, project)| project)
-        .collect();
-    
-    // Sort by name for consistent ordering
-    result.sort_by(|a, b| a.name.cmp(&b.name));
+    // Convert to vec and sort by workspace and name
+    let mut result: Vec<Project> = projects.into_values().collect();
+    result.sort_by(|a, b| {
+        match (&a.workspace_name, &b.workspace_name) {
+            (Some(ws_a), Some(ws_b)) if ws_a == ws_b => {
+                // Same workspace: sort by project name
+                a.name.cmp(&b.name)
+            }
+            (Some(ws_a), Some(ws_b)) => {
+                // Different workspaces: sort by workspace name
+                ws_a.cmp(ws_b)
+            }
+            (Some(_), None) => std::cmp::Ordering::Less, // Workspace projects first
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.name.cmp(&b.name), // Standalone projects sorted by name
+        }
+    });
     
     result
 }

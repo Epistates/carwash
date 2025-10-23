@@ -14,7 +14,6 @@ pub enum Action {
     SelectParent,
     SelectChild,
     ToggleSelection,
-    ToggleShowEmptyProjects,
     ShowCommandPalette,
     ShowHelp,
     EnterNormalMode,

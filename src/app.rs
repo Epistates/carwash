@@ -16,8 +16,8 @@ pub struct AppState<'a> {
     pub mode: Mode,
     pub tree_state: ListState,
     pub projects: Vec<Project>,
-    pub all_projects: Vec<Project>, // All projects before filtering
-    pub show_empty_projects: bool, // Toggle to show/hide projects with no dependencies
+    pub all_projects: Vec<Project>,
+    pub collapsed_workspaces: HashSet<String>, // Track which workspaces are collapsed
     pub selected_projects: HashSet<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
@@ -45,7 +45,7 @@ impl<'a> Clone for AppState<'a> {
             tree_state: ListState::default(),
             projects: self.projects.clone(),
             all_projects: self.all_projects.clone(),
-            show_empty_projects: self.show_empty_projects,
+            collapsed_workspaces: self.collapsed_workspaces.clone(),
             selected_projects: self.selected_projects.clone(),
             tabs: self.tabs.clone(),
             active_tab: self.active_tab,
@@ -88,7 +88,7 @@ impl<'a> AppState<'a> {
             tree_state,
             projects: Vec::new(),
             all_projects: Vec::new(),
-            show_empty_projects: false, // Default to hiding empty projects
+            collapsed_workspaces: HashSet::new(), // All workspaces start collapsed
             selected_projects: HashSet::new(),
             tabs: Vec::new(),
             active_tab: 0,
@@ -102,7 +102,46 @@ impl<'a> AppState<'a> {
 
     pub fn get_selected_project(&self) -> Option<&Project> {
         if let Some(selected_index) = self.tree_state.selected() {
-            self.projects.get(selected_index)
+            // Get visible projects (accounting for collapsed workspaces)
+            let visible_projects = self.get_visible_projects();
+            visible_projects.get(selected_index).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Get list of projects that should be visible (excluding collapsed workspace members)
+    pub fn get_visible_projects(&self) -> Vec<&Project> {
+        let mut visible = Vec::new();
+        let mut last_workspace: Option<String> = None;
+        
+        for project in &self.projects {
+            match &project.workspace_name {
+                Some(ws_name) => {
+                    // If workspace changed or this is the first in a workspace, always show
+                    if last_workspace.as_ref() != Some(ws_name) {
+                        visible.push(project);
+                        last_workspace = Some(ws_name.clone());
+                    } else if !self.collapsed_workspaces.contains(ws_name) {
+                        // Show member if workspace is expanded
+                        visible.push(project);
+                    }
+                }
+                None => {
+                    // Standalone project, always show
+                    visible.push(project);
+                    last_workspace = None;
+                }
+            }
+        }
+        
+        visible
+    }
+
+    /// Get the currently selected workspace name (if cursor is on a workspace item)
+    pub fn get_selected_workspace(&self) -> Option<String> {
+        if let Some(project) = self.get_selected_project() {
+            project.workspace_name.clone()
         } else {
             None
         }
@@ -115,16 +154,18 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::EnterNormalMode => state.mode = Mode::Normal,
         Action::ShowHelp => state.mode = Mode::Help,
         Action::FinishProjectScan(projects) => {
-            state.all_projects = projects;
-            // Apply filtering based on show_empty_projects
-            state.projects = if state.show_empty_projects {
-                state.all_projects.clone()
-            } else {
-                state.all_projects.iter()
-                    .filter(|p| !p.dependencies.is_empty())
-                    .cloned()
-                    .collect()
-            };
+            state.all_projects = projects.clone();
+            // Only show projects with dependencies
+            state.projects = projects.into_iter()
+                .filter(|p| !p.dependencies.is_empty())
+                .collect();
+            
+            // Collect all workspace names and mark them as collapsed by default
+            let workspace_names: HashSet<String> = state.projects.iter()
+                .filter_map(|p| p.workspace_name.clone())
+                .collect();
+            state.collapsed_workspaces = workspace_names;
+            
             if !state.projects.is_empty() {
                 state.tree_state.select(Some(0));
             }
@@ -135,9 +176,10 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.text_input.input = state.text_input.input.clone().with_value(s);
         }
         Action::SelectNext => {
+            let visible_count = state.get_visible_projects().len();
             let i = match state.tree_state.selected() {
                 Some(i) => {
-                    if i >= state.projects.len().saturating_sub(1) {
+                    if i >= visible_count.saturating_sub(1) {
                         0
                     } else {
                         i + 1
@@ -148,10 +190,11 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.tree_state.select(Some(i));
         }
         Action::SelectPrevious => {
+            let visible_count = state.get_visible_projects().len();
             let i = match state.tree_state.selected() {
                 Some(i) => {
                     if i == 0 {
-                        state.projects.len().saturating_sub(1)
+                        visible_count.saturating_sub(1)
                     } else {
                         i - 1
                     }
@@ -160,8 +203,18 @@ pub fn reducer(state: &mut AppState, action: Action) {
             };
             state.tree_state.select(Some(i));
         }
-        Action::SelectParent => {}
-        Action::SelectChild => {}
+        Action::SelectParent => {
+            // Collapse workspace if we're on a workspace member
+            if let Some(workspace_name) = state.get_selected_workspace() {
+                state.collapsed_workspaces.insert(workspace_name);
+            }
+        }
+        Action::SelectChild => {
+            // Expand workspace if we're on a workspace member
+            if let Some(workspace_name) = state.get_selected_workspace() {
+                state.collapsed_workspaces.remove(&workspace_name);
+            }
+        }
         Action::ToggleSelection => {
             if let Some(project_name) = state.get_selected_project().map(|p| p.name.clone()) {
                 if !state.selected_projects.remove(&project_name) {
@@ -320,27 +373,6 @@ pub fn reducer(state: &mut AppState, action: Action) {
                         dep.check_status = status;
                     }
                 }
-            }
-        }
-        Action::ToggleShowEmptyProjects => {
-            state.show_empty_projects = !state.show_empty_projects;
-            // Reapply filter
-            state.projects = if state.show_empty_projects {
-                state.all_projects.clone()
-            } else {
-                state.all_projects.iter()
-                    .filter(|p| !p.dependencies.is_empty())
-                    .cloned()
-                    .collect()
-            };
-            // Adjust selection if needed
-            if state.tree_state.selected().is_some() {
-                let current = state.tree_state.selected().unwrap();
-                if current >= state.projects.len() {
-                    state.tree_state.select(Some(state.projects.len().saturating_sub(1)));
-                }
-            } else if !state.projects.is_empty() {
-                state.tree_state.select(Some(0));
             }
         }
     }
