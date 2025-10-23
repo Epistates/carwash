@@ -35,6 +35,8 @@ impl Component for DependenciesPane {
         if let Some(p) = app.get_selected_project() {
             let mut dependency_items: Vec<ListItem> = Vec::new();
             let mut outdated_count = 0;
+            let mut not_checked_count = 0;
+            let mut checking_count = 0;
             
             for dep in &p.dependencies {
                 let is_outdated = dep.latest_version.is_some() 
@@ -42,6 +44,12 @@ impl Component for DependenciesPane {
                 
                 if is_outdated {
                     outdated_count += 1;
+                }
+                
+                match dep.check_status {
+                    DependencyCheckStatus::NotChecked => not_checked_count += 1,
+                    DependencyCheckStatus::Checking => checking_count += 1,
+                    DependencyCheckStatus::Checked => {},
                 }
                 
                 let (icon, style) = match dep.check_status {
@@ -99,18 +107,16 @@ impl Component for DependenciesPane {
                 dependency_items.push(ListItem::new(line));
             }
 
-            let title = if outdated_count > 0 {
-                format!(" Dependencies ({} outdated) ", outdated_count)
-            } else if p.dependencies.is_empty() {
-                " Dependencies (none) ".to_string()
+            let (title, title_style) = if p.dependencies.is_empty() {
+                (" Dependencies (none) ".to_string(), Style::default().fg(Color::DarkGray))
+            } else if checking_count > 0 {
+                (format!(" Dependencies (checking...) "), Style::default().fg(Color::Cyan))
+            } else if not_checked_count > 0 {
+                (format!(" Dependencies ({} not checked) ", p.dependencies.len()), Style::default().fg(Color::DarkGray))
+            } else if outdated_count > 0 {
+                (format!(" Dependencies ({} outdated) ", outdated_count), Style::default().fg(Color::Yellow))
             } else {
-                format!(" Dependencies ({} up-to-date) ", p.dependencies.len())
-            };
-
-            let title_style = if outdated_count > 0 {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Green)
+                (format!(" Dependencies ({} up-to-date) ", p.dependencies.len()), Style::default().fg(Color::Green))
             };
 
             let dependency_list = List::new(dependency_items)
