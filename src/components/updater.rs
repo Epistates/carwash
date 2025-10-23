@@ -1,14 +1,14 @@
 use crate::app::AppState;
-use crate::events::Action;
 use crate::components::Component;
+use crate::events::Action;
 use crate::project::Dependency;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 use std::collections::HashSet;
 
@@ -99,7 +99,7 @@ impl Component for UpdateWizard {
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         let popup_area = Self::centered_rect(70, 70, area);
-        
+
         f.render_widget(Clear, popup_area);
 
         let chunks = Layout::default()
@@ -117,24 +117,31 @@ impl Component for UpdateWizard {
         } else {
             " Update Dependencies ".to_string()
         };
-        
+
         let title = Block::default()
             .title(title_text)
             .title_alignment(Alignment::Center)
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+            .border_style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            );
         f.render_widget(title, chunks[0]);
 
         // Dependency list
         if app.updater.outdated_dependencies.is_empty() {
             // Check if dependencies have been checked (have latest_version set)
             let has_been_checked = if let Some(project) = app.get_selected_project() {
-                !project.dependencies.is_empty() && 
-                project.dependencies.iter().any(|d| d.latest_version.is_some())
+                !project.dependencies.is_empty()
+                    && project
+                        .dependencies
+                        .iter()
+                        .any(|d| d.latest_version.is_some())
             } else {
                 false
             };
-            
+
             let empty_msg = if app.is_checking_updates {
                 " ⟳ Checking for updates...\n\n Please wait or press Esc to cancel "
             } else if has_been_checked {
@@ -142,14 +149,16 @@ impl Component for UpdateWizard {
             } else {
                 " ⟳ Initializing...\n\n Press Esc to cancel "
             };
-            
+
             let empty_para = Paragraph::new(empty_msg)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(if app.is_checking_updates || !has_been_checked {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                }))
+                .style(
+                    Style::default().fg(if app.is_checking_updates || !has_been_checked {
+                        Color::Yellow
+                    } else {
+                        Color::Green
+                    }),
+                )
                 .block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
             f.render_widget(empty_para, chunks[1]);
         } else {
@@ -160,7 +169,7 @@ impl Component for UpdateWizard {
                 .map(|dep| {
                     let is_selected = app.updater.selected_dependencies.contains(&dep.name);
                     let checkbox = if is_selected { "☑" } else { "☐" };
-                    
+
                     let line = Line::from(vec![
                         Span::styled(
                             checkbox,
@@ -171,16 +180,23 @@ impl Component for UpdateWizard {
                             },
                         ),
                         Span::raw("  "),
-                        Span::styled(&dep.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            &dep.name,
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::raw("  "),
                         Span::styled(&dep.current_version, Style::default().fg(Color::Red)),
                         Span::styled(" → ", Style::default().fg(Color::Yellow)),
                         Span::styled(
                             dep.latest_version.as_ref().unwrap(),
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
                         ),
                     ]);
-                    
+
                     ListItem::new(line)
                 })
                 .collect();
@@ -200,7 +216,7 @@ impl Component for UpdateWizard {
         // Help footer
         let selected_count = app.updater.selected_dependencies.len();
         let total_count = app.updater.outdated_dependencies.len();
-        
+
         let help_lines = vec![
             Line::from(vec![
                 Span::styled(" Space", Style::default().fg(Color::Cyan)),
@@ -209,27 +225,36 @@ impl Component for UpdateWizard {
                 Span::raw(": All | "),
                 Span::styled("n", Style::default().fg(Color::Cyan)),
                 Span::raw(": None | "),
-                Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(": Update | "),
                 Span::styled("Esc", Style::default().fg(Color::Red)),
                 Span::raw(": Cancel "),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} of {} selected ", selected_count, total_count),
-                    if selected_count > 0 {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    },
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                format!(" {} of {} selected ", selected_count, total_count),
+                if selected_count > 0 {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            )]),
         ];
 
         let footer = Paragraph::new(help_lines)
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Magenta)),
+            );
         f.render_widget(footer, chunks[2]);
     }
 }
@@ -253,5 +278,30 @@ impl UpdateWizard {
                 Constraint::Percentage((100 - percent_x) / 2),
             ])
             .split(popup_layout[1])[1]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_update_wizard_state_new() {
+        let state = UpdateWizardState::new();
+        assert!(state.outdated_dependencies.is_empty());
+        assert!(state.selected_dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_update_wizard_state_clone() {
+        let mut state = UpdateWizardState::new();
+        state.selected_dependencies.insert("serde".to_string());
+
+        let cloned = state.clone();
+        assert_eq!(
+            state.selected_dependencies.len(),
+            cloned.selected_dependencies.len()
+        );
+        assert!(cloned.selected_dependencies.contains("serde"));
     }
 }

@@ -79,7 +79,7 @@ impl<'a> AppState<'a> {
         ];
         let mut tree_state = ListState::default();
         tree_state.select(Some(0));
-        
+
         Self {
             should_quit: false,
             is_scanning: true,
@@ -114,7 +114,7 @@ impl<'a> AppState<'a> {
     pub fn get_visible_projects(&self) -> Vec<&Project> {
         let mut visible = Vec::new();
         let mut last_workspace: Option<String> = None;
-        
+
         for project in &self.projects {
             match &project.workspace_name {
                 Some(ws_name) => {
@@ -134,7 +134,7 @@ impl<'a> AppState<'a> {
                 }
             }
         }
-        
+
         visible
     }
 
@@ -164,16 +164,19 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::FinishProjectScan(projects) => {
             state.all_projects = projects.clone();
             // Only show projects with dependencies
-            state.projects = projects.into_iter()
+            state.projects = projects
+                .into_iter()
                 .filter(|p| !p.dependencies.is_empty())
                 .collect();
-            
+
             // Collect all workspace names and mark them as collapsed by default
-            let workspace_names: HashSet<String> = state.projects.iter()
+            let workspace_names: HashSet<String> = state
+                .projects
+                .iter()
                 .filter_map(|p| p.workspace_name.clone())
                 .collect();
             state.collapsed_workspaces = workspace_names;
-            
+
             if !state.projects.is_empty() {
                 state.tree_state.select(Some(0));
             }
@@ -235,11 +238,10 @@ pub fn reducer(state: &mut AppState, action: Action) {
             // Reset input
             state.palette.input = state.palette.input.clone().with_value(String::new());
             // Populate commands
-            state.palette.filtered_commands = state.command_history
+            state.palette.filtered_commands = state
+                .command_history
                 .iter()
-                .map(|c| Command::Cargo { 
-                    command: c.clone()
-                })
+                .map(|c| Command::Cargo { command: c.clone() })
                 .collect();
             // Ensure first item is selected
             if !state.palette.filtered_commands.is_empty() {
@@ -250,14 +252,13 @@ pub fn reducer(state: &mut AppState, action: Action) {
         }
         Action::UpdatePaletteInput(input) => {
             state.palette.input = state.palette.input.clone().with_value(input.clone());
-            
+
             if input.is_empty() {
                 // Show all commands when input is empty
-                state.palette.filtered_commands = state.command_history
+                state.palette.filtered_commands = state
+                    .command_history
                     .iter()
-                    .map(|c| Command::Cargo { 
-                        command: c.clone()
-                    })
+                    .map(|c| Command::Cargo { command: c.clone() })
                     .collect();
             } else {
                 // Filter by fuzzy match
@@ -266,12 +267,10 @@ pub fn reducer(state: &mut AppState, action: Action) {
                     .command_history
                     .iter()
                     .filter(|cmd| matcher.fuzzy_match(cmd, &input).is_some())
-                    .map(|c| Command::Cargo { 
-                        command: c.clone()
-                    })
+                    .map(|c| Command::Cargo { command: c.clone() })
                     .collect();
             }
-            
+
             // Select first item if available
             if !state.palette.filtered_commands.is_empty() {
                 state.palette.list_state.select(Some(0));
@@ -310,7 +309,7 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.updater.outdated_dependencies.clear();
             state.updater.selected_dependencies.clear();
             state.updater.list_state.select(None);
-            
+
             state.is_checking_updates = true;
             state.mode = Mode::UpdateWizard;
         }
@@ -329,12 +328,21 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::UpdateDependencies(deps) => {
             // Only process if we're still in UpdateWizard mode (not cancelled)
             if state.mode == Mode::UpdateWizard {
-                if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
-                    if let Some(proj) = state.projects.iter_mut().find(|p| p.name == selected_project_name) {
+                if let Some(selected_project_name) =
+                    state.get_selected_project().map(|p| p.name.clone())
+                {
+                    if let Some(proj) = state
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.name == selected_project_name)
+                    {
                         proj.dependencies = deps.clone();
                         state.updater.outdated_dependencies = deps
                             .into_iter()
-                            .filter(|d| d.latest_version.is_some() && d.latest_version.as_ref().unwrap() != &d.current_version)
+                            .filter(|d| {
+                                d.latest_version.is_some()
+                                    && d.latest_version.as_ref().unwrap() != &d.current_version
+                            })
                             .collect();
                         // Select first item if there are outdated dependencies
                         if !state.updater.outdated_dependencies.is_empty() {
@@ -380,13 +388,210 @@ pub fn reducer(state: &mut AppState, action: Action) {
         }
         Action::UpdateDependencyStatus(dep_name, status) => {
             // Update the status of a specific dependency
-            if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
-                if let Some(proj) = state.projects.iter_mut().find(|p| p.name == selected_project_name) {
+            if let Some(selected_project_name) =
+                state.get_selected_project().map(|p| p.name.clone())
+            {
+                if let Some(proj) = state
+                    .projects
+                    .iter_mut()
+                    .find(|p| p.name == selected_project_name)
+                {
                     if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
                         dep.check_status = status;
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{Action, Mode};
+    use crate::project::{Project, ProjectStatus};
+    use std::path::PathBuf;
+
+    fn create_test_project(name: &str) -> Project {
+        Project {
+            name: name.to_string(),
+            path: PathBuf::from("/test"),
+            status: ProjectStatus::Pending,
+            version: "0.1.0".to_string(),
+            authors: vec![],
+            dependencies: vec![],
+            workspace_root: None,
+            workspace_name: None,
+        }
+    }
+
+    #[test]
+    fn test_app_state_new() {
+        let state = AppState::new();
+        assert!(!state.should_quit);
+        assert!(state.is_scanning);
+        assert_eq!(state.mode, Mode::Loading);
+        assert!(state.projects.is_empty());
+        assert!(state.selected_projects.is_empty());
+        assert!(!state.command_history.is_empty());
+    }
+
+    #[test]
+    fn test_reducer_quit() {
+        let mut state = AppState::new();
+        assert!(!state.should_quit);
+
+        reducer(&mut state, Action::Quit);
+        assert!(state.should_quit);
+    }
+
+    #[test]
+    fn test_reducer_enter_normal_mode() {
+        let mut state = AppState::new();
+        state.mode = Mode::Loading;
+
+        reducer(&mut state, Action::EnterNormalMode);
+        assert_eq!(state.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn test_reducer_show_help() {
+        let mut state = AppState::new();
+
+        reducer(&mut state, Action::ShowHelp);
+        assert_eq!(state.mode, Mode::Help);
+    }
+
+    #[test]
+    fn test_reducer_finish_project_scan() {
+        let mut state = AppState::new();
+        let mut project = create_test_project("test1");
+        project.dependencies = vec![]; // Empty dependencies - should be filtered out
+        let projects = vec![project];
+
+        reducer(&mut state, Action::FinishProjectScan(projects));
+        assert!(!state.is_scanning);
+        assert_eq!(state.mode, Mode::Normal);
+        // Projects with empty dependencies should be filtered
+        assert_eq!(state.projects.len(), 0);
+    }
+
+    #[test]
+    fn test_reducer_toggle_selection() {
+        let mut state = AppState::new();
+        let project = create_test_project("test1");
+        state.projects = vec![project];
+        state.tree_state.select(Some(0));
+
+        // Select the project
+        reducer(&mut state, Action::ToggleSelection);
+        assert!(state.selected_projects.contains("test1"));
+
+        // Deselect the project
+        reducer(&mut state, Action::ToggleSelection);
+        assert!(!state.selected_projects.contains("test1"));
+    }
+
+    #[test]
+    fn test_reducer_show_command_palette() {
+        let mut state = AppState::new();
+
+        reducer(&mut state, Action::ShowCommandPalette);
+        assert_eq!(state.mode, Mode::CommandPalette);
+        assert!(!state.palette.filtered_commands.is_empty());
+    }
+
+    #[test]
+    fn test_reducer_create_tab() {
+        let mut state = AppState::new();
+        let title = "Test Tab".to_string();
+
+        reducer(&mut state, Action::CreateTab(title.clone()));
+        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.tabs[0].title, title);
+        assert!(!state.tabs[0].is_finished);
+    }
+
+    #[test]
+    fn test_reducer_add_output() {
+        let mut state = AppState::new();
+        reducer(&mut state, Action::CreateTab("Test".to_string()));
+
+        let output = "Test output".to_string();
+        reducer(&mut state, Action::AddOutput(0, output.clone()));
+        assert_eq!(state.tabs[0].buffer.len(), 1);
+        assert_eq!(state.tabs[0].buffer[0], output);
+    }
+
+    #[test]
+    fn test_reducer_finish_command() {
+        let mut state = AppState::new();
+        reducer(&mut state, Action::CreateTab("Test".to_string()));
+
+        reducer(&mut state, Action::FinishCommand(0));
+        assert!(state.tabs[0].is_finished);
+    }
+
+    #[test]
+    fn test_reducer_switch_to_tab() {
+        let mut state = AppState::new();
+        reducer(&mut state, Action::CreateTab("Tab1".to_string()));
+        reducer(&mut state, Action::CreateTab("Tab2".to_string()));
+
+        state.active_tab = 0;
+        reducer(&mut state, Action::SwitchToTab(1));
+        assert_eq!(state.active_tab, 1);
+    }
+
+    #[test]
+    fn test_get_visible_projects_with_collapsed_workspace() {
+        let mut state = AppState::new();
+
+        let mut project1 = create_test_project("workspace-member1");
+        project1.workspace_name = Some("test-workspace".to_string());
+
+        let mut project2 = create_test_project("workspace-member2");
+        project2.workspace_name = Some("test-workspace".to_string());
+
+        state.projects = vec![project1, project2];
+        state
+            .collapsed_workspaces
+            .insert("test-workspace".to_string());
+
+        let visible = state.get_visible_projects();
+        // Only the first member of collapsed workspace should be visible
+        assert_eq!(visible.len(), 1);
+    }
+
+    #[test]
+    fn test_get_visible_projects_with_expanded_workspace() {
+        let mut state = AppState::new();
+
+        let mut project1 = create_test_project("workspace-member1");
+        project1.workspace_name = Some("test-workspace".to_string());
+
+        let mut project2 = create_test_project("workspace-member2");
+        project2.workspace_name = Some("test-workspace".to_string());
+
+        state.projects = vec![project1, project2];
+        // Don't collapse the workspace
+
+        let visible = state.get_visible_projects();
+        // All members should be visible
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn test_tab_clone() {
+        let tab = Tab {
+            title: "Test".to_string(),
+            buffer: vec!["line1".to_string()],
+            is_finished: false,
+        };
+
+        let cloned = tab.clone();
+        assert_eq!(tab.title, cloned.title);
+        assert_eq!(tab.buffer.len(), cloned.buffer.len());
+        assert_eq!(tab.is_finished, cloned.is_finished);
     }
 }

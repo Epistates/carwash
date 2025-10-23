@@ -54,28 +54,33 @@ pub struct Project {
 }
 
 impl Project {
-    fn from_toml(path: &Path, toml: &CargoToml, workspace_root: Option<PathBuf>, workspace_name: Option<String>) -> Option<Self> {
+    fn from_toml(
+        path: &Path,
+        toml: &CargoToml,
+        workspace_root: Option<PathBuf>,
+        workspace_name: Option<String>,
+    ) -> Option<Self> {
         let package = toml.package.as_ref()?;
         let project_path = path.parent()?.to_path_buf();
-        
+
         // Collect dependency names from this crate's Cargo.toml
         let mut declared_deps: HashSet<String> = HashSet::new();
-        
+
         // Add regular dependencies
         for dep_name in toml.dependencies.keys() {
             declared_deps.insert(dep_name.clone());
         }
-        
+
         // Add dev-dependencies
         for dep_name in toml.dev_dependencies.keys() {
             declared_deps.insert(dep_name.clone());
         }
-        
+
         // Add build-dependencies
         for dep_name in toml.build_dependencies.keys() {
             declared_deps.insert(dep_name.clone());
         }
-        
+
         // For workspace members, try to load Cargo.lock from workspace root first
         let lockfile_path = if let Some(ref ws_root) = workspace_root {
             let ws_lockfile = ws_root.join("Cargo.lock");
@@ -87,9 +92,11 @@ impl Project {
         } else {
             project_path.join("Cargo.lock")
         };
-        
+
         let dependencies = if let Ok(lockfile) = Lockfile::load(&lockfile_path) {
-            lockfile.packages.iter()
+            lockfile
+                .packages
+                .iter()
                 // Filter to only dependencies declared in this crate's Cargo.toml
                 .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
                 .map(Dependency::from)
@@ -138,6 +145,28 @@ pub struct Workspace {
     pub members: Vec<String>,
 }
 
+/// Recursively finds all Rust projects in the given directory path.
+///
+/// This function scans for Cargo.toml files, identifies workspaces,
+/// and returns a sorted list of projects with their dependencies.
+///
+/// # Arguments
+///
+/// * `path` - The directory path to scan for Rust projects
+///
+/// # Returns
+///
+/// A vector of `Project` structs, sorted by workspace and name.
+/// Projects without dependencies in their Cargo.lock are excluded from the results.
+///
+/// # Examples
+///
+/// ```
+/// use carwash::project::find_rust_projects;
+///
+/// let projects = find_rust_projects(".");
+/// // Projects will be sorted with workspace members grouped together
+/// ```
 pub fn find_rust_projects(path: &str) -> Vec<Project> {
     let mut projects = HashMap::new();
     let mut workspaces: HashMap<PathBuf, (String, Vec<PathBuf>)> = HashMap::new();
@@ -149,22 +178,20 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
         .filter_entry(|e| {
             // Skip common directories that won't contain projects
             let file_name = e.file_name().to_string_lossy();
-            !file_name.starts_with('.') && 
-            file_name != "target" && 
-            file_name != "node_modules"
+            !file_name.starts_with('.') && file_name != "target" && file_name != "node_modules"
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name() == "Cargo.toml")
     {
         let manifest_path = entry.path();
-        
+
         if let Ok(content) = fs::read_to_string(manifest_path) {
             if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
                 // Check if this is a workspace root
                 if let Some(workspace) = &toml.workspace {
                     let root_path = manifest_path.parent().unwrap().to_path_buf();
                     let mut member_paths = Vec::new();
-                    
+
                     // Resolve workspace members
                     for member_glob in &workspace.members {
                         let full_glob = root_path.join(member_glob).join("Cargo.toml");
@@ -176,17 +203,18 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
                             }
                         }
                     }
-                    
+
                     // Get workspace name (use directory name as fallback)
                     let workspace_name = if let Some(pkg) = &toml.package {
                         pkg.name.clone()
                     } else {
-                        root_path.file_name()
+                        root_path
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("workspace")
                             .to_string()
                     };
-                    
+
                     workspaces.insert(root_path, (workspace_name, member_paths));
                 }
             }
@@ -199,40 +227,38 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
         .into_iter()
         .filter_entry(|e| {
             let file_name = e.file_name().to_string_lossy();
-            !file_name.starts_with('.') && 
-            file_name != "target" && 
-            file_name != "node_modules"
+            !file_name.starts_with('.') && file_name != "target" && file_name != "node_modules"
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name() == "Cargo.toml")
     {
         let manifest_path = entry.path();
-        
+
         if let Ok(content) = fs::read_to_string(manifest_path) {
             if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
                 // Find if this project belongs to a workspace
                 let mut workspace_info: Option<(PathBuf, String)> = None;
-                
+
                 for (ws_root, (ws_name, members)) in &workspaces {
                     if members.contains(&manifest_path.to_path_buf()) {
                         workspace_info = Some((ws_root.clone(), ws_name.clone()));
                         break;
                     }
                 }
-                
+
                 // Add the project if it has a package section
                 if let Some(project) = Project::from_toml(
-                    manifest_path, 
+                    manifest_path,
                     &toml,
                     workspace_info.as_ref().map(|(root, _)| root.clone()),
-                    workspace_info.as_ref().map(|(_, name)| name.clone())
+                    workspace_info.as_ref().map(|(_, name)| name.clone()),
                 ) {
                     projects.insert(manifest_path.to_path_buf(), project);
                 }
             }
         }
     }
-    
+
     // Convert to vec and sort by workspace and name
     let mut result: Vec<Project> = projects.into_values().collect();
     result.sort_by(|a, b| {
@@ -250,7 +276,7 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
             (None, None) => a.name.cmp(&b.name), // Standalone projects sorted by name
         }
     });
-    
+
     result
 }
 
@@ -265,7 +291,7 @@ mod tests {
         // In CI or clean environments, there might be no projects with dependencies
         // This is fine - we just verify the function completes without panic
     }
-    
+
     #[test]
     fn test_cargo_toml_parsing() {
         // Verify we can parse a basic Cargo.toml structure
@@ -280,10 +306,98 @@ serde = "1.0"
 "#;
         let parsed: Result<CargoToml, _> = toml::from_str(toml_content);
         assert!(parsed.is_ok(), "Should parse valid Cargo.toml");
-        
+
         let cargo_toml = parsed.unwrap();
         assert!(cargo_toml.package.is_some());
         assert_eq!(cargo_toml.dependencies.len(), 1);
         assert!(cargo_toml.dependencies.contains_key("serde"));
+    }
+
+    #[test]
+    fn test_cargo_toml_parsing_with_dev_dependencies() {
+        let toml_content = r#"
+[package]
+name = "test-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+"#;
+        let parsed: Result<CargoToml, _> = toml::from_str(toml_content);
+        assert!(parsed.is_ok());
+
+        let cargo_toml = parsed.unwrap();
+        assert_eq!(cargo_toml.dependencies.len(), 1);
+        assert_eq!(cargo_toml.dev_dependencies.len(), 1);
+        assert!(cargo_toml.dev_dependencies.contains_key("tokio"));
+    }
+
+    #[test]
+    fn test_cargo_toml_parsing_workspace() {
+        let toml_content = r#"
+[workspace]
+members = ["crate1", "crate2"]
+"#;
+        let parsed: Result<CargoToml, _> = toml::from_str(toml_content);
+        assert!(parsed.is_ok());
+
+        let cargo_toml = parsed.unwrap();
+        assert!(cargo_toml.workspace.is_some());
+        assert_eq!(cargo_toml.workspace.unwrap().members.len(), 2);
+    }
+
+    #[test]
+    fn test_project_status_default() {
+        let status = ProjectStatus::Pending;
+        assert_eq!(status, ProjectStatus::Pending);
+    }
+
+    #[test]
+    fn test_dependency_check_status() {
+        let status = DependencyCheckStatus::NotChecked;
+        assert_eq!(status, DependencyCheckStatus::NotChecked);
+
+        let checking = DependencyCheckStatus::Checking;
+        assert_eq!(checking, DependencyCheckStatus::Checking);
+
+        let checked = DependencyCheckStatus::Checked;
+        assert_eq!(checked, DependencyCheckStatus::Checked);
+    }
+
+    #[test]
+    fn test_dependency_from_lock_package() {
+        use cargo_lock::{Package as LockPackage, Version};
+
+        let pkg = LockPackage {
+            name: "test-crate".parse().unwrap(),
+            version: Version::parse("1.2.3").unwrap(),
+            source: None,
+            checksum: None,
+            dependencies: Vec::new(),
+            replace: None,
+        };
+
+        let dep = Dependency::from(&pkg);
+        assert_eq!(dep.name, "test-crate");
+        assert_eq!(dep.current_version, "1.2.3");
+        assert_eq!(dep.check_status, DependencyCheckStatus::NotChecked);
+        assert!(dep.latest_version.is_none());
+    }
+
+    #[test]
+    fn test_empty_cargo_toml() {
+        let toml_content = r#"
+[dependencies]
+"#;
+        let parsed: Result<CargoToml, _> = toml::from_str(toml_content);
+        assert!(parsed.is_ok());
+
+        let cargo_toml = parsed.unwrap();
+        assert!(cargo_toml.package.is_none());
+        assert!(cargo_toml.dependencies.is_empty());
     }
 }

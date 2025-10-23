@@ -1,16 +1,16 @@
 use crate::app::AppState;
-use crate::events::Action;
 use crate::components::Component;
+use crate::events::Action;
 use crate::events::Command;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
-use tui_input::{backend::crossterm::EventHandler, Input};
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 #[derive(Debug, Clone)]
 pub struct CommandPaletteState {
@@ -41,11 +41,14 @@ impl Component for CommandPalette {
     fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action> {
         match key {
             KeyCode::Enter => {
-                let command = app.palette.list_state.selected()
+                let command = app
+                    .palette
+                    .list_state
+                    .selected()
                     .and_then(|i| app.palette.filtered_commands.get(i))
                     .cloned()
-                    .unwrap_or_else(|| Command::Cargo { 
-                        command: app.palette.input.value().to_string()
+                    .unwrap_or_else(|| Command::Cargo {
+                        command: app.palette.input.value().to_string(),
                     });
                 Some(Action::ExecuteCommand(command))
             }
@@ -54,7 +57,10 @@ impl Component for CommandPalette {
             KeyCode::Up | KeyCode::Char('k') => Some(Action::PaletteSelectPrevious),
             _ => {
                 let mut input = app.palette.input.clone();
-                if input.handle_event(&crossterm::event::Event::Key(key.into())).is_some() {
+                if input
+                    .handle_event(&crossterm::event::Event::Key(key.into()))
+                    .is_some()
+                {
                     Some(Action::UpdatePaletteInput(input.value().to_string()))
                 } else {
                     None
@@ -66,9 +72,9 @@ impl Component for CommandPalette {
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         // Center the palette
         let popup_area = Self::centered_rect(60, 60, area);
-        
+
         f.render_widget(Clear, popup_area);
-        
+
         let chunks = Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
@@ -96,12 +102,15 @@ impl Component for CommandPalette {
             .iter()
             .map(|cmd| {
                 let text = match cmd {
-                    Command::Cargo { command } => {
-                        Line::from(vec![
-                            Span::styled("cargo ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                            Span::styled(command, Style::default().fg(Color::White)),
-                        ])
-                    }
+                    Command::Cargo { command } => Line::from(vec![
+                        Span::styled(
+                            "cargo ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(command, Style::default().fg(Color::White)),
+                    ]),
                     _ => Line::from(format!("{:?}", cmd)),
                 };
                 ListItem::new(text)
@@ -136,7 +145,7 @@ impl Component for CommandPalette {
         } else {
             " Enter: Run on selected projects | Esc: Cancel "
         };
-        
+
         let help = Paragraph::new(selected_info)
             .style(if app.selected_projects.is_empty() {
                 Style::default().fg(Color::Yellow)
@@ -168,5 +177,31 @@ impl CommandPalette {
                 Constraint::Percentage((100 - percent_x) / 2),
             ])
             .split(popup_layout[1])[1]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_palette_state_new() {
+        let state = CommandPaletteState::new();
+        assert!(state.filtered_commands.is_empty());
+        assert_eq!(state.input.value(), "");
+    }
+
+    #[test]
+    fn test_command_palette_state_clone() {
+        let mut state = CommandPaletteState::new();
+        state.filtered_commands.push(Command::Cargo {
+            command: "test".to_string(),
+        });
+
+        let cloned = state.clone();
+        assert_eq!(
+            state.filtered_commands.len(),
+            cloned.filtered_commands.len()
+        );
     }
 }
