@@ -1,7 +1,38 @@
 [package]
 name = "carwash"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+authors = ["Nicholas Paterno <nick@epistates.com>"]
+description = "A beautiful TUI for managing multiple Rust projects with workspace support, dependency management, and parallel command execution"
+readme = "README.md"
+homepage = "https://github.com/yourusername/carwash"
+repository = "https://github.com/yourusername/carwash"
+license = "MIT"
+keywords = ["cargo", "tui", "workspace", "dependencies", "rust"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85.0"
+
+[[bin]]
+name = "carwash"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3              # Maximum optimization
+lto = "fat"                # Full link-time optimization
+codegen-units = 1          # Better optimization, slower compile
+strip = true               # Strip symbols for smaller binary
+panic = "abort"            # Smaller binary, no stack unwinding
+
+[profile.dev]
+opt-level = 0              # Fast compilation
+debug = true               # Full debug info
+
+[lints.clippy]
+# Allow some pedantic lints that don't affect functionality
+new_without_default = "allow"
+useless_format = "allow"
+too_many_arguments = "allow"
+module_name_repetitions = "allow"
 
 [dependencies]
 cargo-lock = "10.1.0"
