@@ -2,6 +2,9 @@
 
 A TUI (Terminal User Interface) for managing multiple Rust projects with ease. CarWash provides an intuitive interface for running cargo commands across multiple projects simultaneously, managing dependencies, and monitoring build outputs.
 
+[![Crates.io](https://img.shields.io/crates/v/carwash.svg)](https://crates.io/crates/carwash)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 <img src="assets/carwash.png" alt="Carwash" style="width: 100%; max-width: 100%; margin: 20px 0;"/>
 
 ## ✨ Features
@@ -31,9 +34,19 @@ A TUI (Terminal User Interface) for managing multiple Rust projects with ease. C
 
 ## 📦 Installation
 
+### From crates.io (Recommended)
+
+```bash
+cargo install carwash
+```
+
+See the package on [crates.io](https://crates.io/crates/carwash).
+
+### From source
+
 ```bash
 # Clone the repository
-git clone <repository-url> carwash
+git clone https://github.com/epistates/carwash.git
 cd carwash
 
 # Build and install
