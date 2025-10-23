@@ -206,7 +206,7 @@ Contributions are welcome! Areas for improvement:
 
 ## 📝 License
 
-[License information here]
+[MIT](./LICENSE)
 
 ## 🙏 Acknowledgments
 

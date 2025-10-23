@@ -64,4 +64,3 @@ jobs:
       
       - name: Run basic smoke test
         run: cargo run --release -- --help
-
