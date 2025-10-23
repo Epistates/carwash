@@ -24,7 +24,7 @@ pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>, u
                 std::time::Duration::from_secs(30),
                 async {
                     let client_result = AsyncClient::new(
-                        "carwash/0.1.0 (https://github.com/yourusername/carwash)",
+                        "carwash/0.1.0 (https://github.com/epistates/carwash)",
                         std::time::Duration::from_secs(1),
                     );
 
