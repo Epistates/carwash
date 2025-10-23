@@ -151,7 +151,15 @@ impl<'a> AppState<'a> {
 pub fn reducer(state: &mut AppState, action: Action) {
     match action {
         Action::Quit => state.should_quit = true,
-        Action::EnterNormalMode => state.mode = Mode::Normal,
+        Action::EnterNormalMode => {
+            // Clear updater state when leaving update wizard
+            if state.mode == Mode::UpdateWizard {
+                state.updater.outdated_dependencies.clear();
+                state.updater.selected_dependencies.clear();
+                state.updater.list_state.select(None);
+            }
+            state.mode = Mode::Normal;
+        }
         Action::ShowHelp => state.mode = Mode::Help,
         Action::FinishProjectScan(projects) => {
             state.all_projects = projects.clone();
@@ -298,6 +306,11 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.palette.list_state.select(Some(i));
         }
         Action::StartUpdateWizard => {
+            // Clear any stale updater state from previous wizard sessions
+            state.updater.outdated_dependencies.clear();
+            state.updater.selected_dependencies.clear();
+            state.updater.list_state.select(None);
+            
             state.is_checking_updates = true;
             state.mode = Mode::UpdateWizard;
         }
