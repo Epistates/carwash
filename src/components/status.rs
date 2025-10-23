@@ -1,12 +1,12 @@
 use crate::app::AppState;
-use crate::events::{Action, Mode};
 use crate::components::Component;
+use crate::events::{Action, Mode};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 pub struct StatusBar {}
@@ -18,7 +18,11 @@ impl StatusBar {
 }
 
 impl Component for StatusBar {
-    fn handle_key_events(&mut self, _key: crossterm::event::KeyCode, _app: &mut AppState) -> Option<Action> {
+    fn handle_key_events(
+        &mut self,
+        _key: crossterm::event::KeyCode,
+        _app: &mut AppState,
+    ) -> Option<Action> {
         None
     }
 
@@ -32,17 +36,33 @@ impl Component for StatusBar {
                     "':' command | 'u' updates | ←→/hl collapse/expand | '?' help | 'q' quit"
                 };
                 ("NORMAL", Color::Green, hint)
-            },
-            Mode::CommandPalette => ("COMMAND", Color::Cyan, "Type to filter | ↑↓ select | Enter run | Esc cancel"),
-            Mode::UpdateWizard => ("UPDATE", Color::Magenta, "Space select | ↑↓ navigate | Enter update | Esc cancel"),
+            }
+            Mode::CommandPalette => (
+                "COMMAND",
+                Color::Cyan,
+                "Type to filter | ↑↓ select | Enter run | Esc cancel",
+            ),
+            Mode::UpdateWizard => (
+                "UPDATE",
+                Color::Magenta,
+                "Space select | ↑↓ navigate | Enter update | Esc cancel",
+            ),
             Mode::TextInput => ("INPUT", Color::Blue, "Enter confirm | Esc cancel"),
             Mode::Help => ("HELP", Color::Yellow, "Esc or 'q' to close"),
         };
 
         let status_line = if app.is_checking_updates {
             Line::from(vec![
-                Span::styled(" ⟳ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled("Checking for updates... ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    " ⟳ ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Checking for updates... ",
+                    Style::default().fg(Color::Yellow),
+                ),
             ])
         } else {
             let mode_span = Span::styled(
@@ -53,19 +73,21 @@ impl Component for StatusBar {
                     .add_modifier(Modifier::BOLD),
             );
 
-            let selected_info = if app.selected_projects.len() > 0 {
+            let selected_info = if !app.selected_projects.is_empty() {
                 Span::styled(
                     format!(" {} selected ", app.selected_projects.len()),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(" ", Style::default())
             };
 
-            let tabs_info = if app.tabs.len() > 0 {
+            let tabs_info = if !app.tabs.is_empty() {
                 let running = app.tabs.iter().filter(|t| !t.is_finished).count();
                 let finished = app.tabs.len() - running;
-                
+
                 if running > 0 {
                     Span::styled(
                         format!(" ⚙ {}/{} running ", running, app.tabs.len()),
@@ -96,9 +118,9 @@ impl Component for StatusBar {
             ])
         };
 
-        let status_bar = Paragraph::new(status_line)
-            .style(Style::default().bg(Color::Rgb(30, 30, 30)));
-        
+        let status_bar =
+            Paragraph::new(status_line).style(Style::default().bg(Color::Rgb(30, 30, 30)));
+
         f.render_widget(status_bar, area);
     }
 }
