@@ -12,6 +12,10 @@ keywords = ["cargo", "tui", "workspace", "dependencies", "rust"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.85.0"
 
+[lib]
+name = "carwash"
+path = "src/lib.rs"
+
 [[bin]]
 name = "carwash"
 path = "src/main.rs"
