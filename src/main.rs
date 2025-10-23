@@ -179,7 +179,6 @@ async fn run_app<B: Backend>(
                                 KeyCode::Char('?') => Some(Action::ShowHelp),
                                 KeyCode::Char(':') => Some(Action::ShowCommandPalette),
                                 KeyCode::Char('u') => Some(Action::StartUpdateWizard),
-                                KeyCode::Char('e') => Some(Action::ToggleShowEmptyProjects),
                                 _ => {
                                     let mut project_list = ProjectList::new();
                                     project_list.handle_key_events(key.code, state)
@@ -250,23 +249,21 @@ async fn run_app<B: Backend>(
                             let update_cmd = format!("update -p {}", selected_deps.join(" -p "));
                             let action_tx_clone = action_tx.clone();
                             
-                            // Ensure the current project is marked as selected for the update command
+                            // Run update only on the currently highlighted project
+                            // (the one whose dependencies are shown in the update wizard)
                             if let Some(project) = state.get_selected_project() {
                                 let project_name = project.name.clone();
-                                let was_selected = state.selected_projects.contains(&project_name);
                                 
-                                // Temporarily add to selected if not already there
-                                if !was_selected {
-                                    state.selected_projects.insert(project_name.clone());
-                                }
+                                // Temporarily clear selected projects and set only the current one
+                                let previous_selection = state.selected_projects.clone();
+                                state.selected_projects.clear();
+                                state.selected_projects.insert(project_name);
                                 
                                 // Run the update command
                                 run_command(&update_cmd, state, action_tx_clone, false).await;
                                 
-                                // Restore selection state
-                                if !was_selected {
-                                    state.selected_projects.remove(&project_name);
-                                }
+                                // Restore previous selection state
+                                state.selected_projects = previous_selection;
                                 
                                 // Clear the update wizard state and return to normal mode
                                 state.updater.selected_dependencies.clear();
