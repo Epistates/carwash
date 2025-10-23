@@ -1,6 +1,6 @@
 use cargo_lock::{Lockfile, Package as LockPackage};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -58,6 +58,24 @@ impl Project {
         let package = toml.package.as_ref()?;
         let project_path = path.parent()?.to_path_buf();
         
+        // Collect dependency names from this crate's Cargo.toml
+        let mut declared_deps: HashSet<String> = HashSet::new();
+        
+        // Add regular dependencies
+        for dep_name in toml.dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        
+        // Add dev-dependencies
+        for dep_name in toml.dev_dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        
+        // Add build-dependencies
+        for dep_name in toml.build_dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        
         // For workspace members, try to load Cargo.lock from workspace root first
         let lockfile_path = if let Some(ref ws_root) = workspace_root {
             let ws_lockfile = ws_root.join("Cargo.lock");
@@ -72,6 +90,8 @@ impl Project {
         
         let dependencies = if let Ok(lockfile) = Lockfile::load(&lockfile_path) {
             lockfile.packages.iter()
+                // Filter to only dependencies declared in this crate's Cargo.toml
+                .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
                 .map(Dependency::from)
                 .collect()
         } else {
@@ -97,6 +117,12 @@ impl Project {
 pub struct CargoToml {
     pub package: Option<Package>,
     pub workspace: Option<Workspace>,
+    #[serde(default)]
+    pub dependencies: HashMap<String, toml::Value>,
+    #[serde(default, rename = "dev-dependencies")]
+    pub dev_dependencies: HashMap<String, toml::Value>,
+    #[serde(default, rename = "build-dependencies")]
+    pub build_dependencies: HashMap<String, toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
