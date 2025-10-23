@@ -1,7 +1,7 @@
-use crate::events::Action;
 use crate::app::AppState;
+use crate::events::Action;
 use crossterm::event::KeyCode;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 pub mod dependencies;
 pub mod help;

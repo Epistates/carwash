@@ -1,14 +1,14 @@
 use crate::app::AppState;
 use crate::components::{
-    dependencies::DependenciesPane, help::Help, output::TabbedOutputPane, palette::CommandPalette,
-    projects::ProjectList, status::StatusBar, text_input::TextInput, updater::UpdateWizard,
-    Component,
+    Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
+    palette::CommandPalette, projects::ProjectList, status::StatusBar, text_input::TextInput,
+    updater::UpdateWizard,
 };
 use crate::events::Mode;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Alignment},
-    widgets::{Block, Borders, Paragraph},
     Frame,
+    layout::{Alignment, Constraint, Direction, Layout},
+    widgets::{Block, Borders, Paragraph},
 };
 
 pub fn ui(f: &mut Frame, app: &mut AppState) {

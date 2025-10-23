@@ -1,13 +1,13 @@
 use crate::app::AppState;
-use crate::events::Action;
 use crate::components::Component;
+use crate::events::Action;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
-use tui_input::{backend::crossterm::EventHandler, Input};
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 #[derive(Debug, Clone)]
 pub struct TextInputState {
@@ -42,7 +42,10 @@ impl Component for TextInput {
             }
             _ => {
                 let mut input = app.text_input.input.clone();
-                if input.handle_event(&crossterm::event::Event::Key(key.into())).is_some() {
+                if input
+                    .handle_event(&crossterm::event::Event::Key(key.into()))
+                    .is_some()
+                {
                     Some(Action::UpdateTextInput(input.value().to_string()))
                 } else {
                     None
@@ -53,7 +56,9 @@ impl Component for TextInput {
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         f.render_widget(Clear, area);
-        let block = Block::default().title(app.text_input.title.as_str()).borders(Borders::ALL);
+        let block = Block::default()
+            .title(app.text_input.title.as_str())
+            .borders(Borders::ALL);
         let para = Paragraph::new(app.text_input.input.value()).block(block);
         f.render_widget(para, area);
     }

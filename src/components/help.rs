@@ -1,13 +1,13 @@
 use crate::app::AppState;
-use crate::events::Action;
 use crate::components::Component;
+use crate::events::Action;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 pub struct Help {}
@@ -28,7 +28,7 @@ impl Component for Help {
 
     fn draw(&mut self, f: &mut Frame, _app: &mut AppState, area: Rect) {
         let popup_area = Self::centered_rect(80, 85, area);
-        
+
         f.render_widget(Clear, popup_area);
 
         let chunks = Layout::default()
@@ -45,14 +45,21 @@ impl Component for Help {
             .title(" CarWash - Rust Project Manager ")
             .title_alignment(Alignment::Center)
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            .border_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
         f.render_widget(title, chunks[0]);
 
         // Help content
         let help_lines = vec![
-            Line::from(vec![
-                Span::styled("Navigation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Navigation",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  ↑↓ / j k     ", Style::default().fg(Color::Cyan)),
@@ -71,9 +78,12 @@ impl Component for Help {
                 Span::raw("Scroll output"),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Commands", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Commands",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  :             ", Style::default().fg(Color::Cyan)),
@@ -96,9 +106,12 @@ impl Component for Help {
                 Span::raw("Force quit"),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Command Palette", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Command Palette",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Type          ", Style::default().fg(Color::Cyan)),
@@ -117,9 +130,12 @@ impl Component for Help {
                 Span::raw("Cancel"),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Common Commands", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Common Commands",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  test          ", Style::default().fg(Color::Green)),
@@ -146,12 +162,17 @@ impl Component for Help {
                 Span::raw("Format code"),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Tips", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Tips",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from("  • Select multiple projects with Space, then run commands on all"),
-            Line::from("  • Output is color-coded: errors (red), warnings (yellow), success (green)"),
+            Line::from(
+                "  • Output is color-coded: errors (red), warnings (yellow), success (green)",
+            ),
             Line::from("  • Commands run in parallel across selected projects"),
             Line::from("  • Press 'u' on selected project to check for outdated dependencies"),
         ];
@@ -160,14 +181,18 @@ impl Component for Help {
             .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
             .wrap(Wrap { trim: false })
             .scroll((0, 0));
-        
+
         f.render_widget(help_para, chunks[1]);
 
         // Footer
         let footer = Paragraph::new(" Press ? or Esc to close ")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            );
         f.render_widget(footer, chunks[2]);
     }
 }

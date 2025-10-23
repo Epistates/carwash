@@ -3,11 +3,13 @@ use crate::components::Component;
 use crate::events::Action;
 use crossterm::event::KeyCode;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap},
-    Frame,
+    widgets::{
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
+    },
 };
 
 pub struct TabbedOutputPane {
@@ -25,11 +27,7 @@ impl TabbedOutputPane {
 }
 
 impl Component for TabbedOutputPane {
-    fn handle_key_events(
-        &mut self,
-        key: KeyCode,
-        app: &mut AppState,
-    ) -> Option<Action> {
+    fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action> {
         match key {
             KeyCode::Left => {
                 if app.active_tab > 0 {
@@ -88,7 +86,7 @@ impl Component for TabbedOutputPane {
                     } else {
                         Style::default().fg(Color::Cyan)
                     };
-                    
+
                     let prefix = if t.is_finished { "✓ " } else { "⚙ " };
                     Span::styled(format!("{}{}", prefix, t.title), style)
                 })
@@ -105,20 +103,18 @@ impl Component for TabbedOutputPane {
                 );
             f.render_widget(tabs, chunks[0]);
         } else {
-            let empty_block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Output ");
+            let empty_block = Block::default().borders(Borders::ALL).title(" Output ");
             f.render_widget(empty_block, chunks[0]);
         }
 
         // Render active tab content
         if let Some(active_tab) = app.tabs.get(app.active_tab) {
             let content_height = (chunks[1].height.saturating_sub(2)) as usize;
-            
+
             // Update scroll bounds
             let max_scroll = active_tab.buffer.len().saturating_sub(content_height);
             self.scroll = self.scroll.min(max_scroll);
-            
+
             let visible_content: Vec<Line> = active_tab
                 .buffer
                 .iter()
@@ -126,9 +122,15 @@ impl Component for TabbedOutputPane {
                 .take(content_height)
                 .map(|line| {
                     // Colorize output based on content
-                    let style = if line.contains("error") || line.contains("Error") || line.contains("ERROR") {
+                    let style = if line.contains("error")
+                        || line.contains("Error")
+                        || line.contains("ERROR")
+                    {
                         Style::default().fg(Color::Red)
-                    } else if line.contains("warning") || line.contains("Warning") || line.contains("WARN") {
+                    } else if line.contains("warning")
+                        || line.contains("Warning")
+                        || line.contains("WARN")
+                    {
                         Style::default().fg(Color::Yellow)
                     } else if line.contains("Finished") || line.contains("success") {
                         Style::default().fg(Color::Green)
@@ -142,13 +144,17 @@ impl Component for TabbedOutputPane {
                 .collect();
 
             let status_info = if active_tab.is_finished {
-                format!(" [Finished] Line {}/{} ", 
-                    self.scroll + 1, 
-                    active_tab.buffer.len().max(1))
+                format!(
+                    " [Finished] Line {}/{} ",
+                    self.scroll + 1,
+                    active_tab.buffer.len().max(1)
+                )
             } else {
-                format!(" [Running...] Line {}/{} ", 
-                    self.scroll + 1, 
-                    active_tab.buffer.len().max(1))
+                format!(
+                    " [Running...] Line {}/{} ",
+                    self.scroll + 1,
+                    active_tab.buffer.len().max(1)
+                )
             };
 
             let output_para = Paragraph::new(visible_content)
@@ -172,7 +178,8 @@ impl Component for TabbedOutputPane {
                     .begin_symbol(Some("↑"))
                     .end_symbol(Some("↓"));
 
-                let mut scrollbar_state = self.scroll_state
+                let mut scrollbar_state = self
+                    .scroll_state
                     .content_length(active_tab.buffer.len())
                     .viewport_content_length(content_height)
                     .position(self.scroll);
@@ -187,9 +194,11 @@ impl Component for TabbedOutputPane {
                 f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
             }
         } else {
-            let empty_para = Paragraph::new("No commands running.\n\nPress ':' to open command palette and run cargo commands.")
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default().fg(Color::DarkGray));
+            let empty_para = Paragraph::new(
+                "No commands running.\n\nPress ':' to open command palette and run cargo commands.",
+            )
+            .block(Block::default().borders(Borders::ALL))
+            .style(Style::default().fg(Color::DarkGray));
             f.render_widget(empty_para, chunks[1]);
         }
     }
