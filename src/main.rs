@@ -117,14 +117,9 @@ async fn run_app<B: Backend>(
                     .send(Action::FinishProjectScan(projects.clone()))
                     .await;
 
-                // Queue all projects for background update checking (non-priority)
-                for project in projects {
-                    if !project.dependencies.is_empty() {
-                        let _ = action_tx_clone
-                            .send(Action::QueueBackgroundUpdate(project.name))
-                            .await;
-                    }
-                }
+                // Don't automatically queue all projects for background update checking on startup
+                // This was causing the UI to freeze due to network request flooding
+                // Users can manually check for updates with 'u' key if needed
             }
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - send empty list and continue
