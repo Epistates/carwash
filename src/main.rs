@@ -217,7 +217,8 @@ async fn run_app<B: Backend>(
                         Action::ExecuteCommand(_)
                             | Action::StartUpdateWizard
                             | Action::RunUpdate
-                            | Action::ProcessBackgroundUpdateQueue => {
+                            | Action::ProcessBackgroundUpdateQueue
+                            | Action::UpdateDependencies(_) => {
                             // Send through channel for async handling
                             let _ = action_tx.send(action).await;
                         }
