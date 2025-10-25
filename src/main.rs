@@ -27,13 +27,6 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    // Check if we have a TTY
-    if !crossterm::tty::IsTty::is_tty(&io::stdin()) {
-        eprintln!("Error: CarWash requires an interactive terminal (TTY).");
-        eprintln!("Please run directly in a terminal, not through pipes or redirects.");
-        std::process::exit(1);
-    }
-
     // Set up panic handler to ensure clean terminal restoration
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -43,6 +36,14 @@ async fn main() -> io::Result<()> {
     }));
 
     let args = Args::parse();
+
+    // Check if we have a TTY (after argument parsing so --help works)
+    if !crossterm::tty::IsTty::is_tty(&io::stdin()) {
+        eprintln!("Error: CarWash requires an interactive terminal (TTY).");
+        eprintln!("Please run directly in a terminal, not through pipes or redirects.");
+        std::process::exit(1);
+    }
+
     let target_directory = args.target_directory.clone();
 
     // Initialize terminal
