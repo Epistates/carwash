@@ -84,6 +84,8 @@ pub struct Project {
     pub workspace_root: Option<PathBuf>,
     /// If part of a workspace, the name of the workspace
     pub workspace_name: Option<String>,
+    /// Hash of Cargo.lock file for cache invalidation
+    pub cargo_lock_hash: Option<u64>,
 }
 
 impl Project {
@@ -149,6 +151,7 @@ impl Project {
             dependencies,
             workspace_root,
             workspace_name,
+            cargo_lock_hash: None, // No hash available here, will be calculated later
         })
     }
 }

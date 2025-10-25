@@ -468,6 +468,7 @@ mod tests {
             dependencies: vec![],
             workspace_root: None,
             workspace_name: None,
+            cargo_lock_hash: None,
         }
     }
 

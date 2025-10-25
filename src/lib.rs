@@ -36,6 +36,7 @@
 //! # Modules
 //!
 //! - [`app`] - Application state management
+//! - [`cache`] - Cache management for project data
 //! - [`components`] - UI components (palette, text input, help, etc.)
 //! - [`events`] - Event handling and command processing
 //! - [`project`] - Project structure and dependency management
@@ -43,6 +44,7 @@
 //! - [`ui`] - Terminal UI rendering
 
 pub mod app;
+pub mod cache;
 pub mod components;
 pub mod events;
 pub mod project;
