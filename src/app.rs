@@ -415,7 +415,7 @@ mod tests {
     fn create_test_project(name: &str) -> Project {
         Project {
             name: name.to_string(),
-            path: PathBuf::from("/test"),
+            path: PathBuf::from("test"),
             status: ProjectStatus::Pending,
             version: "0.1.0".to_string(),
             authors: vec![],
