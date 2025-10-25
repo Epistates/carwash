@@ -1,5 +1,6 @@
 use carwash::Args;
 use carwash::app::{AppState, reducer};
+use carwash::cache::UpdateCache;
 use carwash::components::{
     Component, help::Help, palette::CommandPalette, projects::ProjectList, text_input::TextInput,
     updater::UpdateWizard,
@@ -92,6 +93,36 @@ async fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Save current dependency check progress to persistent cache
+fn save_cache_progress(state: &AppState) {
+    use std::collections::HashMap;
+
+    let cache = UpdateCache::new();
+
+    for project in &state.projects {
+        // Compute Cargo.lock hash if it exists
+        let lock_path = project.path.join("Cargo.lock");
+        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
+            // Build cache data from current dependencies
+            let mut cached_deps = HashMap::new();
+            for dep in &project.dependencies {
+                if let Some(latest_version) = &dep.latest_version {
+                    cached_deps.insert(
+                        dep.name.clone(),
+                        carwash::cache::CachedDependency {
+                            latest_version: Some(latest_version.clone()),
+                            cached_at: std::time::SystemTime::now(),
+                        },
+                    );
+                }
+            }
+
+            // Save to cache
+            let _ = cache.save(&project.path, lock_hash, cached_deps);
+        }
+    }
 }
 
 async fn run_app<B: Backend>(
@@ -224,7 +255,11 @@ async fn run_app<B: Backend>(
                         }
                         _ => {
                             // Handle synchronously through reducer
-                            reducer(state, action);
+                            reducer(state, action.clone());
+                            // Save progress if quitting
+                            if matches!(action, Action::Quit) {
+                                save_cache_progress(state);
+                            }
                         }
                     }
                 }
@@ -273,17 +308,28 @@ async fn run_app<B: Backend>(
                                 tokio::spawn(async move {
                                     check_single_project_for_updates(deps, action_tx_clone, false).await;
 
-                                    // After check completes, queue up next task
+                                    // After check completes, request to process next task
                                     let _ = action_tx_clone_2.send(Action::ProcessBackgroundUpdateQueue).await;
                                 });
                             } else {
+                                // Project not found, mark as complete so queue can continue
                                 state.update_queue.task_completed();
+                                // Try to process the next task immediately
+                                let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
                             }
                         }
                     }
                     Action::QueueBackgroundUpdate(_project_name) => {
                         // Add to queue and start processing
                         reducer(state, action);
+                        let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
+                    }
+                    Action::UpdateDependencies(_) => {
+                        // Mark the background update task as complete
+                        state.update_queue.task_completed();
+                        // Process the update results
+                        reducer(state, action);
+                        // Continue processing the queue
                         let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
                     }
                     Action::RunUpdate => {
