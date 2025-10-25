@@ -214,7 +214,10 @@ async fn run_app<B: Backend>(
                 if let Some(action) = action {
                     // Some actions need to be sent through the action channel for async processing
                     match &action {
-                        Action::ExecuteCommand(_) | Action::StartUpdateWizard | Action::RunUpdate => {
+                        Action::ExecuteCommand(_)
+                            | Action::StartUpdateWizard
+                            | Action::RunUpdate
+                            | Action::ProcessBackgroundUpdateQueue => {
                             // Send through channel for async handling
                             let _ = action_tx.send(action).await;
                         }
