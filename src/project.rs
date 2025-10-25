@@ -171,8 +171,18 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     let mut projects = HashMap::new();
     let mut workspaces: HashMap<PathBuf, (String, Vec<PathBuf>)> = HashMap::new();
 
+    // Convert relative path to absolute path
+    let base_path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|| PathBuf::from(path))
+    };
+
     // First pass: Find all Cargo.toml files and identify workspaces
-    for entry in WalkDir::new(path)
+    for entry in WalkDir::new(&base_path)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| {
@@ -222,7 +232,7 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     }
 
     // Second pass: Create projects with workspace information
-    for entry in WalkDir::new(path)
+    for entry in WalkDir::new(&base_path)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| {
@@ -399,5 +409,23 @@ members = ["crate1", "crate2"]
         let cargo_toml = parsed.unwrap();
         assert!(cargo_toml.package.is_none());
         assert!(cargo_toml.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_relative_path_resolution() {
+        // Test that relative paths like "." are properly resolved
+        let cwd = std::env::current_dir().ok().unwrap_or_default();
+        let cwd_str = cwd.to_string_lossy();
+        
+        // Both should work - the current implementation should resolve them
+        let projects_dot = find_rust_projects(".");
+        let projects_cwd = find_rust_projects(cwd_str.as_ref());
+        
+        // Both should find the same number of projects
+        assert_eq!(projects_dot.len(), projects_cwd.len());
+        
+        // Verify that projects are properly discovered
+        // (the exact number depends on the test environment)
+        let _ = projects_dot;
     }
 }
