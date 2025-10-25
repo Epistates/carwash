@@ -359,17 +359,19 @@ pub fn reducer(state: &mut AppState, action: Action) {
             state.is_checking_updates = true;
         }
         Action::UpdateDependencies(deps) => {
-            // Only process if we're still in UpdateWizard mode (not cancelled)
-            if state.mode == Mode::UpdateWizard {
-                if let Some(selected_project_name) =
-                    state.get_selected_project().map(|p| p.name.clone())
+            // Always update the project's dependencies (for background updates)
+            if let Some(selected_project_name) =
+                state.get_selected_project().map(|p| p.name.clone())
+            {
+                if let Some(proj) = state
+                    .projects
+                    .iter_mut()
+                    .find(|p| p.name == selected_project_name)
                 {
-                    if let Some(proj) = state
-                        .projects
-                        .iter_mut()
-                        .find(|p| p.name == selected_project_name)
-                    {
-                        proj.dependencies = deps.clone();
+                    proj.dependencies = deps.clone();
+
+                    // If in UpdateWizard mode, also populate the outdated dependencies list
+                    if state.mode == Mode::UpdateWizard {
                         state.updater.outdated_dependencies = deps
                             .into_iter()
                             .filter(|d| {
@@ -381,11 +383,10 @@ pub fn reducer(state: &mut AppState, action: Action) {
                         if !state.updater.outdated_dependencies.is_empty() {
                             state.updater.list_state.select(Some(0));
                         }
+                        state.is_checking_updates = false;
                     }
                 }
-                state.is_checking_updates = false;
             }
-            // If mode changed (cancelled), ignore the update results
         }
         Action::CreateTab(title) => {
             state.tabs.push(Tab {
