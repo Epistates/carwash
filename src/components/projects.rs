@@ -16,6 +16,46 @@ impl ProjectList {
     pub fn new() -> Self {
         Self {}
     }
+
+    /// Get status indicator and color for a project based on its dependencies
+    fn get_project_status(p: &crate::project::Project) -> (&'static str, Style) {
+        use crate::project::DependencyCheckStatus;
+
+        // Check if any dependency is currently being checked
+        if p.dependencies
+            .iter()
+            .any(|d| d.check_status == DependencyCheckStatus::Checking)
+        {
+            return ("⟳", Style::default().fg(Color::Cyan));
+        }
+
+        // Check if any dependencies are outdated
+        let has_outdated = p.dependencies.iter().any(|d| {
+            d.latest_version.is_some() && d.latest_version.as_ref().unwrap() != &d.current_version
+        });
+
+        if has_outdated {
+            return (
+                "⚠",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+
+        // Check if all have been checked
+        let all_checked = p
+            .dependencies
+            .iter()
+            .all(|d| d.check_status == DependencyCheckStatus::Checked);
+
+        if all_checked {
+            return ("✓", Style::default().fg(Color::Green));
+        }
+
+        // Not yet checked
+        ("⋯", Style::default().fg(Color::DarkGray))
+    }
 }
 
 impl Component for ProjectList {
@@ -90,6 +130,7 @@ impl Component for ProjectList {
 
                 let checkbox = if is_selected { "☑" } else { "☐" };
                 let indicator = if is_highlighted { "▶ " } else { "  " };
+                let (status_icon, status_style) = Self::get_project_status(p);
 
                 let name_style = if is_selected {
                     Style::default()
@@ -114,6 +155,8 @@ impl Component for ProjectList {
                     Span::raw(indicator),
                     Span::styled(checkbox, checkbox_style),
                     Span::raw(" "),
+                    Span::styled(status_icon, status_style),
+                    Span::raw(" "),
                     Span::styled(&p.name, name_style),
                     Span::styled(
                         format!(" (v{})", p.version),
@@ -131,6 +174,7 @@ impl Component for ProjectList {
 
                 let checkbox = if is_selected { "☑" } else { "☐" };
                 let indicator = if is_highlighted { "▶ " } else { "  " };
+                let (status_icon, status_style) = Self::get_project_status(p);
 
                 let name_style = if is_selected {
                     Style::default()
@@ -153,6 +197,8 @@ impl Component for ProjectList {
                 let line = Line::from(vec![
                     Span::raw(indicator),
                     Span::styled(checkbox, checkbox_style),
+                    Span::raw(" "),
+                    Span::styled(status_icon, status_style),
                     Span::raw(" "),
                     Span::styled(&p.name, name_style),
                     Span::styled(
