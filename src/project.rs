@@ -1,3 +1,8 @@
+//! Project structure and dependency management
+//!
+//! This module defines the core types for managing Rust projects and their dependencies.
+//! It handles project discovery, metadata parsing, and dependency tracking.
+
 use cargo_lock::{Lockfile, Package as LockPackage};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -5,27 +10,42 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+/// Status of a project's command execution
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectStatus {
+    /// Pending execution
     Pending,
+    /// Currently running
     Running,
+    /// Successfully completed
     Success,
+    /// Failed execution
     Failed,
 }
 
+/// Status of dependency update checking
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyCheckStatus {
+    /// Dependencies have not been checked yet
     NotChecked,
+    /// Currently checking for updates
     Checking,
+    /// Dependencies have been checked
     Checked,
 }
 
+/// Represents a single dependency with version information
 #[derive(Debug, Clone)]
 pub struct Dependency {
+    /// Name of the dependency
     pub name: String,
+    /// Currently installed version
     pub current_version: String,
+    /// Latest available version, if checked
     pub latest_version: Option<String>,
+    /// Current status of update checking
     pub check_status: DependencyCheckStatus,
+    /// Timestamp of the last check
     pub last_checked: Option<std::time::SystemTime>,
 }
 
@@ -41,15 +61,28 @@ impl From<&LockPackage> for Dependency {
     }
 }
 
+/// Represents a Rust project with metadata and dependencies
+///
+/// A project is identified by its `Cargo.toml` file and contains metadata about the project
+/// such as name, version, authors, and all dependencies. Projects can be standalone or part
+/// of a workspace.
 #[derive(Debug, Clone)]
 pub struct Project {
+    /// The name of the project from Cargo.toml
     pub name: String,
+    /// The path to the project's root directory
     pub path: PathBuf,
+    /// Current status of command execution
     pub status: ProjectStatus,
+    /// Version of the project
     pub version: String,
+    /// List of project authors
     pub authors: Vec<String>,
+    /// All dependencies of the project
     pub dependencies: Vec<Dependency>,
+    /// If part of a workspace, the path to the workspace root
     pub workspace_root: Option<PathBuf>,
+    /// If part of a workspace, the name of the workspace
     pub workspace_name: Option<String>,
 }
 

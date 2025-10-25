@@ -1,0 +1,2 @@
+[doc]
+rustdoc-args = ["-D", "warnings"]

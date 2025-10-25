@@ -1,3 +1,8 @@
+//! Application state management
+//!
+//! This module defines the core application state and UI structure for CarWash.
+//! It manages the project tree, command history, tabs, and various UI modes.
+
 use crate::components::{
     palette::CommandPaletteState, text_input::TextInputState, updater::UpdateWizardState,
 };
@@ -9,31 +14,55 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
+/// Represents the complete state of the CarWash application
+///
+/// This struct maintains all mutable state including the project list, UI selections,
+/// command history, and various input states for different UI modes.
 #[derive(Debug)]
 pub struct AppState<'a> {
+    /// Whether the application should quit
     pub should_quit: bool,
+    /// Whether the application is currently scanning for projects
     pub is_scanning: bool,
+    /// Whether the application is checking for updates
     pub is_checking_updates: bool,
+    /// Current application mode
     pub mode: Mode,
+    /// State of the project tree view
     pub tree_state: ListState,
+    /// Filtered list of projects currently displayed
     pub projects: Vec<Project>,
+    /// Complete list of all discovered projects
     pub all_projects: Vec<Project>,
-    pub collapsed_workspaces: HashSet<String>, // Track which workspaces are collapsed
+    /// Set of workspace names that are collapsed in the tree view
+    pub collapsed_workspaces: HashSet<String>,
+    /// Set of selected project paths
     pub selected_projects: HashSet<String>,
+    /// Tab panes for command output
     pub tabs: Vec<Tab>,
+    /// Index of the currently active tab
     pub active_tab: usize,
+    /// History of executed commands
     pub command_history: Vec<String>,
+    /// State of the command palette
     pub palette: CommandPaletteState,
+    /// State of the update wizard
     pub updater: UpdateWizardState,
+    /// State of text input fields
     pub text_input: TextInputState,
+    /// Queue of pending update checks
     pub update_queue: UpdateQueue,
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
+/// Represents a tab pane for displaying command output
 #[derive(Debug, Clone)]
 pub struct Tab {
+    /// Title/name of the tab
     pub title: String,
+    /// Buffer of output lines
     pub buffer: Vec<String>,
+    /// Whether the command execution has finished
     pub is_finished: bool,
 }
 

@@ -7,6 +7,7 @@ description = "A beautiful TUI for managing multiple Rust projects with workspac
 readme = "README.md"
 homepage = "https://github.com/epistates/carwash"
 repository = "https://github.com/epistates/carwash"
+documentation = "https://docs.rs/carwash"
 license = "MIT"
 keywords = ["cargo", "tui", "workspace", "dependencies", "rust"]
 categories = ["command-line-utilities", "development-tools"]

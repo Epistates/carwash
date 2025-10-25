@@ -1,3 +1,8 @@
+//! Task execution and update checking
+//!
+//! This module handles the execution of cargo commands and dependency update checking.
+//! It manages a queue of tasks that are executed in parallel with proper concurrency limits.
+
 use crate::app::AppState;
 use crate::events::Action;
 use crate::project::{DependencyCheckStatus, Project};
@@ -13,15 +18,24 @@ use std::collections::VecDeque;
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
 
+/// A task to check for dependency updates on a project
 #[derive(Debug, Clone)]
 pub struct UpdateCheckTask {
+    /// Name of the project to check
     pub project_name: String,
-    pub is_priority: bool, // True if user initiated (pressed 'u')
+    /// Whether this is a priority task (user-initiated)
+    pub is_priority: bool,
 }
 
+/// Queue for managing parallel update check tasks
+///
+/// The queue manages a limited number of concurrent update checks to avoid overwhelming
+/// the crates.io API. Priority tasks (user-initiated) are processed before background tasks.
 #[derive(Debug, Clone)]
 pub struct UpdateQueue {
+    /// Queue of pending tasks
     pub queue: VecDeque<UpdateCheckTask>,
+    /// Number of tasks currently in progress
     pub in_progress: usize,
 }
 
