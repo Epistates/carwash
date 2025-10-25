@@ -6,7 +6,7 @@ use carwash::components::{
 };
 use carwash::events::{Action, Command, Mode};
 use carwash::project::find_rust_projects;
-use carwash::runner::{check_for_updates, run_command};
+use carwash::runner::{check_for_updates, run_command, check_single_project_for_updates, UpdateCheckTask};
 use carwash::ui::ui;
 
 use clap::Parser;
@@ -111,12 +111,17 @@ async fn run_app<B: Backend>(
         match scan_result {
             Ok(Ok(projects)) => {
                 let _ = action_tx_clone
-                    .send(Action::FinishProjectScan(projects))
+                    .send(Action::FinishProjectScan(projects.clone()))
                     .await;
-                // Trigger background update check after scan completes
-                let _ = action_tx_clone
-                    .send(Action::StartBackgroundUpdateCheck)
-                    .await;
+                
+                // Queue all projects for background update checking (non-priority)
+                for project in projects {
+                    if !project.dependencies.is_empty() {
+                        let _ = action_tx_clone
+                            .send(Action::QueueBackgroundUpdate(project.name))
+                            .await;
+                    }
+                }
             }
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - send empty list and continue
@@ -153,32 +158,28 @@ async fn run_app<B: Backend>(
                         }
                     }
                     Mode::Normal => {
-                        // Check for tab navigation first if we have multiple tabs
-                        if state.tabs.len() > 1 {
-                            match key.code {
-                                KeyCode::Left | KeyCode::Char('h') if state.active_tab > 0 => {
-                                    Some(Action::SwitchToTab(state.active_tab - 1))
+                        // Handle normal mode keys without interfering with workspace navigation
+                        match key.code {
+                            KeyCode::Char('q') => Some(Action::Quit),
+                            KeyCode::Char('?') => Some(Action::ShowHelp),
+                            KeyCode::Char(':') => Some(Action::ShowCommandPalette),
+                            KeyCode::Char('u') => {
+                                // Create a priority update check for selected project
+                                if let Some(project) = state.get_selected_project() {
+                                    state.update_queue.add_task(UpdateCheckTask {
+                                        project_name: project.name.clone(),
+                                        is_priority: true,
+                                    });
+                                    Some(Action::ProcessBackgroundUpdateQueue)
+                                } else {
+                                    None
                                 }
-                                KeyCode::Right | KeyCode::Char('l') if state.active_tab < state.tabs.len() - 1 => {
-                                    Some(Action::SwitchToTab(state.active_tab + 1))
-                                }
-                                _ => None,
+                            },
+                            _ => {
+                                let mut project_list = ProjectList::new();
+                                project_list.handle_key_events(key.code, state)
                             }
-                        } else {
-                            None
-                        }.or_else(|| {
-                            // Handle other normal mode keys
-                            match key.code {
-                                KeyCode::Char('q') => Some(Action::Quit),
-                                KeyCode::Char('?') => Some(Action::ShowHelp),
-                                KeyCode::Char(':') => Some(Action::ShowCommandPalette),
-                                KeyCode::Char('u') => Some(Action::StartUpdateWizard),
-                                _ => {
-                                    let mut project_list = ProjectList::new();
-                                    project_list.handle_key_events(key.code, state)
-                                }
-                            }
-                        })
+                        }
                     }
                     Mode::CommandPalette => {
                         let mut palette = CommandPalette::new();
@@ -233,6 +234,42 @@ async fn run_app<B: Backend>(
                         check_for_updates(state, action_tx_clone, true).await; // Use cache for background checks
                         // Don't change mode or state - this happens in the background
                     }
+                    Action::ProcessBackgroundUpdateQueue => {
+                        // Check if there are tasks to process in the queue
+                        if let Some(task) = state.update_queue.get_next_task() {
+                            let action_tx_clone = action_tx.clone();
+                            let project_name = task.project_name.clone();
+                            let is_priority = task.is_priority;
+                            
+                            // Find the project by name and extract dependencies
+                            if let Some(project) = state.projects.iter().find(|p| p.name == project_name) {
+                                let deps = project.dependencies.clone();
+                                
+                                // For priority tasks, show the update wizard
+                                if is_priority {
+                                    state.is_checking_updates = true;
+                                    state.mode = Mode::UpdateWizard;
+                                }
+                                
+                                let action_tx_clone_2 = action_tx_clone.clone();
+                                
+                                // Perform the update check asynchronously
+                                tokio::spawn(async move {
+                                    check_single_project_for_updates(deps, action_tx_clone, false).await;
+                                    
+                                    // After check completes, queue up next task
+                                    let _ = action_tx_clone_2.send(Action::ProcessBackgroundUpdateQueue).await;
+                                });
+                            } else {
+                                state.update_queue.task_completed();
+                            }
+                        }
+                    }
+                    Action::QueueBackgroundUpdate(_project_name) => {
+                        // Add to queue and start processing
+                        reducer(state, action);
+                        let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
+                    }
                     Action::RunUpdate => {
                         // Build the cargo update command for selected dependencies
                         let selected_deps: Vec<String> = state.updater.selected_dependencies.iter().cloned().collect();
@@ -256,9 +293,23 @@ async fn run_app<B: Backend>(
                                 // Restore previous selection state
                                 state.selected_projects = previous_selection;
 
-                                // Clear the update wizard state and return to normal mode
-                                state.updater.selected_dependencies.clear();
-                                state.updater.outdated_dependencies.clear();
+                                // After update completes, re-check this project's dependencies
+                                // to refresh the UI with new versions
+                                let project_for_recheck = state.get_selected_project().cloned();
+                                if let Some(project) = project_for_recheck {
+                                    // Clear the update wizard state first
+                                    state.updater.selected_dependencies.clear();
+                                    state.updater.outdated_dependencies.clear();
+                                    
+                                    // Trigger a background update check to refresh
+                                    let action_tx_clone = action_tx.clone();
+                                    let deps = project.dependencies.clone();
+                                    tokio::spawn(async move {
+                                        // Re-check this project's dependencies
+                                        check_single_project_for_updates(deps, action_tx_clone, false).await; // Don't use cache after update
+                                    });
+                                }
+                                
                                 reducer(state, Action::EnterNormalMode);
                             }
                         }

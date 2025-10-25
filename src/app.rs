@@ -3,6 +3,7 @@ use crate::components::{
 };
 use crate::events::{Action, Command, Mode};
 use crate::project::Project;
+use crate::runner::UpdateQueue;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::widgets::ListState;
@@ -25,6 +26,7 @@ pub struct AppState<'a> {
     pub palette: CommandPaletteState,
     pub updater: UpdateWizardState,
     pub text_input: TextInputState,
+    pub update_queue: UpdateQueue,
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
@@ -53,6 +55,7 @@ impl<'a> Clone for AppState<'a> {
             palette: self.palette.clone(),
             updater: self.updater.clone(),
             text_input: self.text_input.clone(),
+            update_queue: self.update_queue.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -96,6 +99,7 @@ impl<'a> AppState<'a> {
             palette: CommandPaletteState::new(),
             updater: UpdateWizardState::new(),
             text_input: TextInputState::new(),
+            update_queue: UpdateQueue::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -401,6 +405,18 @@ pub fn reducer(state: &mut AppState, action: Action) {
                     }
                 }
             }
+        }
+        Action::ProcessBackgroundUpdateQueue => {
+            // Background update queue processing is handled in main event loop
+        }
+        Action::QueueBackgroundUpdate(project_name) => {
+            // Add project to background update queue
+            state.update_queue.add_task(crate::runner::UpdateCheckTask {
+                project_name,
+                is_priority: false,
+            });
+            // Trigger processing of the queue
+            // This is a bit of a workaround - we'll need to handle this in the main loop
         }
     }
 }

@@ -33,6 +33,8 @@ pub enum Action {
     AddOutput(usize, String),
     FinishCommand(usize),
     SwitchToTab(usize),
+    ProcessBackgroundUpdateQueue,
+    QueueBackgroundUpdate(String),
     Quit,
 }
 

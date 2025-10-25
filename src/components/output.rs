@@ -29,16 +29,24 @@ impl TabbedOutputPane {
 impl Component for TabbedOutputPane {
     fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action> {
         match key {
-            KeyCode::Left => {
-                if app.active_tab > 0 {
-                    Some(Action::SwitchToTab(app.active_tab - 1))
+            KeyCode::Tab => {
+                // Tab: Move to next tab
+                if app.active_tab < app.tabs.len().saturating_sub(1) {
+                    Some(Action::SwitchToTab(app.active_tab + 1))
+                } else if !app.tabs.is_empty() {
+                    // Wrap around to first tab
+                    Some(Action::SwitchToTab(0))
                 } else {
                     None
                 }
             }
-            KeyCode::Right => {
-                if app.active_tab < app.tabs.len().saturating_sub(1) {
-                    Some(Action::SwitchToTab(app.active_tab + 1))
+            KeyCode::BackTab => {
+                // Shift+Tab: Move to previous tab
+                if app.active_tab > 0 {
+                    Some(Action::SwitchToTab(app.active_tab - 1))
+                } else if !app.tabs.is_empty() {
+                    // Wrap around to last tab
+                    Some(Action::SwitchToTab(app.tabs.len() - 1))
                 } else {
                     None
                 }

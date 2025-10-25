@@ -70,8 +70,12 @@ impl Component for Help {
                 Span::raw("Toggle project selection"),
             ]),
             Line::from(vec![
-                Span::styled("  ←→            ", Style::default().fg(Color::Cyan)),
-                Span::raw("Switch between output tabs"),
+                Span::styled("  ←→ / h l     ", Style::default().fg(Color::Cyan)),
+                Span::raw("Collapse/Expand workspaces"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Tab / Sh+Tab ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cycle through output tabs"),
             ]),
             Line::from(vec![
                 Span::styled("  PgUp / PgDown ", Style::default().fg(Color::Cyan)),
