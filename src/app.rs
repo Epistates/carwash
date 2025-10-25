@@ -368,9 +368,13 @@ pub fn reducer(state: &mut AppState, action: Action) {
                     .iter_mut()
                     .find(|p| p.name == selected_project_name)
                 {
-                    proj.dependencies = deps.clone();
+                    // Only update project dependencies if NOT in UpdateWizard mode
+                    // This prevents background updates from changing the list while user reviews
+                    if state.mode != Mode::UpdateWizard {
+                        proj.dependencies = deps.clone();
+                    }
 
-                    // If in UpdateWizard mode, also populate the outdated dependencies list
+                    // If in UpdateWizard mode, populate the outdated dependencies list for display
                     if state.mode == Mode::UpdateWizard {
                         state.updater.outdated_dependencies = deps
                             .into_iter()

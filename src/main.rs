@@ -108,19 +108,25 @@ fn save_cache_progress(state: &AppState) {
             // Build cache data from current dependencies
             let mut cached_deps = HashMap::new();
             for dep in &project.dependencies {
-                if let Some(latest_version) = &dep.latest_version {
-                    cached_deps.insert(
-                        dep.name.clone(),
-                        carwash::cache::CachedDependency {
-                            latest_version: Some(latest_version.clone()),
-                            cached_at: std::time::SystemTime::now(),
-                        },
-                    );
-                }
+                // Save all checked dependencies, not just those with new versions
+                cached_deps.insert(
+                    dep.name.clone(),
+                    carwash::cache::CachedDependency {
+                        latest_version: dep.latest_version.clone(),
+                        cached_at: std::time::SystemTime::now(),
+                    },
+                );
             }
 
-            // Save to cache
-            let _ = cache.save(&project.path, lock_hash, cached_deps);
+            // Save to cache, log any errors
+            match cache.save(&project.path, lock_hash, cached_deps) {
+                Ok(_) => {
+                    eprintln!("✓ Cached {}", project.name);
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to cache {}: {}", project.name, e);
+                }
+            }
         }
     }
 }
