@@ -125,6 +125,30 @@ fn save_cache_progress(state: &AppState) {
     }
 }
 
+/// Load dependency check progress from persistent cache
+fn load_cache_progress(projects: &mut [carwash::project::Project]) {
+    use carwash::project::DependencyCheckStatus;
+    let cache = UpdateCache::new();
+
+    for project in projects {
+        // Compute Cargo.lock hash
+        let lock_path = project.path.join("Cargo.lock");
+        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
+            // Try to load cached data
+            if let Some(cached_deps) = cache.load(&project.path, lock_hash) {
+                // Apply cached data to dependencies
+                for dep in &mut project.dependencies {
+                    if let Some(cached_dep) = cached_deps.get(&dep.name) {
+                        // Update with cached version info
+                        dep.latest_version = cached_dep.latest_version.clone();
+                        dep.check_status = DependencyCheckStatus::Checked;
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut AppState<'_>,
@@ -274,6 +298,12 @@ async fn run_app<B: Backend>(
                             run_command(&command_str, state, action_tx_clone, false).await;
                             reducer(state, Action::EnterNormalMode);
                         }
+                    }
+                    Action::FinishProjectScan(_) => {
+                        // Load cached dependency data for discovered projects
+                        load_cache_progress(&mut state.projects);
+                        // Process the scan result normally
+                        reducer(state, action);
                     }
                     Action::StartUpdateWizard => {
                         let action_tx_clone = action_tx.clone();
