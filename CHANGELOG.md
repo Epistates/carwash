@@ -2,6 +2,17 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.1.1] - 2025-10-25
+
+### 🐛 Bug Fixes
+
+- Fixed relative path resolution for `.` (current directory) argument
+  - `carwash` and `carwash .` now work correctly when run from a directory
+  - Paths are now properly converted to absolute paths before project scanning
+  - Added comprehensive test coverage for relative path handling
+
+---
+
 ## [0.1.0] - 2025-10-21
 
 ### 🎉 Initial Release - World-Class Edition
@@ -131,6 +142,7 @@ All notable changes to CarWash will be documented in this file.
 - [ ] Git integration
 - [ ] Test coverage reporting
 - [ ] Performance profiling view
+
 
 
 
