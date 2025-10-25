@@ -117,9 +117,23 @@ async fn run_app<B: Backend>(
                     .send(Action::FinishProjectScan(projects.clone()))
                     .await;
 
-                // Don't automatically queue all projects for background update checking on startup
-                // This was causing the UI to freeze due to network request flooding
-                // Users can manually check for updates with 'u' key if needed
+                // Queue projects for background update checking with staggered delays
+                // This prevents flooding the event loop with all requests at once
+                for (idx, project) in projects.into_iter().enumerate() {
+                    if !project.dependencies.is_empty() {
+                        let tx = action_tx_clone.clone();
+                        let project_name = project.name.clone();
+
+                        // Stagger the queue operations with increasing delays
+                        // This allows the UI to stay responsive while still queuing updates
+                        let delay = std::time::Duration::from_millis(100 * idx as u64);
+
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            let _ = tx.send(Action::QueueBackgroundUpdate(project_name)).await;
+                        });
+                    }
+                }
             }
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - send empty list and continue
