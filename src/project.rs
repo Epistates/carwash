@@ -449,14 +449,14 @@ members = ["crate1", "crate2"]
         // Test that relative paths like "." are properly resolved
         let cwd = std::env::current_dir().ok().unwrap_or_default();
         let cwd_str = cwd.to_string_lossy();
-        
+
         // Both should work - the current implementation should resolve them
         let projects_dot = find_rust_projects(".");
         let projects_cwd = find_rust_projects(cwd_str.as_ref());
-        
+
         // Both should find the same number of projects
         assert_eq!(projects_dot.len(), projects_cwd.len());
-        
+
         // Verify that projects are properly discovered
         // (the exact number depends on the test environment)
         let _ = projects_dot;

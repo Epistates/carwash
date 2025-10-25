@@ -7,6 +7,7 @@ use crate::app::AppState;
 use crate::events::Action;
 use crate::project::{DependencyCheckStatus, Project};
 use crates_io_api::AsyncClient;
+use std::collections::VecDeque;
 use std::process::Stdio;
 use std::time::SystemTime;
 use tokio::{
@@ -14,7 +15,6 @@ use tokio::{
     process::Command as TokioCommand,
     sync::mpsc,
 };
-use std::collections::VecDeque;
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
 
@@ -92,7 +92,11 @@ pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>, u
     }
 }
 
-pub async fn check_single_project_for_updates(deps: Vec<crate::project::Dependency>, tx: mpsc::Sender<Action>, use_cache: bool) {
+pub async fn check_single_project_for_updates(
+    deps: Vec<crate::project::Dependency>,
+    tx: mpsc::Sender<Action>,
+    use_cache: bool,
+) {
     let tx_clone = tx.clone();
     let cache_duration = std::time::Duration::from_secs(5 * 60); // 5 minutes
 
@@ -145,14 +149,12 @@ pub async fn check_single_project_for_updates(deps: Vec<crate::project::Dependen
                                     Ok(Ok(crate_info)) => {
                                         updated_dep.latest_version =
                                             Some(crate_info.crate_data.max_version);
-                                        updated_dep.check_status =
-                                            DependencyCheckStatus::Checked;
+                                        updated_dep.check_status = DependencyCheckStatus::Checked;
                                         updated_dep.last_checked = Some(SystemTime::now());
                                     }
                                     _ => {
                                         // Timeout or error - mark as checked but no latest version
-                                        updated_dep.check_status =
-                                            DependencyCheckStatus::Checked;
+                                        updated_dep.check_status = DependencyCheckStatus::Checked;
                                         updated_dep.last_checked = Some(SystemTime::now());
                                     }
                                 }

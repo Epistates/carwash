@@ -6,7 +6,9 @@ use carwash::components::{
 };
 use carwash::events::{Action, Command, Mode};
 use carwash::project::find_rust_projects;
-use carwash::runner::{check_for_updates, run_command, check_single_project_for_updates, UpdateCheckTask};
+use carwash::runner::{
+    UpdateCheckTask, check_for_updates, check_single_project_for_updates, run_command,
+};
 use carwash::ui::ui;
 
 use clap::Parser;
@@ -113,7 +115,7 @@ async fn run_app<B: Backend>(
                 let _ = action_tx_clone
                     .send(Action::FinishProjectScan(projects.clone()))
                     .await;
-                
+
                 // Queue all projects for background update checking (non-priority)
                 for project in projects {
                     if !project.dependencies.is_empty() {
@@ -240,23 +242,23 @@ async fn run_app<B: Backend>(
                             let action_tx_clone = action_tx.clone();
                             let project_name = task.project_name.clone();
                             let is_priority = task.is_priority;
-                            
+
                             // Find the project by name and extract dependencies
                             if let Some(project) = state.projects.iter().find(|p| p.name == project_name) {
                                 let deps = project.dependencies.clone();
-                                
+
                                 // For priority tasks, show the update wizard
                                 if is_priority {
                                     state.is_checking_updates = true;
                                     state.mode = Mode::UpdateWizard;
                                 }
-                                
+
                                 let action_tx_clone_2 = action_tx_clone.clone();
-                                
+
                                 // Perform the update check asynchronously
                                 tokio::spawn(async move {
                                     check_single_project_for_updates(deps, action_tx_clone, false).await;
-                                    
+
                                     // After check completes, queue up next task
                                     let _ = action_tx_clone_2.send(Action::ProcessBackgroundUpdateQueue).await;
                                 });
@@ -300,7 +302,7 @@ async fn run_app<B: Backend>(
                                     // Clear the update wizard state first
                                     state.updater.selected_dependencies.clear();
                                     state.updater.outdated_dependencies.clear();
-                                    
+
                                     // Trigger a background update check to refresh
                                     let action_tx_clone = action_tx.clone();
                                     let deps = project.dependencies.clone();
@@ -309,7 +311,7 @@ async fn run_app<B: Backend>(
                                         check_single_project_for_updates(deps, action_tx_clone, false).await; // Don't use cache after update
                                     });
                                 }
-                                
+
                                 reducer(state, Action::EnterNormalMode);
                             }
                         }

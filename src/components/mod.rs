@@ -33,7 +33,7 @@ pub trait Component {
     ///
     /// Returns an [`Action`] if the key triggered an action, or `None` otherwise.
     fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action>;
-    
+
     /// Render this component to the terminal
     ///
     /// # Arguments
