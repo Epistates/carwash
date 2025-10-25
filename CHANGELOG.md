@@ -2,6 +2,51 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.1.2] - 2025-10-25
+
+### ✨ Features
+
+**Background Update System**
+- Automatic background update checking on startup for all projects
+- Non-blocking background checks process up to 5 projects concurrently
+- Background update queue system with parallelization limiting
+
+**Priority Update Queueing**
+- User-initiated update checks (pressing 'u') now jump to the front of the queue
+- Ensures responsive behavior when manually requesting updates
+- Background checks continue processing in parallel
+
+**UI Refresh After Updates**
+- After successful `cargo update`, dependency versions are immediately refreshed
+- UI now displays new versions from crates.io without manual rechecking
+- Fresh cache-busting check performed after each update completes
+
+### 🎮 Navigation Improvements
+
+**Separated Navigation Contexts**
+- **Tab Navigation**: Now uses `Tab` and `Shift+Tab` instead of left/right arrows
+  - `Tab`: Move to next output tab (with wraparound)
+  - `Shift+Tab`: Move to previous output tab (with wraparound)
+- **Workspace Navigation**: Left/right arrows and h/l now dedicated to workspace operations
+  - `←` or `h`: Collapse selected workspace
+  - `→` or `l`: Expand selected workspace
+- Eliminates conflicting dual-purpose keybindings
+- Clearer, more intuitive navigation model
+
+### 🐛 Bug Fixes
+
+- Fixed UI not updating with new dependency versions after successful updates
+- Resolved navigation conflicts between tab switching and workspace collapse/expand
+- Improved queue processing to prevent race conditions in background checks
+
+### 📚 Documentation
+
+- Updated help screen with new `Tab`/`Shift+Tab` tab navigation keys
+- Updated keyboard shortcuts to clarify workspace vs tab navigation
+- Added documentation for background update queue system
+
+---
+
 ## [0.1.1] - 2025-10-25
 
 ### 🐛 Bug Fixes
