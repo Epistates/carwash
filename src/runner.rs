@@ -1,22 +1,25 @@
 //! Task execution and update checking
 //!
 //! This module handles the execution of cargo commands and dependency update checking.
-//! It manages a queue of tasks that are executed in parallel with proper concurrency limits.
+//! It manages a queue of tasks that are executed with proper concurrency limits and caching.
 
 use crate::app::AppState;
+use crate::cache::UpdateCache;
 use crate::events::Action;
-use crate::project::{DependencyCheckStatus, Project};
+use crate::project::{DependencyCheckStatus, Dependency, Project};
 use crates_io_api::AsyncClient;
 use std::collections::VecDeque;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command as TokioCommand,
-    sync::mpsc,
+    sync::{mpsc, Semaphore},
 };
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
+const CACHE_DURATION_SECS: u64 = 5 * 60; // 5 minutes
 
 /// A task to check for dependency updates on a project
 #[derive(Debug, Clone)]
@@ -48,6 +51,21 @@ impl UpdateQueue {
     }
 
     pub fn add_task(&mut self, task: UpdateCheckTask) {
+        // Check if this project is already in the queue
+        let already_queued = self.queue.iter().any(|t| t.project_name == task.project_name);
+        
+        if already_queued {
+            // If it's a priority task and the existing one isn't, upgrade it
+            if task.is_priority {
+                // Remove the existing non-priority task
+                self.queue.retain(|t| t.project_name != task.project_name);
+                // Add the priority version at the front
+                self.queue.push_front(task);
+            }
+            // Otherwise skip (duplicate)
+            return;
+        }
+        
         if task.is_priority {
             // Insert at the front for priority tasks
             self.queue.push_front(task);
@@ -82,113 +100,231 @@ impl UpdateQueue {
     }
 }
 
-pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>, use_cache: bool) {
-    if let Some(project) = state.get_selected_project() {
-        let deps = project.dependencies.clone();
-        check_single_project_for_updates(deps, tx, use_cache).await;
+/// Check for updates on selected project with proper caching
+/// This is called when user presses 'u' or opens update wizard
+pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
+    // CRITICAL FIX: When called from wizard, use the LOCKED project, not current selection!
+    // User might have moved cursor after opening wizard
+    let project_to_check = if state.mode == crate::events::Mode::UpdateWizard {
+        // Wizard is open - use the locked project
+        if let Some(ref locked_name) = state.updater.locked_project_name {
+            state.all_projects.iter().find(|p| &p.name == locked_name)
+        } else {
+            state.get_selected_project()
+        }
     } else {
-        // No project selected - send action to clear loading state immediately
-        let _ = tx.send(Action::UpdateDependencies(Vec::new())).await;
+        state.get_selected_project()
+    };
+
+    if let Some(project) = project_to_check {
+        let deps = project.dependencies.clone();
+        let project_name = project.name.clone();
+        let project_path = project.path.clone();
+
+        // Send initial action to show we're checking
+        let _ = tx.send(Action::UpdateDependenciesStreamStart(project_name.clone())).await;
+
+        // Perform checks asynchronously - don't await here
+        check_dependencies_with_cache(project_name, deps, tx, true, Some(project_path)).await;
     }
 }
 
-pub async fn check_single_project_for_updates(
-    deps: Vec<crate::project::Dependency>,
+/// Check dependencies with intelligent caching and streaming updates
+pub async fn check_dependencies_with_cache(
+    project_name: String,
+    deps: Vec<Dependency>,
     tx: mpsc::Sender<Action>,
     use_cache: bool,
+    project_path: Option<std::path::PathBuf>,
 ) {
-    let tx_clone = tx.clone();
-    let cache_duration = std::time::Duration::from_secs(5 * 60); // 5 minutes
+    // DEBUG: Log function entry
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/carwash-debug.log")
+    {
+        let _ = writeln!(f, "[CHECK START] Project {} with {} deps (use_cache={})",
+                       project_name, deps.len(), use_cache);
+    }
 
-    tokio::spawn(async move {
-        let deps_fallback = deps.clone();
+    let cache = UpdateCache::new();
+    let semaphore = Arc::new(Semaphore::new(PARALLEL_UPDATE_CHECKS));
+    let client_result = AsyncClient::new(
+        "carwash/0.1.0 (https://github.com/epistates/carwash)",
+        std::time::Duration::from_secs(1),
+    );
 
-        // Add timeout to prevent hanging indefinitely
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            let client_result = AsyncClient::new(
-                "carwash/0.1.0 (https://github.com/epistates/carwash)",
-                std::time::Duration::from_secs(1),
-            );
+    let client = match client_result {
+        Ok(client) => client,
+        Err(e) => {
+            // DEBUG: Log client failure
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/carwash-debug.log")
+            {
+                let _ = writeln!(f, "[CHECK ERROR] Project {}: Failed to create API client: {:?}",
+                               project_name, e);
+            }
+            // Client failed - send deps with no updates
+            let _ = tx.send(Action::UpdateDependencies(project_name, deps)).await;
+            return;
+        }
+    };
+    let now = SystemTime::now();
+    let cache_duration = std::time::Duration::from_secs(CACHE_DURATION_SECS);
+    let mut tasks = Vec::new();
 
-            match client_result {
-                Ok(client) => {
-                    // Check dependencies in parallel for better performance
-                    let mut tasks = Vec::new();
-                    let now = SystemTime::now();
+    for dep in deps {
+        let semaphore_clone = semaphore.clone();
+        let client_clone = client.clone();
+        let tx_clone = tx.clone();
+        let project_name_clone = project_name.clone();
 
-                    for dep in deps {
-                        // Check cache if enabled
-                        let should_check = if use_cache {
-                            if let Some(last_checked) = dep.last_checked {
-                                if let Ok(elapsed) = now.duration_since(last_checked) {
-                                    elapsed > cache_duration
-                                } else {
-                                    true // If time comparison fails, check anyway
-                                }
-                            } else {
-                                true // Never checked, so check now
-                            }
-                        } else {
-                            true // No cache, always check
-                        };
+        let task = tokio::spawn(async move {
+            // Acquire semaphore permit (limits concurrent requests)
+            let _permit = semaphore_clone.acquire().await.ok()?;
 
-                        let client_clone = client.clone();
-                        let task = tokio::spawn(async move {
-                            let mut updated_dep = dep.clone();
-
-                            if should_check {
-                                updated_dep.check_status = DependencyCheckStatus::Checking;
-
-                                // Add per-crate timeout
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    client_clone.get_crate(&updated_dep.name),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(crate_info)) => {
-                                        updated_dep.latest_version =
-                                            Some(crate_info.crate_data.max_version);
-                                        updated_dep.check_status = DependencyCheckStatus::Checked;
-                                        updated_dep.last_checked = Some(SystemTime::now());
-                                    }
-                                    _ => {
-                                        // Timeout or error - mark as checked but no latest version
-                                        updated_dep.check_status = DependencyCheckStatus::Checked;
-                                        updated_dep.last_checked = Some(SystemTime::now());
-                                    }
-                                }
-                            } else {
-                                // Using cached data
-                                updated_dep.check_status = DependencyCheckStatus::Checked;
-                            }
-
-                            updated_dep
-                        });
-                        tasks.push(task);
+            let mut updated_dep = dep.clone();
+            let should_check = if use_cache {
+                if let Some(last_checked) = updated_dep.last_checked {
+                    if let Ok(elapsed) = now.duration_since(last_checked) {
+                        elapsed > cache_duration
+                    } else {
+                        true
                     }
-
-                    // Wait for all tasks to complete
-                    let mut updated_deps = Vec::new();
-                    for task in tasks {
-                        if let Ok(dep) = task.await {
-                            updated_deps.push(dep);
-                        }
-                    }
-                    updated_deps
+                } else {
+                    true
                 }
-                Err(_) => {
-                    // Client creation error - return deps unchanged
-                    deps_fallback.clone()
+            } else {
+                true
+            };
+
+            if should_check {
+                updated_dep.check_status = DependencyCheckStatus::Checking;
+                
+                // Send UI update showing this dep is being checked
+                let _ = tx_clone
+                    .send(Action::UpdateDependencyCheckStatus(
+                        updated_dep.name.clone(),
+                        DependencyCheckStatus::Checking,
+                    ))
+                    .await;
+
+                // Perform the check with timeout
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    client_clone.get_crate(&updated_dep.name),
+                )
+                .await
+                {
+                    Ok(Ok(crate_info)) => {
+                        updated_dep.latest_version =
+                            Some(crate_info.crate_data.max_version);
+                        updated_dep.check_status = DependencyCheckStatus::Checked;
+                        updated_dep.last_checked = Some(SystemTime::now());
+                    }
+                    _ => {
+                        updated_dep.check_status = DependencyCheckStatus::Checked;
+                        updated_dep.last_checked = Some(SystemTime::now());
+                    }
+                }
+            } else {
+                // Using cached data
+                updated_dep.check_status = DependencyCheckStatus::Checked;
+            }
+
+            // Send individual update for UI streaming
+            let _ = tx_clone
+                .send(Action::UpdateSingleDependency(project_name_clone, updated_dep.clone()))
+                .await;
+
+            Some(updated_dep)
+        });
+        tasks.push(task);
+    }
+
+    // Collect all results but don't block UI
+    let mut updated_deps = Vec::new();
+    for task in tasks {
+        if let Ok(Some(dep)) = task.await {
+            updated_deps.push(dep);
+        }
+    }
+
+    // Save cache if we have a project path
+    if let Some(path) = project_path {
+        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock")) {
+            let mut cached_deps = std::collections::HashMap::new();
+            let mut success_count = 0;
+            let mut failed_count = 0;
+
+            for dep in &updated_deps {
+                // CRITICAL: Only cache dependencies that were successfully checked
+                // If latest_version is None (network error, timeout, etc.), don't cache it
+                if dep.latest_version.is_some() {
+                    cached_deps.insert(
+                        dep.name.clone(),
+                        crate::cache::CachedDependency {
+                            latest_version: dep.latest_version.clone(),
+                            // CRITICAL: Use the actual check time, not current time!
+                            cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
+                        },
+                    );
+                    success_count += 1;
+                } else {
+                    failed_count += 1;
                 }
             }
-        })
-        .await;
 
-        // Send result back regardless of success or timeout
-        let final_deps = result.unwrap_or(deps_fallback);
-        let _ = tx_clone.send(Action::UpdateDependencies(final_deps)).await;
-    });
+            // Debug logging
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/carwash-debug.log")
+            {
+                let _ = writeln!(f, "[RUNNER] Project {}: {} succeeded, {} failed, lock_hash={:x}",
+                               project_name, success_count, failed_count, lock_hash);
+            }
+
+            // Only save if we have checked dependencies
+            if !cached_deps.is_empty() {
+                match cache.save(&path, lock_hash, cached_deps.clone()) {
+                    Ok(()) => {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/carwash-debug.log")
+                        {
+                            let _ = writeln!(f, "[RUNNER] ✓ Saved cache for {} ({} deps)",
+                                           project_name, cached_deps.len());
+                        }
+                    }
+                    Err(e) => {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/carwash-debug.log")
+                        {
+                            let _ = writeln!(f, "[RUNNER] ✗ Failed to save cache for {}: {}",
+                                           project_name, e);
+                        }
+                    }
+                }
+            } else if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/carwash-debug.log")
+            {
+                let _ = writeln!(f, "[RUNNER] ⊘ Skipped {} (no successful checks)", project_name);
+            }
+        }
+    }
+
+    // Send final batch update
+    let _ = tx.send(Action::UpdateDependencies(project_name, updated_deps)).await;
 }
 
 pub async fn run_command(
@@ -267,7 +403,7 @@ pub async fn run_command(
                 .current_dir(&project.path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .kill_on_drop(true); // Clean up if the task is cancelled
+                .kill_on_drop(true);
 
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
@@ -299,8 +435,14 @@ pub async fn run_command(
                 }
             };
 
-            let stdout = child.stdout.take().unwrap();
-            let stderr = child.stderr.take().unwrap();
+            let stdout = child
+                .stdout
+                .take()
+                .expect("stdout was configured as piped");
+            let stderr = child
+                .stderr
+                .take()
+                .expect("stderr was configured as piped");
 
             let mut stdout_reader = BufReader::new(stdout).lines();
             let mut stderr_reader = BufReader::new(stderr).lines();

@@ -12,11 +12,20 @@ use ratatui::{
 };
 use std::collections::HashSet;
 
+/// State for the update wizard UI component
+///
+/// The wizard is "locked" to a specific project when it opens, ensuring that
+/// background update checks for other projects don't interfere with the display.
 #[derive(Debug, Clone)]
 pub struct UpdateWizardState {
     pub outdated_dependencies: Vec<Dependency>,
     pub selected_dependencies: HashSet<String>,
     pub list_state: ratatui::widgets::ListState,
+    /// The project this wizard is locked to (prevents background updates from changing display)
+    pub locked_project_name: Option<String>,
+    /// Whether a user-initiated check is in progress for the locked project
+    /// This prevents background checks from clearing the is_checking_updates flag prematurely
+    pub user_check_in_progress: bool,
 }
 
 impl UpdateWizardState {
@@ -25,6 +34,8 @@ impl UpdateWizardState {
             outdated_dependencies: Vec::new(),
             selected_dependencies: HashSet::new(),
             list_state: ratatui::widgets::ListState::default(),
+            locked_project_name: None,
+            user_check_in_progress: false,
         }
     }
 }
@@ -111,9 +122,15 @@ impl Component for UpdateWizard {
             ])
             .split(popup_area);
 
-        // Title
-        let title_text = if let Some(project) = app.get_selected_project() {
-            format!(" Update Dependencies - {} ", project.name)
+        // Title - show the locked project name and checking status
+        let title_text = if let Some(ref project_name) = app.updater.locked_project_name {
+            if app.is_checking_updates {
+                format!(" Update Dependencies - {} ⟳ ", project_name)
+            } else {
+                format!(" Update Dependencies - {} ", project_name)
+            }
+        } else if app.is_checking_updates {
+            " Update Dependencies ⟳ ".to_string()
         } else {
             " Update Dependencies ".to_string()
         };
@@ -132,12 +149,19 @@ impl Component for UpdateWizard {
         // Dependency list
         if app.updater.outdated_dependencies.is_empty() {
             // Check if dependencies have been checked (have latest_version set)
-            let has_been_checked = if let Some(project) = app.get_selected_project() {
-                !project.dependencies.is_empty()
-                    && project
-                        .dependencies
-                        .iter()
-                        .any(|d| d.latest_version.is_some())
+            // Use the LOCKED project, not the currently selected one (user may have moved cursor)
+            let has_been_checked = if let Some(ref locked_name) = app.updater.locked_project_name {
+                app.projects
+                    .iter()
+                    .find(|p| &p.name == locked_name)
+                    .map(|project| {
+                        !project.dependencies.is_empty()
+                            && project
+                                .dependencies
+                                .iter()
+                                .any(|d| d.latest_version.is_some())
+                    })
+                    .unwrap_or(false)
             } else {
                 false
             };

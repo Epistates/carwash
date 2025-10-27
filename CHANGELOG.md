@@ -2,6 +2,110 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.2.0] - 2025-10-27
+
+### 🎯 Major Improvements
+
+**Cache Persistence System**
+- Implemented robust cross-platform dependency cache using project directories
+- Cache keys based on Cargo.lock hash for automatic invalidation on dependency changes
+- Intelligent 5-minute cache duration with proper timestamp preservation
+- Separate cache files per project to prevent cross-contamination
+- Debug logging system for cache operations (writes to /tmp/carwash-debug.log)
+
+**Background Update Intelligence**
+- Failed dependency checks now automatically retry on next startup
+- Queue logic checks ALL dependencies, not just first one, before deciding to skip
+- Projects with ANY uncached/expired dependencies now auto-queue for background checking
+- Conditional status updates: only shows "Checking" when actually performing network requests
+- Prevents status flickering when loading from cache
+
+**View Synchronization**
+- Fixed race condition where explorer tree showed "checking" while dependency pane showed cached results
+- All three views (explorer, wizard, dependency pane) now update simultaneously
+- Background check results no longer interfere with wizard display when locked to specific project
+- Proper project locking prevents stale data from affecting open wizards
+
+### 🏗️ Architecture Refactoring
+
+**Code Organization**
+- Extracted 364-line monolithic reducer into focused handler functions in new `src/handlers.rs`
+- 25+ specialized handler functions for clean separation of concerns
+- Reducer simplified to pure action dispatch layer
+- Improved code maintainability and testability
+
+**Error Handling**
+- Replaced generic `Box<dyn Error>` with `anyhow` for better error context in cache operations
+- Added comprehensive error messages with file paths and operation context
+- Better debugging with detailed error propagation
+
+### 🐛 Critical Bug Fixes
+
+**Cache Timestamp Issues**
+- Fixed cache.rs resetting timestamps to "now" on load (prevented cache expiry logic from working)
+- Fixed runner.rs using quit time instead of actual check time when saving cache
+- Fixed main.rs saving cache with current time instead of preserving dep.last_checked
+
+**Race Conditions**
+- Fixed UpdateDependenciesStreamStart arriving after UpdateDependencies (cache hit scenario)
+- Fixed wizard update nested inside conditional that could fail silently
+- Fixed background updates overwriting wizard display for locked project
+- Fixed user_check_in_progress flag being set too late, causing premature flag clearing
+
+**Queue and Status Management**
+- Fixed background queue only checking first dependency instead of all dependencies
+- Fixed status always being set to "Checking" even when all deps were cached
+- Fixed duplicate cache loading on startup (now loads once correctly)
+
+### 🎨 UI/UX Improvements
+
+**Update Wizard**
+- Wizard now locks to selected project, preventing background updates from changing display
+- Shows correct project name in wizard title
+- Wizard populates with current dependency data immediately on open
+- No more "checking for updates" spinner when data is already cached
+
+**Status Indicators**
+- Project status accurately reflects cache state
+- No more 20-second "checking" delay when data is already cached
+- Background checks for failed dependencies happen invisibly
+- Status updates are instant when loading from cache
+
+### 🧪 Testing & Quality
+
+**Development Experience**
+- Comprehensive debug logging to /tmp/carwash-debug.log
+- Cache operations log project names, dep counts, lock hashes, and success/failure
+- Load operations show cache hits/misses and hash mismatches
+- All 34 tests passing
+- Clippy clean with no warnings
+
+### 📝 Technical Details
+
+**Cache Format**
+```json
+{
+  "lock_file_hash": 12345,
+  "dependencies": {
+    "serde": {
+      "latest_version": "1.0.210",
+      "cached_at": <SystemTime>
+    }
+  }
+}
+```
+
+**Cache Invalidation**
+- Automatic when Cargo.lock changes (hash mismatch)
+- Manual via age (> 5 minutes old)
+- Failed checks not cached (prevents caching errors)
+
+### 🔄 Breaking Changes
+
+None. Fully backward compatible.
+
+---
+
 ## [0.1.2] - 2025-10-25
 
 ### ✨ Features

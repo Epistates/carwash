@@ -34,6 +34,25 @@ pub enum DependencyCheckStatus {
     Checked,
 }
 
+/// Visual status of a project's update check state
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectCheckStatus {
+    /// Not checked yet or cache invalidated (Gray)
+    Unchecked,
+    /// Currently being checked for updates (Blue)
+    Checking,
+    /// Some dependencies are outdated (Yellow)
+    HasUpdates,
+    /// All dependencies up to date (Green)
+    UpToDate,
+}
+
+impl Default for ProjectCheckStatus {
+    fn default() -> Self {
+        Self::Unchecked
+    }
+}
+
 /// Represents a single dependency with version information
 #[derive(Debug, Clone)]
 pub struct Dependency {
@@ -86,6 +105,8 @@ pub struct Project {
     pub workspace_name: Option<String>,
     /// Hash of Cargo.lock file for cache invalidation
     pub cargo_lock_hash: Option<u64>,
+    /// Visual status of update checking for UI display
+    pub check_status: ProjectCheckStatus,
 }
 
 impl Project {
@@ -152,7 +173,101 @@ impl Project {
             workspace_root,
             workspace_name,
             cargo_lock_hash: None, // No hash available here, will be calculated later
+            check_status: ProjectCheckStatus::Unchecked, // Start as unchecked
         })
+    }
+
+    /// Reload dependencies from Cargo.lock after an update
+    /// 
+    /// This method re-parses Cargo.toml and Cargo.lock from disk to get the latest
+    /// dependency versions. It should be called after running `cargo update` to ensure
+    /// the in-memory state reflects what's on disk.
+    /// 
+    /// Returns Ok(()) if successful, Err with error message otherwise.
+    pub fn reload_dependencies(&mut self) -> Result<(), String> {
+        // Re-parse Cargo.toml to get declared dependencies
+        let cargo_toml_path = self.path.join("Cargo.toml");
+        let toml_content = fs::read_to_string(&cargo_toml_path)
+            .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
+        
+        let toml: CargoToml = toml::from_str(&toml_content)
+            .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+        
+        // Collect declared dependency names
+        let mut declared_deps: HashSet<String> = HashSet::new();
+        for dep_name in toml.dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        for dep_name in toml.dev_dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        for dep_name in toml.build_dependencies.keys() {
+            declared_deps.insert(dep_name.clone());
+        }
+        
+        // Determine which Cargo.lock to use (workspace or project)
+        let lockfile_path = if let Some(ref ws_root) = self.workspace_root {
+            let ws_lockfile = ws_root.join("Cargo.lock");
+            if ws_lockfile.exists() {
+                ws_lockfile
+            } else {
+                self.path.join("Cargo.lock")
+            }
+        } else {
+            self.path.join("Cargo.lock")
+        };
+        
+        // Re-parse Cargo.lock
+        let lockfile = Lockfile::load(&lockfile_path)
+            .map_err(|e| format!("Failed to load Cargo.lock: {}", e))?;
+        
+        // Extract current versions for declared dependencies
+        let mut new_deps: Vec<Dependency> = lockfile
+            .packages
+            .iter()
+            .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
+            .map(|pkg| {
+                // Try to preserve latest_version, check_status, and last_checked from existing deps
+                let existing = self.dependencies.iter().find(|d| d.name == pkg.name.as_str());
+                
+                let mut dep = Dependency::from(pkg);
+                if let Some(existing_dep) = existing {
+                    // Preserve the cached check results if they exist
+                    dep.latest_version = existing_dep.latest_version.clone();
+                    dep.check_status = existing_dep.check_status.clone();
+                    dep.last_checked = existing_dep.last_checked;
+                }
+                dep
+            })
+            .collect();
+        
+        // Sort for consistent ordering
+        new_deps.sort_by(|a, b| a.name.cmp(&b.name));
+        
+        // Update dependencies
+        self.dependencies = new_deps;
+
+        Ok(())
+    }
+
+    /// Compute the project check status based on current dependencies
+    ///
+    /// Examines all dependencies to determine if any have available updates.
+    /// Returns `HasUpdates` if any dependency has a newer version available,
+    /// otherwise returns `UpToDate`.
+    pub fn compute_check_status_from_deps(deps: &[Dependency]) -> ProjectCheckStatus {
+        let has_updates = deps.iter().any(|d| {
+            d.latest_version
+                .as_ref()
+                .map(|latest| latest != &d.current_version)
+                .unwrap_or(false)
+        });
+
+        if has_updates {
+            ProjectCheckStatus::HasUpdates
+        } else {
+            ProjectCheckStatus::UpToDate
+        }
     }
 }
 

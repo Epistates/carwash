@@ -17,44 +17,34 @@ impl ProjectList {
         Self {}
     }
 
-    /// Get status indicator and color for a project based on its dependencies
+    /// Get status indicator and color for a project based on its check status
+    /// 
+    /// Visual indicators:
+    /// - Gray (⋯): Unchecked or cache invalidated
+    /// - Blue (⟳): Currently checking for updates
+    /// - Yellow (⚠): Some dependencies are outdated
+    /// - Green (✓): All dependencies up to date
     fn get_project_status(p: &crate::project::Project) -> (&'static str, Style) {
-        use crate::project::DependencyCheckStatus;
+        use crate::project::ProjectCheckStatus;
 
-        // Check if any dependency is currently being checked
-        if p.dependencies
-            .iter()
-            .any(|d| d.check_status == DependencyCheckStatus::Checking)
-        {
-            return ("⟳", Style::default().fg(Color::Cyan));
+        match p.check_status {
+            ProjectCheckStatus::Unchecked => {
+                // Gray - not checked yet or cache invalidated
+                ("⋯", Style::default().fg(Color::DarkGray))
+            }
+            ProjectCheckStatus::Checking => {
+                // Blue - currently being checked
+                ("⟳", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))
+            }
+            ProjectCheckStatus::HasUpdates => {
+                // Yellow - has outdated dependencies
+                ("⚠", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            }
+            ProjectCheckStatus::UpToDate => {
+                // Green - all up to date
+                ("✓", Style::default().fg(Color::Green))
+            }
         }
-
-        // Check if any dependencies are outdated
-        let has_outdated = p.dependencies.iter().any(|d| {
-            d.latest_version.is_some() && d.latest_version.as_ref().unwrap() != &d.current_version
-        });
-
-        if has_outdated {
-            return (
-                "⚠",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-
-        // Check if all have been checked
-        let all_checked = p
-            .dependencies
-            .iter()
-            .all(|d| d.check_status == DependencyCheckStatus::Checked);
-
-        if all_checked {
-            return ("✓", Style::default().fg(Color::Green));
-        }
-
-        // Not yet checked
-        ("⋯", Style::default().fg(Color::DarkGray))
     }
 }
 
@@ -73,8 +63,12 @@ impl Component for ProjectList {
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         let selected_index = app.tree_state.selected();
 
-        // Get visible projects - need to collect to avoid borrow conflicts
-        let visible_projects: Vec<_> = app.get_visible_projects().into_iter().cloned().collect();
+        // Clone visible projects to avoid borrow conflicts with app.tree_state
+        // This is necessary because we need immutable access to projects for rendering,
+        // but also need mutable access to tree_state later (line ~258).
+        // For typical project counts (<100), this clone is acceptable for UI responsiveness.
+        let visible_projects: Vec<crate::project::Project> =
+            app.get_visible_projects().into_iter().cloned().collect();
 
         let mut items: Vec<ListItem> = Vec::new();
         let mut current_workspace: Option<String> = None;

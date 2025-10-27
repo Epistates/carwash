@@ -3,6 +3,7 @@
 //! This module provides persistent caching of dependency check results,
 //! keyed by Cargo.lock file hash to automatically invalidate when dependencies change.
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -29,6 +30,7 @@ pub struct ProjectCache {
 }
 
 /// Manages cross-platform caching of update check results
+#[derive(Clone)]
 pub struct UpdateCache {
     cache_dir: PathBuf,
 }
@@ -75,13 +77,48 @@ impl UpdateCache {
     ) -> Option<HashMap<String, CachedDependency>> {
         let cache_path = self.get_cache_path(project_path);
 
-        let contents = fs::read_to_string(&cache_path).ok()?;
-        let cache: ProjectCache = serde_json::from_str(&contents).ok()?;
+        // Debug logging
+        use std::io::Write;
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/carwash-debug.log")
+            .ok();
+
+        let contents = match fs::read_to_string(&cache_path) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(ref mut f) = log_file {
+                    let _ = writeln!(f, "  [CACHE] Failed to read cache file {}: {}",
+                                   cache_path.display(), e);
+                }
+                return None;
+            }
+        };
+
+        let cache: ProjectCache = match serde_json::from_str(&contents) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(ref mut f) = log_file {
+                    let _ = writeln!(f, "  [CACHE] Failed to parse cache file {}: {}",
+                                   cache_path.display(), e);
+                }
+                return None;
+            }
+        };
 
         // Only return cache if lock file hash matches (not invalidated)
         if cache.lock_file_hash == current_lock_hash {
+            if let Some(ref mut f) = log_file {
+                let _ = writeln!(f, "  [CACHE] Hash match! Loaded {} deps from {}",
+                               cache.dependencies.len(), cache_path.display());
+            }
             Some(cache.dependencies)
         } else {
+            if let Some(ref mut f) = log_file {
+                let _ = writeln!(f, "  [CACHE] Hash mismatch! cached={:x}, current={:x} for {}",
+                               cache.lock_file_hash, current_lock_hash, cache_path.display());
+            }
             None
         }
     }
@@ -92,9 +129,10 @@ impl UpdateCache {
         project_path: &Path,
         lock_hash: u64,
         dependencies: HashMap<String, CachedDependency>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         // Create cache directory if it doesn't exist
-        fs::create_dir_all(&self.cache_dir)?;
+        fs::create_dir_all(&self.cache_dir)
+            .context("Failed to create cache directory")?;
 
         let cache = ProjectCache {
             lock_file_hash: lock_hash,
@@ -102,16 +140,19 @@ impl UpdateCache {
         };
 
         let cache_path = self.get_cache_path(project_path);
-        let json = serde_json::to_string(&cache)?;
-        fs::write(cache_path, json)?;
+        let json = serde_json::to_string(&cache)
+            .context("Failed to serialize cache data")?;
+        fs::write(&cache_path, json)
+            .with_context(|| format!("Failed to write cache file: {}", cache_path.display()))?;
 
         Ok(())
     }
 
     /// Clear all cached data
-    pub fn clear(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn clear(&self) -> Result<()> {
         if self.cache_dir.exists() {
-            fs::remove_dir_all(&self.cache_dir)?;
+            fs::remove_dir_all(&self.cache_dir)
+                .with_context(|| format!("Failed to clear cache directory: {}", self.cache_dir.display()))?;
         }
         Ok(())
     }

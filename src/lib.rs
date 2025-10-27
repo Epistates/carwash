@@ -47,6 +47,7 @@ pub mod app;
 pub mod cache;
 pub mod components;
 pub mod events;
+mod handlers;
 pub mod project;
 pub mod runner;
 pub mod ui;

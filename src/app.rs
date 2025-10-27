@@ -6,11 +6,9 @@
 use crate::components::{
     palette::CommandPaletteState, text_input::TextInputState, updater::UpdateWizardState,
 };
-use crate::events::{Action, Command, Mode};
+use crate::events::{Action, Mode};
 use crate::project::Project;
 use crate::runner::UpdateQueue;
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
@@ -73,7 +71,7 @@ impl<'a> Clone for AppState<'a> {
             is_scanning: self.is_scanning,
             is_checking_updates: self.is_checking_updates,
             mode: self.mode.clone(),
-            tree_state: ListState::default(),
+            tree_state: self.tree_state.clone(),
             projects: self.projects.clone(),
             all_projects: self.all_projects.clone(),
             collapsed_workspaces: self.collapsed_workspaces.clone(),
@@ -181,240 +179,48 @@ impl<'a> AppState<'a> {
     }
 }
 
+/// Main reducer function that dispatches actions to appropriate handlers
+///
+/// This function acts as a clean dispatch layer, delegating actual state
+/// mutations to specialized handler functions in the handlers module.
 pub fn reducer(state: &mut AppState, action: Action) {
+    use crate::handlers::*;
+
     match action {
-        Action::Quit => state.should_quit = true,
-        Action::EnterNormalMode => {
-            // Clear updater state when leaving update wizard
-            if state.mode == Mode::UpdateWizard {
-                state.updater.outdated_dependencies.clear();
-                state.updater.selected_dependencies.clear();
-                state.updater.list_state.select(None);
-            }
-            state.mode = Mode::Normal;
+        Action::Quit => handle_quit(state),
+        Action::EnterNormalMode => handle_enter_normal_mode(state),
+        Action::ShowHelp => handle_show_help(state),
+        Action::FinishProjectScan(projects) => handle_finish_project_scan(state, projects),
+        Action::UpdateTextInput(s) => handle_update_text_input(state, s),
+        Action::SelectNext => handle_select_next(state),
+        Action::SelectPrevious => handle_select_previous(state),
+        Action::SelectParent => handle_select_parent(state),
+        Action::SelectChild => handle_select_child(state),
+        Action::ToggleSelection => handle_toggle_selection(state),
+        Action::ShowCommandPalette => handle_show_command_palette(state),
+        Action::UpdatePaletteInput(input) => handle_update_palette_input(state, input),
+        Action::PaletteSelectNext => handle_palette_select_next(state),
+        Action::PaletteSelectPrevious => handle_palette_select_previous(state),
+        Action::StartUpdateWizard => handle_start_update_wizard(state),
+        Action::ToggleUpdateSelection => handle_toggle_update_selection(state),
+        Action::CheckForUpdates => handle_check_for_updates(state),
+        Action::UpdateDependencies(project_name, deps) => {
+            handle_update_dependencies(state, project_name, deps)
         }
-        Action::ShowHelp => state.mode = Mode::Help,
-        Action::FinishProjectScan(projects) => {
-            state.all_projects = projects.clone();
-            // Only show projects with dependencies
-            state.projects = projects
-                .into_iter()
-                .filter(|p| !p.dependencies.is_empty())
-                .collect();
-
-            // Collect all workspace names and mark them as collapsed by default
-            let workspace_names: HashSet<String> = state
-                .projects
-                .iter()
-                .filter_map(|p| p.workspace_name.clone())
-                .collect();
-            state.collapsed_workspaces = workspace_names;
-
-            if !state.projects.is_empty() {
-                state.tree_state.select(Some(0));
-            }
-            state.is_scanning = false;
-            state.mode = Mode::Normal;
+        Action::UpdateDependenciesStreamStart(project_name) => {
+            handle_update_dependencies_stream_start(state, project_name)
         }
-        Action::UpdateTextInput(s) => {
-            state.text_input.input = state.text_input.input.clone().with_value(s);
+        Action::UpdateSingleDependency(project_name, dep) => {
+            handle_update_single_dependency(state, project_name, dep)
         }
-        Action::SelectNext => {
-            let visible_count = state.get_visible_projects().len();
-            let i = match state.tree_state.selected() {
-                Some(i) => {
-                    if i >= visible_count.saturating_sub(1) {
-                        0
-                    } else {
-                        i + 1
-                    }
-                }
-                None => 0,
-            };
-            state.tree_state.select(Some(i));
+        Action::UpdateDependencyCheckStatus(_dep_name, _status) => {
+            // Status update for UI feedback during checking
+            // This is mainly for future streaming UI enhancements
         }
-        Action::SelectPrevious => {
-            let visible_count = state.get_visible_projects().len();
-            let i = match state.tree_state.selected() {
-                Some(i) => {
-                    if i == 0 {
-                        visible_count.saturating_sub(1)
-                    } else {
-                        i - 1
-                    }
-                }
-                None => 0,
-            };
-            state.tree_state.select(Some(i));
-        }
-        Action::SelectParent => {
-            // Collapse workspace if we're on a workspace member
-            if let Some(workspace_name) = state.get_selected_workspace() {
-                state.collapsed_workspaces.insert(workspace_name);
-            }
-        }
-        Action::SelectChild => {
-            // Expand workspace if we're on a workspace member
-            if let Some(workspace_name) = state.get_selected_workspace() {
-                state.collapsed_workspaces.remove(&workspace_name);
-            }
-        }
-        Action::ToggleSelection => {
-            if let Some(project_name) = state.get_selected_project().map(|p| p.name.clone()) {
-                if !state.selected_projects.remove(&project_name) {
-                    state.selected_projects.insert(project_name);
-                }
-            }
-        }
-        Action::ShowCommandPalette => {
-            state.mode = Mode::CommandPalette;
-            // Reset input
-            state.palette.input = state.palette.input.clone().with_value(String::new());
-            // Populate commands
-            state.palette.filtered_commands = state
-                .command_history
-                .iter()
-                .map(|c| Command::Cargo { command: c.clone() })
-                .collect();
-            // Ensure first item is selected
-            if !state.palette.filtered_commands.is_empty() {
-                state.palette.list_state.select(Some(0));
-            } else {
-                state.palette.list_state.select(None);
-            }
-        }
-        Action::UpdatePaletteInput(input) => {
-            state.palette.input = state.palette.input.clone().with_value(input.clone());
-
-            if input.is_empty() {
-                // Show all commands when input is empty
-                state.palette.filtered_commands = state
-                    .command_history
-                    .iter()
-                    .map(|c| Command::Cargo { command: c.clone() })
-                    .collect();
-            } else {
-                // Filter by fuzzy match
-                let matcher = SkimMatcherV2::default();
-                state.palette.filtered_commands = state
-                    .command_history
-                    .iter()
-                    .filter(|cmd| matcher.fuzzy_match(cmd, &input).is_some())
-                    .map(|c| Command::Cargo { command: c.clone() })
-                    .collect();
-            }
-
-            // Select first item if available
-            if !state.palette.filtered_commands.is_empty() {
-                state.palette.list_state.select(Some(0));
-            } else {
-                state.palette.list_state.select(None);
-            }
-        }
-        Action::PaletteSelectNext => {
-            let i = match state.palette.list_state.selected() {
-                Some(i) => {
-                    if i >= state.palette.filtered_commands.len() - 1 {
-                        0
-                    } else {
-                        i + 1
-                    }
-                }
-                None => 0,
-            };
-            state.palette.list_state.select(Some(i));
-        }
-        Action::PaletteSelectPrevious => {
-            let i = match state.palette.list_state.selected() {
-                Some(i) => {
-                    if i == 0 {
-                        state.palette.filtered_commands.len() - 1
-                    } else {
-                        i - 1
-                    }
-                }
-                None => 0,
-            };
-            state.palette.list_state.select(Some(i));
-        }
-        Action::StartUpdateWizard => {
-            // Clear any stale updater state from previous wizard sessions
-            state.updater.outdated_dependencies.clear();
-            state.updater.selected_dependencies.clear();
-            state.updater.list_state.select(None);
-
-            state.is_checking_updates = true;
-            state.mode = Mode::UpdateWizard;
-        }
-        Action::ToggleUpdateSelection => {
-            if let Some(index) = state.updater.list_state.selected() {
-                if let Some(dep) = state.updater.outdated_dependencies.get(index) {
-                    if !state.updater.selected_dependencies.remove(&dep.name) {
-                        state.updater.selected_dependencies.insert(dep.name.clone());
-                    }
-                }
-            }
-        }
-        Action::CheckForUpdates => {
-            state.is_checking_updates = true;
-        }
-        Action::UpdateDependencies(deps) => {
-            // Always update the project's dependencies (for background updates)
-            if let Some(selected_project_name) =
-                state.get_selected_project().map(|p| p.name.clone())
-            {
-                if let Some(proj) = state
-                    .projects
-                    .iter_mut()
-                    .find(|p| p.name == selected_project_name)
-                {
-                    // Only update project dependencies if NOT in UpdateWizard mode
-                    // This prevents background updates from changing the list while user reviews
-                    if state.mode != Mode::UpdateWizard {
-                        proj.dependencies = deps.clone();
-                    }
-
-                    // If in UpdateWizard mode, populate the outdated dependencies list for display
-                    if state.mode == Mode::UpdateWizard {
-                        state.updater.outdated_dependencies = deps
-                            .into_iter()
-                            .filter(|d| {
-                                d.latest_version.is_some()
-                                    && d.latest_version.as_ref().unwrap() != &d.current_version
-                            })
-                            .collect();
-                        // Select first item if there are outdated dependencies
-                        if !state.updater.outdated_dependencies.is_empty() {
-                            state.updater.list_state.select(Some(0));
-                        }
-                        state.is_checking_updates = false;
-                    }
-                }
-            }
-        }
-        Action::CreateTab(title) => {
-            state.tabs.push(Tab {
-                title,
-                buffer: Vec::new(),
-                is_finished: false,
-            });
-            state.active_tab = state.tabs.len() - 1;
-        }
-        Action::AddOutput(tab_index, line) => {
-            if let Some(tab) = state.tabs.get_mut(tab_index) {
-                tab.buffer.push(line);
-            }
-        }
-        Action::FinishCommand(tab_index) => {
-            if let Some(tab) = state.tabs.get_mut(tab_index) {
-                tab.is_finished = true;
-            }
-        }
-        Action::SwitchToTab(tab_index) => {
-            if tab_index < state.tabs.len() {
-                state.active_tab = tab_index;
-            }
-        }
+        Action::CreateTab(title) => handle_create_tab(state, title),
+        Action::AddOutput(tab_index, line) => handle_add_output(state, tab_index, line),
+        Action::FinishCommand(tab_index) => handle_finish_command(state, tab_index),
+        Action::SwitchToTab(tab_index) => handle_switch_to_tab(state, tab_index),
         Action::ExecuteCommand(_command) => {
             // Command execution is handled in main event loop
         }
@@ -425,32 +231,16 @@ pub fn reducer(state: &mut AppState, action: Action) {
             // Background update check is handled in main event loop
         }
         Action::UpdateDependencyStatus(dep_name, status) => {
-            // Update the status of a specific dependency
-            if let Some(selected_project_name) =
-                state.get_selected_project().map(|p| p.name.clone())
-            {
-                if let Some(proj) = state
-                    .projects
-                    .iter_mut()
-                    .find(|p| p.name == selected_project_name)
-                {
-                    if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
-                        dep.check_status = status;
-                    }
-                }
-            }
+            handle_update_dependency_status(state, dep_name, status)
         }
         Action::ProcessBackgroundUpdateQueue => {
             // Background update queue processing is handled in main event loop
         }
         Action::QueueBackgroundUpdate(project_name) => {
-            // Add project to background update queue
-            state.update_queue.add_task(crate::runner::UpdateCheckTask {
-                project_name,
-                is_priority: false,
-            });
-            // Trigger processing of the queue
-            // This is a bit of a workaround - we'll need to handle this in the main loop
+            handle_queue_background_update(state, project_name)
+        }
+        Action::UpdateProjectCheckStatus(project_name, check_status) => {
+            handle_update_project_check_status(state, project_name, check_status)
         }
     }
 }
@@ -473,6 +263,7 @@ mod tests {
             workspace_root: None,
             workspace_name: None,
             cargo_lock_hash: None,
+            check_status: crate::project::ProjectCheckStatus::Unchecked,
         }
     }
 

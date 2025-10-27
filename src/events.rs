@@ -55,12 +55,18 @@ pub enum Action {
     RunUpdate,
     /// Check for dependency updates
     CheckForUpdates,
-    /// Update dependency information
-    UpdateDependencies(Vec<Dependency>),
+    /// Update dependency information with project name
+    UpdateDependencies(String, Vec<Dependency>),
     /// Start background update checking
     StartBackgroundUpdateCheck,
     /// Update status of a specific dependency
     UpdateDependencyStatus(String, crate::project::DependencyCheckStatus),
+    /// Stream start - beginning of update checks
+    UpdateDependenciesStreamStart(String),
+    /// Update a single dependency with latest info
+    UpdateSingleDependency(String, Dependency),
+    /// Update check status for a specific dependency (for UI streaming)
+    UpdateDependencyCheckStatus(String, crate::project::DependencyCheckStatus),
     /// Create a new output tab
     CreateTab(String),
     /// Add output line to a tab
@@ -73,6 +79,8 @@ pub enum Action {
     ProcessBackgroundUpdateQueue,
     /// Queue a project for background update checking
     QueueBackgroundUpdate(String),
+    /// Update the visual check status of a project
+    UpdateProjectCheckStatus(String, crate::project::ProjectCheckStatus),
     /// Quit the application
     Quit,
 }

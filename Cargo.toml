@@ -1,6 +1,6 @@
 [package]
 name = "carwash"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 authors = ["Nicholas Paterno <nick@epistates.com>"]
 description = "A beautiful TUI for managing multiple Rust projects with workspace support, dependency management, and parallel command execution"
