@@ -2,6 +2,10 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.2.1] - 2025-10-30
+
+Removed Cargo.lock from .gitignore - thanks to [0323pin](https://github.com/0323pin)
+
 ## [0.2.0] - 2025-10-27
 
 ### 🎯 Major Improvements
