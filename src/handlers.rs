@@ -6,8 +6,8 @@
 use crate::app::{AppState, Tab};
 use crate::events::{Command, Mode};
 use crate::project::Project;
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use std::collections::HashSet;
 
 /// Handle application quit
@@ -288,11 +288,7 @@ pub fn handle_update_dependencies(
 
     // Also update in filtered projects if it exists there
     // CRITICAL: ALWAYS update, even when wizard is open!
-    if let Some(proj) = state
-        .projects
-        .iter_mut()
-        .find(|p| p.name == project_name)
-    {
+    if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
         proj.dependencies = deps.clone();
         proj.check_status = new_check_status;
     }
@@ -366,17 +362,17 @@ pub fn handle_update_single_dependency(
         .iter_mut()
         .find(|p| p.name == project_name)
     {
-        if let Some(existing_dep) = all_proj.dependencies.iter_mut().find(|d| d.name == dep.name) {
+        if let Some(existing_dep) = all_proj
+            .dependencies
+            .iter_mut()
+            .find(|d| d.name == dep.name)
+        {
             *existing_dep = dep.clone();
         }
     }
 
     // Also update in filtered projects if it exists
-    if let Some(proj) = state
-        .projects
-        .iter_mut()
-        .find(|p| p.name == project_name)
-    {
+    if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
         if let Some(existing_dep) = proj.dependencies.iter_mut().find(|d| d.name == dep.name) {
             *existing_dep = dep.clone();
         }

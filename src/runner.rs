@@ -6,7 +6,7 @@
 use crate::app::AppState;
 use crate::cache::UpdateCache;
 use crate::events::Action;
-use crate::project::{DependencyCheckStatus, Dependency, Project};
+use crate::project::{Dependency, DependencyCheckStatus, Project};
 use crates_io_api::AsyncClient;
 use std::collections::VecDeque;
 use std::process::Stdio;
@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command as TokioCommand,
-    sync::{mpsc, Semaphore},
+    sync::{Semaphore, mpsc},
 };
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
@@ -52,8 +52,11 @@ impl UpdateQueue {
 
     pub fn add_task(&mut self, task: UpdateCheckTask) {
         // Check if this project is already in the queue
-        let already_queued = self.queue.iter().any(|t| t.project_name == task.project_name);
-        
+        let already_queued = self
+            .queue
+            .iter()
+            .any(|t| t.project_name == task.project_name);
+
         if already_queued {
             // If it's a priority task and the existing one isn't, upgrade it
             if task.is_priority {
@@ -65,7 +68,7 @@ impl UpdateQueue {
             // Otherwise skip (duplicate)
             return;
         }
-        
+
         if task.is_priority {
             // Insert at the front for priority tasks
             self.queue.push_front(task);
@@ -122,7 +125,9 @@ pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
         let project_path = project.path.clone();
 
         // Send initial action to show we're checking
-        let _ = tx.send(Action::UpdateDependenciesStreamStart(project_name.clone())).await;
+        let _ = tx
+            .send(Action::UpdateDependenciesStreamStart(project_name.clone()))
+            .await;
 
         // Perform checks asynchronously - don't await here
         check_dependencies_with_cache(project_name, deps, tx, true, Some(project_path)).await;
@@ -144,8 +149,13 @@ pub async fn check_dependencies_with_cache(
         .append(true)
         .open("/tmp/carwash-debug.log")
     {
-        let _ = writeln!(f, "[CHECK START] Project {} with {} deps (use_cache={})",
-                       project_name, deps.len(), use_cache);
+        let _ = writeln!(
+            f,
+            "[CHECK START] Project {} with {} deps (use_cache={})",
+            project_name,
+            deps.len(),
+            use_cache
+        );
     }
 
     let cache = UpdateCache::new();
@@ -164,11 +174,16 @@ pub async fn check_dependencies_with_cache(
                 .append(true)
                 .open("/tmp/carwash-debug.log")
             {
-                let _ = writeln!(f, "[CHECK ERROR] Project {}: Failed to create API client: {:?}",
-                               project_name, e);
+                let _ = writeln!(
+                    f,
+                    "[CHECK ERROR] Project {}: Failed to create API client: {:?}",
+                    project_name, e
+                );
             }
             // Client failed - send deps with no updates
-            let _ = tx.send(Action::UpdateDependencies(project_name, deps)).await;
+            let _ = tx
+                .send(Action::UpdateDependencies(project_name, deps))
+                .await;
             return;
         }
     };
@@ -203,7 +218,7 @@ pub async fn check_dependencies_with_cache(
 
             if should_check {
                 updated_dep.check_status = DependencyCheckStatus::Checking;
-                
+
                 // Send UI update showing this dep is being checked
                 let _ = tx_clone
                     .send(Action::UpdateDependencyCheckStatus(
@@ -220,8 +235,7 @@ pub async fn check_dependencies_with_cache(
                 .await
                 {
                     Ok(Ok(crate_info)) => {
-                        updated_dep.latest_version =
-                            Some(crate_info.crate_data.max_version);
+                        updated_dep.latest_version = Some(crate_info.crate_data.max_version);
                         updated_dep.check_status = DependencyCheckStatus::Checked;
                         updated_dep.last_checked = Some(SystemTime::now());
                     }
@@ -237,7 +251,10 @@ pub async fn check_dependencies_with_cache(
 
             // Send individual update for UI streaming
             let _ = tx_clone
-                .send(Action::UpdateSingleDependency(project_name_clone, updated_dep.clone()))
+                .send(Action::UpdateSingleDependency(
+                    project_name_clone,
+                    updated_dep.clone(),
+                ))
                 .await;
 
             Some(updated_dep)
@@ -285,8 +302,11 @@ pub async fn check_dependencies_with_cache(
                 .append(true)
                 .open("/tmp/carwash-debug.log")
             {
-                let _ = writeln!(f, "[RUNNER] Project {}: {} succeeded, {} failed, lock_hash={:x}",
-                               project_name, success_count, failed_count, lock_hash);
+                let _ = writeln!(
+                    f,
+                    "[RUNNER] Project {}: {} succeeded, {} failed, lock_hash={:x}",
+                    project_name, success_count, failed_count, lock_hash
+                );
             }
 
             // Only save if we have checked dependencies
@@ -298,8 +318,12 @@ pub async fn check_dependencies_with_cache(
                             .append(true)
                             .open("/tmp/carwash-debug.log")
                         {
-                            let _ = writeln!(f, "[RUNNER] ✓ Saved cache for {} ({} deps)",
-                                           project_name, cached_deps.len());
+                            let _ = writeln!(
+                                f,
+                                "[RUNNER] ✓ Saved cache for {} ({} deps)",
+                                project_name,
+                                cached_deps.len()
+                            );
                         }
                     }
                     Err(e) => {
@@ -308,8 +332,11 @@ pub async fn check_dependencies_with_cache(
                             .append(true)
                             .open("/tmp/carwash-debug.log")
                         {
-                            let _ = writeln!(f, "[RUNNER] ✗ Failed to save cache for {}: {}",
-                                           project_name, e);
+                            let _ = writeln!(
+                                f,
+                                "[RUNNER] ✗ Failed to save cache for {}: {}",
+                                project_name, e
+                            );
                         }
                     }
                 }
@@ -318,13 +345,19 @@ pub async fn check_dependencies_with_cache(
                 .append(true)
                 .open("/tmp/carwash-debug.log")
             {
-                let _ = writeln!(f, "[RUNNER] ⊘ Skipped {} (no successful checks)", project_name);
+                let _ = writeln!(
+                    f,
+                    "[RUNNER] ⊘ Skipped {} (no successful checks)",
+                    project_name
+                );
             }
         }
     }
 
     // Send final batch update
-    let _ = tx.send(Action::UpdateDependencies(project_name, updated_deps)).await;
+    let _ = tx
+        .send(Action::UpdateDependencies(project_name, updated_deps))
+        .await;
 }
 
 pub async fn run_command(
@@ -435,14 +468,8 @@ pub async fn run_command(
                 }
             };
 
-            let stdout = child
-                .stdout
-                .take()
-                .expect("stdout was configured as piped");
-            let stderr = child
-                .stderr
-                .take()
-                .expect("stderr was configured as piped");
+            let stdout = child.stdout.take().expect("stdout was configured as piped");
+            let stderr = child.stderr.take().expect("stderr was configured as piped");
 
             let mut stdout_reader = BufReader::new(stdout).lines();
             let mut stderr_reader = BufReader::new(stderr).lines();

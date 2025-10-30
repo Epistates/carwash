@@ -178,21 +178,21 @@ impl Project {
     }
 
     /// Reload dependencies from Cargo.lock after an update
-    /// 
+    ///
     /// This method re-parses Cargo.toml and Cargo.lock from disk to get the latest
     /// dependency versions. It should be called after running `cargo update` to ensure
     /// the in-memory state reflects what's on disk.
-    /// 
+    ///
     /// Returns Ok(()) if successful, Err with error message otherwise.
     pub fn reload_dependencies(&mut self) -> Result<(), String> {
         // Re-parse Cargo.toml to get declared dependencies
         let cargo_toml_path = self.path.join("Cargo.toml");
         let toml_content = fs::read_to_string(&cargo_toml_path)
             .map_err(|e| format!("Failed to read Cargo.toml: {}", e))?;
-        
+
         let toml: CargoToml = toml::from_str(&toml_content)
             .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
-        
+
         // Collect declared dependency names
         let mut declared_deps: HashSet<String> = HashSet::new();
         for dep_name in toml.dependencies.keys() {
@@ -204,7 +204,7 @@ impl Project {
         for dep_name in toml.build_dependencies.keys() {
             declared_deps.insert(dep_name.clone());
         }
-        
+
         // Determine which Cargo.lock to use (workspace or project)
         let lockfile_path = if let Some(ref ws_root) = self.workspace_root {
             let ws_lockfile = ws_root.join("Cargo.lock");
@@ -216,11 +216,11 @@ impl Project {
         } else {
             self.path.join("Cargo.lock")
         };
-        
+
         // Re-parse Cargo.lock
         let lockfile = Lockfile::load(&lockfile_path)
             .map_err(|e| format!("Failed to load Cargo.lock: {}", e))?;
-        
+
         // Extract current versions for declared dependencies
         let mut new_deps: Vec<Dependency> = lockfile
             .packages
@@ -228,8 +228,11 @@ impl Project {
             .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
             .map(|pkg| {
                 // Try to preserve latest_version, check_status, and last_checked from existing deps
-                let existing = self.dependencies.iter().find(|d| d.name == pkg.name.as_str());
-                
+                let existing = self
+                    .dependencies
+                    .iter()
+                    .find(|d| d.name == pkg.name.as_str());
+
                 let mut dep = Dependency::from(pkg);
                 if let Some(existing_dep) = existing {
                     // Preserve the cached check results if they exist
@@ -240,10 +243,10 @@ impl Project {
                 dep
             })
             .collect();
-        
+
         // Sort for consistent ordering
         new_deps.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         // Update dependencies
         self.dependencies = new_deps;
 

@@ -18,7 +18,7 @@ impl ProjectList {
     }
 
     /// Get status indicator and color for a project based on its check status
-    /// 
+    ///
     /// Visual indicators:
     /// - Gray (⋯): Unchecked or cache invalidated
     /// - Blue (⟳): Currently checking for updates
@@ -34,11 +34,21 @@ impl ProjectList {
             }
             ProjectCheckStatus::Checking => {
                 // Blue - currently being checked
-                ("⟳", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))
+                (
+                    "⟳",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )
             }
             ProjectCheckStatus::HasUpdates => {
                 // Yellow - has outdated dependencies
-                ("⚠", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                (
+                    "⚠",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
             }
             ProjectCheckStatus::UpToDate => {
                 // Green - all up to date

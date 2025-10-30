@@ -6,8 +6,8 @@ use carwash::components::{
     updater::UpdateWizard,
 };
 use carwash::events::{Action, Command, Mode};
-use carwash::project::{find_rust_projects, ProjectCheckStatus};
-use carwash::runner::{check_for_updates, check_dependencies_with_cache, run_command};
+use carwash::project::{ProjectCheckStatus, find_rust_projects};
+use carwash::runner::{check_dependencies_with_cache, check_for_updates, run_command};
 use carwash::ui::ui;
 
 use clap::Parser;
@@ -138,8 +138,11 @@ fn save_cache_progress(state: &AppState) {
             }
 
             if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "[QUIT] Project {}: {} total deps, {} checked, lock_hash={:x}",
-                               project.name, total_deps, checked_deps, lock_hash);
+                let _ = writeln!(
+                    f,
+                    "[QUIT] Project {}: {} total deps, {} checked, lock_hash={:x}",
+                    project.name, total_deps, checked_deps, lock_hash
+                );
             }
 
             // Save to cache (skip if no checked dependencies)
@@ -147,13 +150,21 @@ fn save_cache_progress(state: &AppState) {
                 match cache.save(&project.path, lock_hash, cached_deps.clone()) {
                     Ok(()) => {
                         if let Some(ref mut f) = log_file {
-                            let _ = writeln!(f, "[QUIT] ✓ Saved cache for {} ({} deps)",
-                                           project.name, cached_deps.len());
+                            let _ = writeln!(
+                                f,
+                                "[QUIT] ✓ Saved cache for {} ({} deps)",
+                                project.name,
+                                cached_deps.len()
+                            );
                         }
                     }
                     Err(e) => {
                         if let Some(ref mut f) = log_file {
-                            let _ = writeln!(f, "[QUIT] ✗ Failed to save cache for {}: {}", project.name, e);
+                            let _ = writeln!(
+                                f,
+                                "[QUIT] ✗ Failed to save cache for {}: {}",
+                                project.name, e
+                            );
                         }
                     }
                 }
@@ -195,7 +206,11 @@ fn load_cache_progress(projects: &mut [carwash::project::Project]) {
         let lock_path = project.path.join("Cargo.lock");
         if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
             if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "[LOAD] Project {}: lock_hash={:x}", project.name, lock_hash);
+                let _ = writeln!(
+                    f,
+                    "[LOAD] Project {}: lock_hash={:x}",
+                    project.name, lock_hash
+                );
             }
 
             // Try to load cached data
@@ -214,14 +229,23 @@ fn load_cache_progress(projects: &mut [carwash::project::Project]) {
                 }
 
                 if let Some(ref mut f) = log_file {
-                    let _ = writeln!(f, "[LOAD] ✓ Project {}: Loaded {} cached deps", project.name, applied_count);
+                    let _ = writeln!(
+                        f,
+                        "[LOAD] ✓ Project {}: Loaded {} cached deps",
+                        project.name, applied_count
+                    );
                 }
 
                 // Calculate project check status from cached data
-                project.check_status = Project::compute_check_status_from_deps(&project.dependencies);
+                project.check_status =
+                    Project::compute_check_status_from_deps(&project.dependencies);
                 loaded_count += 1;
             } else if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "[LOAD] ✗ Project {}: No cache found or hash mismatch", project.name);
+                let _ = writeln!(
+                    f,
+                    "[LOAD] ✗ Project {}: No cache found or hash mismatch",
+                    project.name
+                );
             }
         } else if let Some(ref mut f) = log_file {
             let _ = writeln!(f, "[LOAD] ⊘ Project {}: No Cargo.lock", project.name);
@@ -229,7 +253,12 @@ fn load_cache_progress(projects: &mut [carwash::project::Project]) {
     }
 
     if let Some(ref mut f) = log_file {
-        let _ = writeln!(f, "Loaded cache for {}/{} projects", loaded_count, projects.len());
+        let _ = writeln!(
+            f,
+            "Loaded cache for {}/{} projects",
+            loaded_count,
+            projects.len()
+        );
         let _ = writeln!(f, "=== END LOAD CACHE ===\n");
     }
 }
@@ -241,7 +270,7 @@ async fn run_app<B: Backend>(
 ) -> io::Result<()> {
     let (action_tx, mut action_rx) = mpsc::channel(100);
     let mut event_stream = crossterm::event::EventStream::new();
-    
+
     // Track last cache save time for periodic persistence
     let mut last_cache_save = std::time::Instant::now();
 
@@ -367,13 +396,13 @@ async fn run_app<B: Backend>(
                     Action::FinishProjectScan(_) => {
                         // Process the scan result FIRST (copies projects to state)
                         reducer(state, action);
-                        
+
                         // THEN load cached dependency data (updates state with cache)
                         load_cache_progress(&mut state.all_projects);
-                        
+
                         // Also update the filtered projects list with the cache data
                         load_cache_progress(&mut state.projects);
-                        
+
                         // Reset any "Checking" status to "Unchecked" (app was interrupted)
                         // These projects will be queued below to resume checking
                         for project in &mut state.all_projects {
@@ -386,7 +415,7 @@ async fn run_app<B: Backend>(
                                 project.check_status = ProjectCheckStatus::Unchecked;
                             }
                         }
-                        
+
                         // NOW queue projects for background checks (after cache is loaded)
                         // Queue projects that:
                         // 1. Have expired cache (> 5 minutes)
@@ -485,19 +514,19 @@ async fn run_app<B: Backend>(
                                     // Enter wizard mode right away
                                     state.mode = Mode::UpdateWizard;
                                     state.is_checking_updates = true;
-                                    
+
                                     // Show cached data immediately if available
                                     state.updater.outdated_dependencies = deps
                                         .iter()
                                         .filter(|d| {
-                                            d.latest_version.is_some() && 
+                                            d.latest_version.is_some() &&
                                             d.latest_version.as_ref().unwrap() != &d.current_version
                                         })
                                         .cloned()
                                         .collect();
-                                    
+
                                     state.updater.selected_dependencies.clear();
-                                    
+
                                     // Select first item if there are outdated dependencies
                                     if !state.updater.outdated_dependencies.is_empty() {
                                         state.updater.list_state.select(Some(0));
@@ -605,7 +634,7 @@ async fn run_app<B: Backend>(
 
                                 // CRITICAL FIX: After update completes, reload dependencies from disk
                                 // This ensures we read the UPDATED Cargo.lock file, not stale in-memory data
-                                
+
                                 // Find and reload the project in all_projects (source of truth)
                                 if let Some(all_proj) = state.all_projects.iter_mut().find(|p| p.name == project_name) {
                                     if let Ok(()) = all_proj.reload_dependencies() {
@@ -613,22 +642,22 @@ async fn run_app<B: Backend>(
                                         if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
                                             proj.dependencies = all_proj.dependencies.clone();
                                         }
-                                        
+
                                         // Clear the update wizard state
                                         state.updater.selected_dependencies.clear();
                                         state.updater.outdated_dependencies.clear();
-                                        
+
                                         // Now re-check with the FRESH dependencies to get latest versions
                                         let fresh_deps = all_proj.dependencies.clone();
                                         let project_path = all_proj.path.clone();
                                         let proj_name = all_proj.name.clone();
-                                        
+
                                         tokio::spawn(async move {
                                             // Re-check with fresh dependencies from disk
                                             check_dependencies_with_cache(
-                                                proj_name, 
-                                                fresh_deps, 
-                                                action_tx_clone, 
+                                                proj_name,
+                                                fresh_deps,
+                                                action_tx_clone,
                                                 false,  // Don't use cache - force fresh check
                                                 Some(project_path)
                                             ).await;

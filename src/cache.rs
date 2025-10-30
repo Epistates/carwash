@@ -89,8 +89,12 @@ impl UpdateCache {
             Ok(c) => c,
             Err(e) => {
                 if let Some(ref mut f) = log_file {
-                    let _ = writeln!(f, "  [CACHE] Failed to read cache file {}: {}",
-                                   cache_path.display(), e);
+                    let _ = writeln!(
+                        f,
+                        "  [CACHE] Failed to read cache file {}: {}",
+                        cache_path.display(),
+                        e
+                    );
                 }
                 return None;
             }
@@ -100,8 +104,12 @@ impl UpdateCache {
             Ok(c) => c,
             Err(e) => {
                 if let Some(ref mut f) = log_file {
-                    let _ = writeln!(f, "  [CACHE] Failed to parse cache file {}: {}",
-                                   cache_path.display(), e);
+                    let _ = writeln!(
+                        f,
+                        "  [CACHE] Failed to parse cache file {}: {}",
+                        cache_path.display(),
+                        e
+                    );
                 }
                 return None;
             }
@@ -110,14 +118,23 @@ impl UpdateCache {
         // Only return cache if lock file hash matches (not invalidated)
         if cache.lock_file_hash == current_lock_hash {
             if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "  [CACHE] Hash match! Loaded {} deps from {}",
-                               cache.dependencies.len(), cache_path.display());
+                let _ = writeln!(
+                    f,
+                    "  [CACHE] Hash match! Loaded {} deps from {}",
+                    cache.dependencies.len(),
+                    cache_path.display()
+                );
             }
             Some(cache.dependencies)
         } else {
             if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "  [CACHE] Hash mismatch! cached={:x}, current={:x} for {}",
-                               cache.lock_file_hash, current_lock_hash, cache_path.display());
+                let _ = writeln!(
+                    f,
+                    "  [CACHE] Hash mismatch! cached={:x}, current={:x} for {}",
+                    cache.lock_file_hash,
+                    current_lock_hash,
+                    cache_path.display()
+                );
             }
             None
         }
@@ -131,8 +148,7 @@ impl UpdateCache {
         dependencies: HashMap<String, CachedDependency>,
     ) -> Result<()> {
         // Create cache directory if it doesn't exist
-        fs::create_dir_all(&self.cache_dir)
-            .context("Failed to create cache directory")?;
+        fs::create_dir_all(&self.cache_dir).context("Failed to create cache directory")?;
 
         let cache = ProjectCache {
             lock_file_hash: lock_hash,
@@ -140,8 +156,7 @@ impl UpdateCache {
         };
 
         let cache_path = self.get_cache_path(project_path);
-        let json = serde_json::to_string(&cache)
-            .context("Failed to serialize cache data")?;
+        let json = serde_json::to_string(&cache).context("Failed to serialize cache data")?;
         fs::write(&cache_path, json)
             .with_context(|| format!("Failed to write cache file: {}", cache_path.display()))?;
 
@@ -151,8 +166,12 @@ impl UpdateCache {
     /// Clear all cached data
     pub fn clear(&self) -> Result<()> {
         if self.cache_dir.exists() {
-            fs::remove_dir_all(&self.cache_dir)
-                .with_context(|| format!("Failed to clear cache directory: {}", self.cache_dir.display()))?;
+            fs::remove_dir_all(&self.cache_dir).with_context(|| {
+                format!(
+                    "Failed to clear cache directory: {}",
+                    self.cache_dir.display()
+                )
+            })?;
         }
         Ok(())
     }
