@@ -77,65 +77,13 @@ impl UpdateCache {
     ) -> Option<HashMap<String, CachedDependency>> {
         let cache_path = self.get_cache_path(project_path);
 
-        // Debug logging
-        use std::io::Write;
-        let mut log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/carwash-debug.log")
-            .ok();
-
-        let contents = match fs::read_to_string(&cache_path) {
-            Ok(c) => c,
-            Err(e) => {
-                if let Some(ref mut f) = log_file {
-                    let _ = writeln!(
-                        f,
-                        "  [CACHE] Failed to read cache file {}: {}",
-                        cache_path.display(),
-                        e
-                    );
-                }
-                return None;
-            }
-        };
-
-        let cache: ProjectCache = match serde_json::from_str(&contents) {
-            Ok(c) => c,
-            Err(e) => {
-                if let Some(ref mut f) = log_file {
-                    let _ = writeln!(
-                        f,
-                        "  [CACHE] Failed to parse cache file {}: {}",
-                        cache_path.display(),
-                        e
-                    );
-                }
-                return None;
-            }
-        };
+        let contents = fs::read_to_string(&cache_path).ok()?;
+        let cache: ProjectCache = serde_json::from_str(&contents).ok()?;
 
         // Only return cache if lock file hash matches (not invalidated)
         if cache.lock_file_hash == current_lock_hash {
-            if let Some(ref mut f) = log_file {
-                let _ = writeln!(
-                    f,
-                    "  [CACHE] Hash match! Loaded {} deps from {}",
-                    cache.dependencies.len(),
-                    cache_path.display()
-                );
-            }
             Some(cache.dependencies)
         } else {
-            if let Some(ref mut f) = log_file {
-                let _ = writeln!(
-                    f,
-                    "  [CACHE] Hash mismatch! cached={:x}, current={:x} for {}",
-                    cache.lock_file_hash,
-                    current_lock_hash,
-                    cache_path.display()
-                );
-            }
             None
         }
     }

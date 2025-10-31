@@ -2,8 +2,8 @@ use carwash::Args;
 use carwash::app::{AppState, reducer};
 use carwash::cache::UpdateCache;
 use carwash::components::{
-    Component, help::Help, palette::CommandPalette, projects::ProjectList, text_input::TextInput,
-    updater::UpdateWizard,
+    Component, help::Help, palette::CommandPalette, projects::ProjectList, settings::SettingsModal,
+    text_input::TextInput, updater::UpdateWizard,
 };
 use carwash::events::{Action, Command, Mode};
 use carwash::project::{ProjectCheckStatus, find_rust_projects};
@@ -96,19 +96,6 @@ async fn main() -> io::Result<()> {
 /// Save current dependency check progress to persistent cache
 fn save_cache_progress(state: &AppState) {
     use std::collections::HashMap;
-    use std::io::Write;
-
-    // Write debug to file instead of stderr (to avoid corrupting TUI)
-    let mut log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/carwash-debug.log")
-        .ok();
-
-    if let Some(ref mut f) = log_file {
-        let _ = writeln!(f, "\n=== SAVE CACHE DEBUG ===");
-        let _ = writeln!(f, "Total projects: {}", state.all_projects.len());
-    }
 
     let cache = UpdateCache::new();
 
@@ -119,9 +106,6 @@ fn save_cache_progress(state: &AppState) {
         if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
             // Build cache data from current dependencies
             let mut cached_deps = HashMap::new();
-            let total_deps = project.dependencies.len();
-            let mut checked_deps = 0;
-
             for dep in &project.dependencies {
                 // CRITICAL: Only save dependencies that have been CHECKED
                 // If latest_version is None, the dep was never checked, so don't cache it
@@ -133,89 +117,29 @@ fn save_cache_progress(state: &AppState) {
                             cached_at: dep.last_checked.unwrap_or_else(std::time::SystemTime::now),
                         },
                     );
-                    checked_deps += 1;
                 }
-            }
-
-            if let Some(ref mut f) = log_file {
-                let _ = writeln!(
-                    f,
-                    "[QUIT] Project {}: {} total deps, {} checked, lock_hash={:x}",
-                    project.name, total_deps, checked_deps, lock_hash
-                );
             }
 
             // Save to cache (skip if no checked dependencies)
             if !cached_deps.is_empty() {
-                match cache.save(&project.path, lock_hash, cached_deps.clone()) {
-                    Ok(()) => {
-                        if let Some(ref mut f) = log_file {
-                            let _ = writeln!(
-                                f,
-                                "[QUIT] ✓ Saved cache for {} ({} deps)",
-                                project.name,
-                                cached_deps.len()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(ref mut f) = log_file {
-                            let _ = writeln!(
-                                f,
-                                "[QUIT] ✗ Failed to save cache for {}: {}",
-                                project.name, e
-                            );
-                        }
-                    }
-                }
-            } else if let Some(ref mut f) = log_file {
-                let _ = writeln!(f, "[QUIT] ⊘ Skipped {} (no checked deps)", project.name);
+                let _ = cache.save(&project.path, lock_hash, cached_deps.clone());
             }
-        } else if let Some(ref mut f) = log_file {
-            let _ = writeln!(f, "  ⊘ Skipped {} (no Cargo.lock)", project.name);
         }
-    }
-
-    if let Some(ref mut f) = log_file {
-        let _ = writeln!(f, "=== END SAVE CACHE ===\n");
     }
 }
 
 /// Load dependency check progress from persistent cache
 fn load_cache_progress(projects: &mut [carwash::project::Project]) {
     use carwash::project::{DependencyCheckStatus, Project};
-    use std::io::Write;
-
-    // Write debug to file instead of stderr (to avoid corrupting TUI)
-    let mut log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/carwash-debug.log")
-        .ok();
-
-    if let Some(ref mut f) = log_file {
-        let _ = writeln!(f, "\n=== LOAD CACHE DEBUG ===");
-        let _ = writeln!(f, "Loading cache for {} projects", projects.len());
-    }
 
     let cache = UpdateCache::new();
-    let mut loaded_count = 0;
 
     for project in projects.iter_mut() {
         // Compute Cargo.lock hash
         let lock_path = project.path.join("Cargo.lock");
         if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
-            if let Some(ref mut f) = log_file {
-                let _ = writeln!(
-                    f,
-                    "[LOAD] Project {}: lock_hash={:x}",
-                    project.name, lock_hash
-                );
-            }
-
             // Try to load cached data
             if let Some(cached_deps) = cache.load(&project.path, lock_hash) {
-                let mut applied_count = 0;
                 // Apply cached data to dependencies
                 for dep in &mut project.dependencies {
                     if let Some(cached_dep) = cached_deps.get(&dep.name) {
@@ -224,48 +148,104 @@ fn load_cache_progress(projects: &mut [carwash::project::Project]) {
                         dep.check_status = DependencyCheckStatus::Checked;
                         // Set last_checked to the cache timestamp so checks respect cache duration
                         dep.last_checked = Some(cached_dep.cached_at);
-                        applied_count += 1;
                     }
-                }
-
-                if let Some(ref mut f) = log_file {
-                    let _ = writeln!(
-                        f,
-                        "[LOAD] ✓ Project {}: Loaded {} cached deps",
-                        project.name, applied_count
-                    );
                 }
 
                 // Calculate project check status from cached data
                 project.check_status =
                     Project::compute_check_status_from_deps(&project.dependencies);
-                loaded_count += 1;
-            } else if let Some(ref mut f) = log_file {
-                let _ = writeln!(
-                    f,
-                    "[LOAD] ✗ Project {}: No cache found or hash mismatch",
-                    project.name
-                );
             }
-        } else if let Some(ref mut f) = log_file {
-            let _ = writeln!(f, "[LOAD] ⊘ Project {}: No Cargo.lock", project.name);
         }
     }
+}
 
-    if let Some(ref mut f) = log_file {
-        let _ = writeln!(
-            f,
-            "Loaded cache for {}/{} projects",
-            loaded_count,
-            projects.len()
-        );
-        let _ = writeln!(f, "=== END LOAD CACHE ===\n");
+async fn handle_event(
+    event: Event,
+    state: &mut AppState,
+    action_tx: &mpsc::Sender<Action>,
+) -> io::Result<()> {
+    if let Event::Key(key) = event {
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            reducer(state, Action::Quit);
+        }
+
+        let action: Option<Action> = match state.mode {
+            Mode::Loading => {
+                // Allow quitting even while loading
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                    _ => None,
+                }
+            }
+            Mode::Normal => {
+                // Handle normal mode keys without interfering with workspace navigation
+                match key.code {
+                    KeyCode::Char('q') => Some(Action::Quit),
+                    KeyCode::Char('?') => Some(Action::ShowHelp),
+                    KeyCode::Char('s') | KeyCode::Char('S') => Some(Action::ShowSettings),
+                    KeyCode::Char(':') => Some(Action::ShowCommandPalette),
+                    KeyCode::Char('u') => {
+                        // Open update wizard for selected project
+                        Some(Action::StartUpdateWizard)
+                    }
+                    _ => {
+                        let mut project_list = ProjectList::new();
+                        project_list.handle_key_events(key.code, state)
+                    }
+                }
+            }
+            Mode::CommandPalette => {
+                let mut palette = CommandPalette::new();
+                palette.handle_key_events(key.code, state)
+            }
+            Mode::UpdateWizard => {
+                let mut updater = UpdateWizard::new();
+                updater.handle_key_events(key.code, state)
+            }
+            Mode::TextInput => {
+                let mut text_input = TextInput::new();
+                text_input.handle_key_events(key.code, state)
+            }
+            Mode::Help => {
+                let mut help = Help::new();
+                help.handle_key_events(key.code, state)
+            }
+            Mode::Settings => {
+                let mut settings = SettingsModal::new();
+                settings.handle_key_events(key.code, state)
+            }
+        };
+
+        if let Some(action) = action {
+            // Some actions need to be sent through the action channel for async processing
+            match &action {
+                Action::ExecuteCommand(_)
+                | Action::StartUpdateWizard
+                | Action::RunUpdate
+                | Action::ProcessBackgroundUpdateQueue
+                | Action::UpdateDependencies(..)
+                | Action::UpdateSingleDependency(..)
+                | Action::UpdateDependenciesStreamStart(_) => {
+                    // Send through channel for async handling
+                    let _ = action_tx.send(action).await;
+                }
+                _ => {
+                    // Handle synchronously through reducer
+                    reducer(state, action.clone());
+                    // Save progress if quitting
+                    if matches!(action, Action::Quit) {
+                        save_cache_progress(state);
+                    }
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    state: &mut AppState<'_>,
+    state: &mut AppState,
     target_directory: String,
 ) -> io::Result<()> {
     let (action_tx, mut action_rx) = mpsc::channel(100);
@@ -311,76 +291,8 @@ async fn run_app<B: Backend>(
             // Prioritize keyboard events with biased selection
             biased;
 
-            Some(Ok(Event::Key(key))) = event_stream.next() => {
-                if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-                    reducer(state, Action::Quit);
-                }
-
-                let action: Option<Action> = match state.mode {
-                    Mode::Loading => {
-                        // Allow quitting even while loading
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-                            _ => None,
-                        }
-                    }
-                    Mode::Normal => {
-                        // Handle normal mode keys without interfering with workspace navigation
-                        match key.code {
-                            KeyCode::Char('q') => Some(Action::Quit),
-                            KeyCode::Char('?') => Some(Action::ShowHelp),
-                            KeyCode::Char(':') => Some(Action::ShowCommandPalette),
-                            KeyCode::Char('u') => {
-                                // Open update wizard for selected project
-                                Some(Action::StartUpdateWizard)
-                            },
-                            _ => {
-                                let mut project_list = ProjectList::new();
-                                project_list.handle_key_events(key.code, state)
-                            }
-                        }
-                    }
-                    Mode::CommandPalette => {
-                        let mut palette = CommandPalette::new();
-                        palette.handle_key_events(key.code, state)
-                    }
-                    Mode::UpdateWizard => {
-                        let mut updater = UpdateWizard::new();
-                        updater.handle_key_events(key.code, state)
-                    }
-                    Mode::TextInput => {
-                        let mut text_input = TextInput::new();
-                        text_input.handle_key_events(key.code, state)
-                    }
-                    Mode::Help => {
-                        let mut help = Help::new();
-                        help.handle_key_events(key.code, state)
-                    }
-                };
-
-                if let Some(action) = action {
-                    // Some actions need to be sent through the action channel for async processing
-                    match &action {
-                        Action::ExecuteCommand(_)
-                            | Action::StartUpdateWizard
-                            | Action::RunUpdate
-                            | Action::ProcessBackgroundUpdateQueue
-                            | Action::UpdateDependencies(..)
-                            | Action::UpdateSingleDependency(..)
-                            | Action::UpdateDependenciesStreamStart(_) => {
-                            // Send through channel for async handling
-                            let _ = action_tx.send(action).await;
-                        }
-                        _ => {
-                            // Handle synchronously through reducer
-                            reducer(state, action.clone());
-                            // Save progress if quitting
-                            if matches!(action, Action::Quit) {
-                                save_cache_progress(state);
-                            }
-                        }
-                    }
-                }
+            Some(Ok(event)) = event_stream.next() => {
+                handle_event(event, state, &action_tx).await?;
             }
             Some(action) = action_rx.recv() => {
                 match &action {
@@ -389,7 +301,7 @@ async fn run_app<B: Backend>(
                             let action_tx_clone = action_tx.clone();
                             let command_str = command.clone();
                             // Always run on selected projects (on_all = false)
-                            run_command(&command_str, state, action_tx_clone, false).await;
+                            run_command(&command_str, state, action_tx_clone).await;
                             reducer(state, Action::EnterNormalMode);
                         }
                     }
@@ -416,80 +328,88 @@ async fn run_app<B: Backend>(
                             }
                         }
 
-                        // NOW queue projects for background checks (after cache is loaded)
-                        // Queue projects that:
-                        // 1. Have expired cache (> 5 minutes)
-                        // 2. Have no cache (never checked)
-                        // 3. Were interrupted (status is Unchecked)
-                        // 4. Have ANY dependency that needs checking
-                        let mut queue_idx = 0;
-                        for project in &state.all_projects {
-                            // Skip projects with no dependencies
-                            if project.dependencies.is_empty() {
-                                continue;
-                            }
-
-                            // CRITICAL FIX: Check if ANY dependency needs checking, not just the first!
-                            // A project should be queued if even ONE dep is uncached or expired
-                            let needs_check = project.dependencies.iter().any(|dep| {
-                                if let Some(last_checked) = dep.last_checked {
-                                    // Check if cache expired (> 5 minutes)
-                                    if let Ok(elapsed) = std::time::SystemTime::now().duration_since(last_checked) {
-                                        elapsed > std::time::Duration::from_secs(5 * 60)
-                                    } else {
-                                        true // Invalid timestamp, needs check
-                                    }
-                                } else {
-                                    true // Never checked - needs check!
+                        if state.settings.background_updates_enabled {
+                            // NOW queue projects for background checks (after cache is loaded)
+                            // Queue projects that:
+                            // 1. Have expired cache (> cache TTL)
+                            // 2. Have no cache (never checked)
+                            // 3. Were interrupted (status is Unchecked)
+                            // 4. Have ANY dependency that needs checking
+                            let mut queue_idx = 0;
+                            let cache_duration = state.settings.cache_duration();
+                            for project in &state.all_projects {
+                                // Skip projects with no dependencies
+                                if project.dependencies.is_empty() {
+                                    continue;
                                 }
-                            });
 
-                            // Also queue if status is Unchecked (was interrupted or never checked)
-                            let needs_check = needs_check || project.check_status == ProjectCheckStatus::Unchecked;
-
-                            if needs_check {
-                                let tx = action_tx.clone();
-                                let project_name = project.name.clone();
-
-                                // Stagger the queue operations to keep UI responsive
-                                let delay = std::time::Duration::from_millis(100 * queue_idx);
-                                queue_idx += 1;
-
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(delay).await;
-                                    let _ = tx.send(Action::QueueBackgroundUpdate(project_name)).await;
+                                let needs_check = project.dependencies.iter().any(|dep| {
+                                    if let Some(last_checked) = dep.last_checked {
+                                        if let Ok(elapsed) =
+                                            std::time::SystemTime::now().duration_since(last_checked)
+                                        {
+                                            elapsed > cache_duration
+                                        } else {
+                                            true // Invalid timestamp, needs check
+                                        }
+                                    } else {
+                                        true // Never checked - needs check!
+                                    }
                                 });
+
+                                // Also queue if status is Unchecked (was interrupted or never checked)
+                                let needs_check =
+                                    needs_check || project.check_status == ProjectCheckStatus::Unchecked;
+
+                                if needs_check {
+                                    let tx = action_tx.clone();
+                                    let project_name = project.name.clone();
+
+                                    // Stagger the queue operations to keep UI responsive
+                                    let delay = std::time::Duration::from_millis(100 * queue_idx);
+                                    queue_idx += 1;
+
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(delay).await;
+                                        let _ = tx
+                                            .send(Action::QueueBackgroundUpdate(
+                                                project_name,
+                                                false,
+                                            ))
+                                            .await;
+                                    });
+                                }
                             }
                         }
                     }
                     Action::StartUpdateWizard => {
+                        let selected_project_name = state
+                            .get_selected_project()
+                            .map(|p| p.name.clone());
+                        let is_currently_checking_same_project = selected_project_name
+                            .as_ref()
+                            .map(|name| {
+                                state.is_checking_updates
+                                    && state
+                                        .updater
+                                        .locked_project_name
+                                        .as_ref()
+                                        == Some(name)
+                            })
+                            .unwrap_or(false);
+
                         // Enter wizard mode and set the lock
                         reducer(state, action.clone());
 
-                        // CRITICAL: Spawn the check in background - DON'T AWAIT!
-                        // Awaiting here would freeze the UI until check completes
-                        let action_tx_clone = action_tx.clone();
-
-                        // Clone the state data we need before spawning
-                        let locked_project_name = state.updater.locked_project_name.clone();
-                        let all_projects = state.all_projects.clone();
-
-                        tokio::spawn(async move {
-                            // Find the locked project
-                            if let Some(ref project_name) = locked_project_name {
-                                if let Some(project) = all_projects.iter().find(|p| &p.name == project_name) {
-                                    let deps = project.dependencies.clone();
-                                    let project_path = project.path.clone();
-                                    let name = project.name.clone();
-
-                                    // Send stream start
-                                    let _ = action_tx_clone.send(Action::UpdateDependenciesStreamStart(name.clone())).await;
-
-                                    // Run the check
-                                    check_dependencies_with_cache(name, deps, action_tx_clone, true, Some(project_path)).await;
-                                }
+                        if let Some(project_name) = state.updater.locked_project_name.clone() {
+                            if is_currently_checking_same_project {
+                                // Already processing this project; just keep displaying the wizard
+                                continue;
                             }
-                        });
+                            let _ = action_tx
+                                .send(Action::QueueBackgroundUpdate(project_name, true))
+                                .await;
+                        }
                     }
                     Action::StartBackgroundUpdateCheck => {
                         let action_tx_clone = action_tx.clone();
@@ -538,7 +458,7 @@ async fn run_app<B: Backend>(
                                 // CRITICAL FIX: Only set status to "Checking" if deps actually need checking
                                 // Don't overwrite cached status if all deps are fresh
                                 let now = std::time::SystemTime::now();
-                                let cache_duration = std::time::Duration::from_secs(5 * 60);
+                                let cache_duration = state.settings.cache_duration();
                                 let has_deps_needing_check = deps.iter().any(|dep| {
                                     if let Some(last_checked) = dep.last_checked {
                                         // Check if cache expired
@@ -562,6 +482,7 @@ async fn run_app<B: Backend>(
 
                                 let action_tx_clone_2 = action_tx_clone.clone();
                                 let is_priority_task = is_priority;
+                                let cache_duration = state.settings.cache_duration();
 
                                 // Perform the update check asynchronously
                                 tokio::spawn(async move {
@@ -572,8 +493,10 @@ async fn run_app<B: Backend>(
                                         deps,
                                         action_tx_clone,
                                         true,  // ← use_cache=true!
-                                        Some(project_path)
-                                    ).await;
+                                        Some(project_path),
+                                        cache_duration,
+                                    )
+                                    .await;
 
                                     // Only continue queue for background tasks, not priority
                                     if !is_priority_task {
@@ -588,7 +511,7 @@ async fn run_app<B: Backend>(
                             }
                         }
                     }
-                    Action::QueueBackgroundUpdate(_project_name) => {
+                    Action::QueueBackgroundUpdate(_, _) => {
                         // Add to queue and start processing
                         reducer(state, action);
                         let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
@@ -609,6 +532,17 @@ async fn run_app<B: Backend>(
                         // Stream has started
                         reducer(state, action);
                     }
+                    Action::SaveSettings => {
+                        reducer(state, action.clone());
+
+                        if state.settings.background_updates_enabled
+                            && state.update_queue.has_pending_tasks()
+                        {
+                            let _ = action_tx
+                                .send(Action::ProcessBackgroundUpdateQueue)
+                                .await;
+                        }
+                    }
                     Action::RunUpdate => {
                         // Build the cargo update command for selected dependencies
                         let selected_deps: Vec<String> = state.updater.selected_dependencies.iter().cloned().collect();
@@ -627,7 +561,7 @@ async fn run_app<B: Backend>(
                                 state.selected_projects.insert(project_name.clone());
 
                                 // Run the update command
-                                run_command(&update_cmd, state, action_tx_clone.clone(), false).await;
+                                run_command(&update_cmd, state, action_tx_clone.clone()).await;
 
                                 // Restore previous selection state
                                 state.selected_projects = previous_selection;
@@ -651,6 +585,7 @@ async fn run_app<B: Backend>(
                                         let fresh_deps = all_proj.dependencies.clone();
                                         let project_path = all_proj.path.clone();
                                         let proj_name = all_proj.name.clone();
+                                        let cache_duration = state.settings.cache_duration();
 
                                         tokio::spawn(async move {
                                             // Re-check with fresh dependencies from disk
@@ -659,8 +594,10 @@ async fn run_app<B: Backend>(
                                                 fresh_deps,
                                                 action_tx_clone,
                                                 false,  // Don't use cache - force fresh check
-                                                Some(project_path)
-                                            ).await;
+                                                Some(project_path),
+                                                cache_duration,
+                                            )
+                                            .await;
                                         });
                                     }
                                 }

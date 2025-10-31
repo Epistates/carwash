@@ -19,8 +19,6 @@ use tokio::{
 };
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
-const CACHE_DURATION_SECS: u64 = 5 * 60; // 5 minutes
-
 /// A task to check for dependency updates on a project
 #[derive(Debug, Clone)]
 pub struct UpdateCheckTask {
@@ -79,9 +77,13 @@ impl UpdateQueue {
     }
 
     pub fn get_next_task(&mut self) -> Option<UpdateCheckTask> {
-        if self.in_progress < PARALLEL_UPDATE_CHECKS {
+        if self.in_progress >= PARALLEL_UPDATE_CHECKS {
+            return None;
+        }
+
+        if let Some(task) = self.queue.pop_front() {
             self.in_progress += 1;
-            self.queue.pop_front()
+            Some(task)
         } else {
             None
         }
@@ -105,7 +107,7 @@ impl UpdateQueue {
 
 /// Check for updates on selected project with proper caching
 /// This is called when user presses 'u' or opens update wizard
-pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
+pub async fn check_for_updates(state: &AppState, tx: mpsc::Sender<Action>) {
     // CRITICAL FIX: When called from wizard, use the LOCKED project, not current selection!
     // User might have moved cursor after opening wizard
     let project_to_check = if state.mode == crate::events::Mode::UpdateWizard {
@@ -130,7 +132,15 @@ pub async fn check_for_updates(state: &AppState<'_>, tx: mpsc::Sender<Action>) {
             .await;
 
         // Perform checks asynchronously - don't await here
-        check_dependencies_with_cache(project_name, deps, tx, true, Some(project_path)).await;
+        check_dependencies_with_cache(
+            project_name,
+            deps,
+            tx,
+            true,
+            Some(project_path),
+            state.settings.cache_duration(),
+        )
+        .await;
     }
 }
 
@@ -141,23 +151,8 @@ pub async fn check_dependencies_with_cache(
     tx: mpsc::Sender<Action>,
     use_cache: bool,
     project_path: Option<std::path::PathBuf>,
+    cache_duration: std::time::Duration,
 ) {
-    // DEBUG: Log function entry
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/carwash-debug.log")
-    {
-        let _ = writeln!(
-            f,
-            "[CHECK START] Project {} with {} deps (use_cache={})",
-            project_name,
-            deps.len(),
-            use_cache
-        );
-    }
-
     let cache = UpdateCache::new();
     let semaphore = Arc::new(Semaphore::new(PARALLEL_UPDATE_CHECKS));
     let client_result = AsyncClient::new(
@@ -167,19 +162,7 @@ pub async fn check_dependencies_with_cache(
 
     let client = match client_result {
         Ok(client) => client,
-        Err(e) => {
-            // DEBUG: Log client failure
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/carwash-debug.log")
-            {
-                let _ = writeln!(
-                    f,
-                    "[CHECK ERROR] Project {}: Failed to create API client: {:?}",
-                    project_name, e
-                );
-            }
+        Err(_) => {
             // Client failed - send deps with no updates
             let _ = tx
                 .send(Action::UpdateDependencies(project_name, deps))
@@ -188,7 +171,6 @@ pub async fn check_dependencies_with_cache(
         }
     };
     let now = SystemTime::now();
-    let cache_duration = std::time::Duration::from_secs(CACHE_DURATION_SECS);
     let mut tasks = Vec::new();
 
     for dep in deps {
@@ -222,6 +204,7 @@ pub async fn check_dependencies_with_cache(
                 // Send UI update showing this dep is being checked
                 let _ = tx_clone
                     .send(Action::UpdateDependencyCheckStatus(
+                        project_name_clone.clone(),
                         updated_dep.name.clone(),
                         DependencyCheckStatus::Checking,
                     ))
@@ -274,9 +257,6 @@ pub async fn check_dependencies_with_cache(
     if let Some(path) = project_path {
         if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock")) {
             let mut cached_deps = std::collections::HashMap::new();
-            let mut success_count = 0;
-            let mut failed_count = 0;
-
             for dep in &updated_deps {
                 // CRITICAL: Only cache dependencies that were successfully checked
                 // If latest_version is None (network error, timeout, etc.), don't cache it
@@ -289,67 +269,12 @@ pub async fn check_dependencies_with_cache(
                             cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
                         },
                     );
-                    success_count += 1;
-                } else {
-                    failed_count += 1;
                 }
-            }
-
-            // Debug logging
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/carwash-debug.log")
-            {
-                let _ = writeln!(
-                    f,
-                    "[RUNNER] Project {}: {} succeeded, {} failed, lock_hash={:x}",
-                    project_name, success_count, failed_count, lock_hash
-                );
             }
 
             // Only save if we have checked dependencies
             if !cached_deps.is_empty() {
-                match cache.save(&path, lock_hash, cached_deps.clone()) {
-                    Ok(()) => {
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/carwash-debug.log")
-                        {
-                            let _ = writeln!(
-                                f,
-                                "[RUNNER] ✓ Saved cache for {} ({} deps)",
-                                project_name,
-                                cached_deps.len()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/carwash-debug.log")
-                        {
-                            let _ = writeln!(
-                                f,
-                                "[RUNNER] ✗ Failed to save cache for {}: {}",
-                                project_name, e
-                            );
-                        }
-                    }
-                }
-            } else if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/carwash-debug.log")
-            {
-                let _ = writeln!(
-                    f,
-                    "[RUNNER] ⊘ Skipped {} (no successful checks)",
-                    project_name
-                );
+                let _ = cache.save(&path, lock_hash, cached_deps.clone());
             }
         }
     }
@@ -360,26 +285,17 @@ pub async fn check_dependencies_with_cache(
         .await;
 }
 
-pub async fn run_command(
-    command_str: &str,
-    state: &AppState<'_>,
-    tx: mpsc::Sender<Action>,
-    on_all: bool,
-) {
+pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<Action>) {
     if command_str.is_empty() {
         return;
     }
 
-    let projects_to_run: Vec<Project> = if on_all {
-        state.projects.clone()
-    } else {
-        state
-            .projects
-            .iter()
-            .filter(|p| state.selected_projects.contains(&p.name))
-            .cloned()
-            .collect()
-    };
+    let projects_to_run: Vec<Project> = state
+        .projects
+        .iter()
+        .filter(|p| state.selected_projects.contains(&p.name))
+        .cloned()
+        .collect();
 
     if projects_to_run.is_empty() {
         let _ = tx

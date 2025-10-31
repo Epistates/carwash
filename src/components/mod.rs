@@ -13,6 +13,7 @@ pub mod help;
 pub mod output;
 pub mod palette;
 pub mod projects;
+pub mod settings;
 pub mod status;
 pub mod text_input;
 pub mod updater;

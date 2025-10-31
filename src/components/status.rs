@@ -31,9 +31,9 @@ impl Component for StatusBar {
             Mode::Loading => ("LOADING", Color::Yellow, "Scanning for projects..."),
             Mode::Normal => {
                 let hint = if app.tabs.len() > 1 {
-                    "':' command | 'u' updates | ←→/hl collapse/expand | tabs: ←→ | '?' help"
+                    "':' command | 'u' updates | 's' settings | ←→/hl collapse/expand | tabs: ←→ | '?' help"
                 } else {
-                    "':' command | 'u' updates | ←→/hl collapse/expand | '?' help | 'q' quit"
+                    "':' command | 'u' updates | 's' settings | ←→/hl collapse/expand | '?' help | 'q' quit"
                 };
                 ("NORMAL", Color::Green, hint)
             }
@@ -46,6 +46,11 @@ impl Component for StatusBar {
                 "UPDATE",
                 Color::Magenta,
                 "Space select | ↑↓ navigate | Enter update | Esc cancel",
+            ),
+            Mode::Settings => (
+                "SETTINGS",
+                Color::Magenta,
+                "Digits set cache | Space toggles background | Enter save | Esc cancel",
             ),
             Mode::TextInput => ("INPUT", Color::Blue, "Enter confirm | Esc cancel"),
             Mode::Help => ("HELP", Color::Yellow, "Esc or 'q' to close"),

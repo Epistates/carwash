@@ -35,6 +35,10 @@ pub enum Action {
     ShowCommandPalette,
     /// Show help screen
     ShowHelp,
+    /// Show settings modal
+    ShowSettings,
+    /// Close settings modal without saving
+    CloseSettings,
     /// Enter normal mode
     EnterNormalMode,
     /// Update command palette input
@@ -51,6 +55,12 @@ pub enum Action {
     StartUpdateWizard,
     /// Toggle selection in update wizard
     ToggleUpdateSelection,
+    /// Update cache duration text in settings modal
+    SettingsUpdateCacheInput(String),
+    /// Toggle background update preference in settings modal
+    SettingsToggleBackground,
+    /// Persist settings changes
+    SaveSettings,
     /// Run selected updates
     RunUpdate,
     /// Check for dependency updates
@@ -66,7 +76,7 @@ pub enum Action {
     /// Update a single dependency with latest info
     UpdateSingleDependency(String, Dependency),
     /// Update check status for a specific dependency (for UI streaming)
-    UpdateDependencyCheckStatus(String, crate::project::DependencyCheckStatus),
+    UpdateDependencyCheckStatus(String, String, crate::project::DependencyCheckStatus),
     /// Create a new output tab
     CreateTab(String),
     /// Add output line to a tab
@@ -77,8 +87,8 @@ pub enum Action {
     SwitchToTab(usize),
     /// Process pending background update tasks
     ProcessBackgroundUpdateQueue,
-    /// Queue a project for background update checking
-    QueueBackgroundUpdate(String),
+    /// Queue a project for update checking (background or priority)
+    QueueBackgroundUpdate(String, bool),
     /// Update the visual check status of a project
     UpdateProjectCheckStatus(String, crate::project::ProjectCheckStatus),
     /// Quit the application
@@ -100,6 +110,8 @@ pub enum Mode {
     TextInput,
     /// Help screen is displayed
     Help,
+    /// Settings modal is open
+    Settings,
 }
 
 #[cfg(test)]
@@ -134,6 +146,7 @@ mod tests {
         assert_eq!(Mode::UpdateWizard, Mode::UpdateWizard);
         assert_eq!(Mode::TextInput, Mode::TextInput);
         assert_eq!(Mode::Help, Mode::Help);
+        assert_eq!(Mode::Settings, Mode::Settings);
     }
 
     #[test]
@@ -147,5 +160,6 @@ mod tests {
     fn test_mode_inequality() {
         assert_ne!(Mode::Normal, Mode::Loading);
         assert_ne!(Mode::CommandPalette, Mode::UpdateWizard);
+        assert_ne!(Mode::Settings, Mode::Normal);
     }
 }

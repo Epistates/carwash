@@ -4,11 +4,13 @@
 //! It manages the project tree, command history, tabs, and various UI modes.
 
 use crate::components::{
-    palette::CommandPaletteState, text_input::TextInputState, updater::UpdateWizardState,
+    palette::CommandPaletteState, settings::SettingsModalState, text_input::TextInputState,
+    updater::UpdateWizardState,
 };
 use crate::events::{Action, Mode};
 use crate::project::Project;
 use crate::runner::UpdateQueue;
+use crate::settings::AppSettings;
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
@@ -17,7 +19,7 @@ use std::collections::HashSet;
 /// This struct maintains all mutable state including the project list, UI selections,
 /// command history, and various input states for different UI modes.
 #[derive(Debug)]
-pub struct AppState<'a> {
+pub struct AppState {
     /// Whether the application should quit
     pub should_quit: bool,
     /// Whether the application is currently scanning for projects
@@ -50,7 +52,10 @@ pub struct AppState<'a> {
     pub text_input: TextInputState,
     /// Queue of pending update checks
     pub update_queue: UpdateQueue,
-    _phantom: std::marker::PhantomData<&'a ()>,
+    /// Persistent user settings
+    pub settings: AppSettings,
+    /// Modal state for editing settings
+    pub settings_modal: SettingsModalState,
 }
 
 /// Represents a tab pane for displaying command output
@@ -64,7 +69,7 @@ pub struct Tab {
     pub is_finished: bool,
 }
 
-impl<'a> Clone for AppState<'a> {
+impl Clone for AppState {
     fn clone(&self) -> Self {
         Self {
             should_quit: self.should_quit,
@@ -83,12 +88,13 @@ impl<'a> Clone for AppState<'a> {
             updater: self.updater.clone(),
             text_input: self.text_input.clone(),
             update_queue: self.update_queue.clone(),
-            _phantom: std::marker::PhantomData,
+            settings: self.settings.clone(),
+            settings_modal: self.settings_modal.clone(),
         }
     }
 }
 
-impl<'a> AppState<'a> {
+impl AppState {
     pub fn new() -> Self {
         let command_history = vec![
             "test".into(),
@@ -127,7 +133,8 @@ impl<'a> AppState<'a> {
             updater: UpdateWizardState::new(),
             text_input: TextInputState::new(),
             update_queue: UpdateQueue::new(),
-            _phantom: std::marker::PhantomData,
+            settings: AppSettings::load(),
+            settings_modal: SettingsModalState::new(),
         }
     }
 
@@ -190,6 +197,8 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::Quit => handle_quit(state),
         Action::EnterNormalMode => handle_enter_normal_mode(state),
         Action::ShowHelp => handle_show_help(state),
+        Action::ShowSettings => handle_show_settings(state),
+        Action::CloseSettings => handle_close_settings(state),
         Action::FinishProjectScan(projects) => handle_finish_project_scan(state, projects),
         Action::UpdateTextInput(s) => handle_update_text_input(state, s),
         Action::SelectNext => handle_select_next(state),
@@ -204,6 +213,9 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::StartUpdateWizard => handle_start_update_wizard(state),
         Action::ToggleUpdateSelection => handle_toggle_update_selection(state),
         Action::CheckForUpdates => handle_check_for_updates(state),
+        Action::SettingsUpdateCacheInput(input) => handle_settings_update_cache_input(state, input),
+        Action::SettingsToggleBackground => handle_settings_toggle_background(state),
+        Action::SaveSettings => handle_save_settings(state),
         Action::UpdateDependencies(project_name, deps) => {
             handle_update_dependencies(state, project_name, deps)
         }
@@ -213,9 +225,8 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::UpdateSingleDependency(project_name, dep) => {
             handle_update_single_dependency(state, project_name, dep)
         }
-        Action::UpdateDependencyCheckStatus(_dep_name, _status) => {
-            // Status update for UI feedback during checking
-            // This is mainly for future streaming UI enhancements
+        Action::UpdateDependencyCheckStatus(project_name, dep_name, status) => {
+            handle_update_dependency_status(state, Some(project_name), dep_name, status)
         }
         Action::CreateTab(title) => handle_create_tab(state, title),
         Action::AddOutput(tab_index, line) => handle_add_output(state, tab_index, line),
@@ -231,13 +242,13 @@ pub fn reducer(state: &mut AppState, action: Action) {
             // Background update check is handled in main event loop
         }
         Action::UpdateDependencyStatus(dep_name, status) => {
-            handle_update_dependency_status(state, dep_name, status)
+            handle_update_dependency_status(state, None, dep_name, status)
         }
         Action::ProcessBackgroundUpdateQueue => {
             // Background update queue processing is handled in main event loop
         }
-        Action::QueueBackgroundUpdate(project_name) => {
-            handle_queue_background_update(state, project_name)
+        Action::QueueBackgroundUpdate(project_name, is_priority) => {
+            handle_queue_background_update(state, project_name, is_priority)
         }
         Action::UpdateProjectCheckStatus(project_name, check_status) => {
             handle_update_project_check_status(state, project_name, check_status)

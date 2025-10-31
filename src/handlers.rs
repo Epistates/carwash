@@ -13,6 +13,7 @@ use std::collections::HashSet;
 /// Handle application quit
 pub fn handle_quit(state: &mut AppState) {
     state.should_quit = true;
+    let _ = state.settings.save();
 }
 
 /// Handle entering normal mode
@@ -31,6 +32,24 @@ pub fn handle_enter_normal_mode(state: &mut AppState) {
 /// Handle showing help
 pub fn handle_show_help(state: &mut AppState) {
     state.mode = Mode::Help;
+}
+
+/// Show settings modal populated with persisted values
+pub fn handle_show_settings(state: &mut AppState) {
+    state.settings_modal.cache_minutes_input = state
+        .settings_modal
+        .cache_minutes_input
+        .clone()
+        .with_value(state.settings.cache_ttl_minutes.to_string());
+    state.settings_modal.background_updates_enabled = state.settings.background_updates_enabled;
+    state.settings_modal.error_message = None;
+    state.mode = Mode::Settings;
+}
+
+/// Close settings modal without persisting changes
+pub fn handle_close_settings(state: &mut AppState) {
+    state.mode = Mode::Normal;
+    state.settings_modal.error_message = None;
 }
 
 /// Handle completing project scan
@@ -110,9 +129,130 @@ pub fn handle_select_child(state: &mut AppState) {
 
 /// Handle toggling project selection
 pub fn handle_toggle_selection(state: &mut AppState) {
-    if let Some(project_name) = state.get_selected_project().map(|p| p.name.clone()) {
-        if !state.selected_projects.remove(&project_name) {
-            state.selected_projects.insert(project_name);
+    if let Some(selected_index) = state.tree_state.selected() {
+        let visible_projects = state.get_visible_projects();
+
+        if let Some(project) = visible_projects.get(selected_index) {
+            if let Some(workspace_name) = project.workspace_name.clone() {
+                let is_workspace_header = visible_projects
+                    .iter()
+                    .position(|p| p.workspace_name.as_ref() == Some(&workspace_name))
+                    == Some(selected_index);
+
+                if is_workspace_header {
+                    let workspace_members: Vec<String> = state
+                        .projects
+                        .iter()
+                        .filter(|p| p.workspace_name.as_ref() == Some(&workspace_name))
+                        .map(|p| p.name.clone())
+                        .collect();
+
+                    if workspace_members.is_empty() {
+                        return;
+                    }
+
+                    let all_selected = workspace_members
+                        .iter()
+                        .all(|name| state.selected_projects.contains(name));
+
+                    if all_selected {
+                        for name in workspace_members {
+                            state.selected_projects.remove(&name);
+                        }
+                    } else {
+                        for name in workspace_members {
+                            state.selected_projects.insert(name);
+                        }
+                    }
+                    return;
+                }
+            }
+
+            let project_name = project.name.clone();
+            if !state.selected_projects.remove(&project_name) {
+                state.selected_projects.insert(project_name);
+            }
+        }
+    }
+}
+
+/// Update cache duration input while editing settings
+pub fn handle_settings_update_cache_input(state: &mut AppState, input: String) {
+    state.settings_modal.cache_minutes_input = state
+        .settings_modal
+        .cache_minutes_input
+        .clone()
+        .with_value(input);
+    state.settings_modal.error_message = None;
+}
+
+/// Toggle background update preference while editing settings
+pub fn handle_settings_toggle_background(state: &mut AppState) {
+    state.settings_modal.background_updates_enabled =
+        !state.settings_modal.background_updates_enabled;
+}
+
+/// Persist settings from the modal, validating input and updating background queue
+pub fn handle_save_settings(state: &mut AppState) {
+    let raw_value = state.settings_modal.cache_minutes_input.value().trim();
+    let parsed_minutes = raw_value.parse::<u64>().ok().filter(|v| *v > 0);
+
+    let minutes = match parsed_minutes {
+        Some(value) => value,
+        None => {
+            state.settings_modal.error_message =
+                Some("Cache TTL must be a positive number of minutes".to_string());
+            return;
+        }
+    };
+
+    let mut new_settings = state.settings.clone();
+    let was_background_enabled = new_settings.background_updates_enabled;
+    new_settings.cache_ttl_minutes = minutes;
+    new_settings.background_updates_enabled = state.settings_modal.background_updates_enabled;
+
+    if let Err(err) = new_settings.save() {
+        state.settings_modal.error_message = Some(format!("Failed to save settings: {}", err));
+        return;
+    }
+
+    state.settings = new_settings;
+    state.settings_modal.error_message = None;
+    state.mode = Mode::Normal;
+
+    if !state.settings.background_updates_enabled {
+        state.update_queue.clear();
+        state.is_checking_updates = false;
+        return;
+    }
+
+    if !was_background_enabled && state.settings.background_updates_enabled {
+        let now = std::time::SystemTime::now();
+        let cache_duration = state.settings.cache_duration();
+
+        for project in &state.all_projects {
+            if project.dependencies.is_empty() {
+                continue;
+            }
+
+            let needs_check = project.dependencies.iter().any(|dep| {
+                if let Some(last_checked) = dep.last_checked {
+                    if let Ok(elapsed) = now.duration_since(last_checked) {
+                        elapsed > cache_duration
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            });
+
+            if needs_check {
+                state.update_queue.add_task(crate::runner::UpdateCheckTask {
+                    project_name: project.name.clone(),
+                    is_priority: false,
+                });
+            }
         }
     }
 }
@@ -428,27 +568,61 @@ pub fn handle_switch_to_tab(state: &mut AppState, tab_index: usize) {
 /// Handle updating dependency status
 pub fn handle_update_dependency_status(
     state: &mut AppState,
+    project_name: Option<String>,
     dep_name: String,
     status: crate::project::DependencyCheckStatus,
 ) {
-    if let Some(selected_project_name) = state.get_selected_project().map(|p| p.name.clone()) {
+    let target_names: Vec<String> = if let Some(name) = project_name {
+        vec![name]
+    } else {
+        state
+            .get_selected_project()
+            .map(|p| p.name.clone())
+            .into_iter()
+            .collect()
+    };
+
+    for project_name in target_names {
         if let Some(proj) = state
-            .projects
+            .all_projects
             .iter_mut()
-            .find(|p| p.name == selected_project_name)
+            .find(|p| p.name == project_name)
         {
             if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
-                dep.check_status = status;
+                dep.check_status = status.clone();
+            }
+        }
+
+        if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
+                dep.check_status = status.clone();
+            }
+        }
+
+        if state.mode == crate::events::Mode::UpdateWizard
+            && state.updater.locked_project_name.as_ref() == Some(&project_name)
+        {
+            if let Some(dep) = state
+                .updater
+                .outdated_dependencies
+                .iter_mut()
+                .find(|d| d.name == dep_name)
+            {
+                dep.check_status = status.clone();
             }
         }
     }
 }
 
 /// Handle queuing background update
-pub fn handle_queue_background_update(state: &mut AppState, project_name: String) {
+pub fn handle_queue_background_update(
+    state: &mut AppState,
+    project_name: String,
+    is_priority: bool,
+) {
     state.update_queue.add_task(crate::runner::UpdateCheckTask {
         project_name,
-        is_priority: false,
+        is_priority,
     });
 }
 

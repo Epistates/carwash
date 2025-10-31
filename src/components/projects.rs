@@ -109,17 +109,77 @@ impl Component for ProjectList {
                         .add_modifier(Modifier::BOLD)
                 };
 
+                let workspace_members: Vec<&crate::project::Project> = app
+                    .projects
+                    .iter()
+                    .filter(|proj| proj.workspace_name.as_ref() == Some(ws_name))
+                    .collect();
+
+                let selected_count = workspace_members
+                    .iter()
+                    .filter(|proj| app.selected_projects.contains(&proj.name))
+                    .count();
+
+                let checkbox_symbol = if workspace_members.is_empty() || selected_count == 0 {
+                    "☐"
+                } else if selected_count == workspace_members.len() {
+                    "☑"
+                } else {
+                    "◪"
+                };
+
+                let checkbox_style =
+                    if selected_count == workspace_members.len() && selected_count > 0 {
+                        Style::default().fg(Color::Green)
+                    } else if selected_count > 0 {
+                        Style::default().fg(Color::Cyan)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
+                let mut has_checking = false;
+                let mut has_updates = false;
+                let mut has_unchecked = false;
+                for proj in &workspace_members {
+                    match proj.check_status {
+                        crate::project::ProjectCheckStatus::Checking => has_checking = true,
+                        crate::project::ProjectCheckStatus::HasUpdates => has_updates = true,
+                        crate::project::ProjectCheckStatus::Unchecked => has_unchecked = true,
+                        crate::project::ProjectCheckStatus::UpToDate => {}
+                    }
+                }
+                let (status_icon, status_style) = if has_checking {
+                    (
+                        "⟳",
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else if has_updates {
+                    (
+                        "⚠",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else if has_unchecked {
+                    ("⋯", Style::default().fg(Color::DarkGray))
+                } else {
+                    ("✓", Style::default().fg(Color::Green))
+                };
+
                 let line = Line::from(vec![
                     Span::raw(indicator),
+                    Span::styled(checkbox_symbol, checkbox_style),
+                    Span::raw(" "),
+                    Span::styled(status_icon, status_style),
+                    Span::raw(" "),
                     Span::styled(
                         format!(
                             "{} {} ({} projects)",
                             collapse_indicator,
                             ws_name,
-                            app.projects
-                                .iter()
-                                .filter(|proj| proj.workspace_name.as_ref() == Some(ws_name))
-                                .count()
+                            workspace_members.len()
                         ),
                         header_style,
                     ),

@@ -50,6 +50,7 @@ pub mod events;
 mod handlers;
 pub mod project;
 pub mod runner;
+pub mod settings;
 pub mod ui;
 
 pub use clap::Parser;

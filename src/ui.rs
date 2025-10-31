@@ -1,8 +1,8 @@
 use crate::app::AppState;
 use crate::components::{
     Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
-    palette::CommandPalette, projects::ProjectList, status::StatusBar, text_input::TextInput,
-    updater::UpdateWizard,
+    palette::CommandPalette, projects::ProjectList, settings::SettingsModal, status::StatusBar,
+    text_input::TextInput, updater::UpdateWizard,
 };
 use crate::events::Mode;
 use ratatui::{
@@ -58,5 +58,8 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     } else if app.mode == Mode::Help {
         let mut help = Help::new();
         help.draw(f, app, f.area());
+    } else if app.mode == Mode::Settings {
+        let mut settings = SettingsModal::new();
+        settings.draw(f, app, f.area());
     }
 }

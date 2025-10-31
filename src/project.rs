@@ -357,14 +357,10 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
                     let mut member_paths = Vec::new();
 
                     // Resolve workspace members
-                    for member_glob in &workspace.members {
-                        let full_glob = root_path.join(member_glob).join("Cargo.toml");
-                        if let Some(full_glob_str) = full_glob.to_str() {
-                            if let Ok(paths) = glob::glob(full_glob_str) {
-                                for member_manifest in paths.filter_map(Result::ok) {
-                                    member_paths.push(member_manifest);
-                                }
-                            }
+                    for member in &workspace.members {
+                        let member_path = root_path.join(member).join("Cargo.toml");
+                        if member_path.exists() {
+                            member_paths.push(member_path);
                         }
                     }
 
