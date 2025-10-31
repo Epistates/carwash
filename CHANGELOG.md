@@ -2,6 +2,11 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.2.2] - 2025-10-30
+
+Improve codebase: refactor monolithic files
+Improve UX: add settings 
+
 ## [0.2.1] - 2025-10-30
 
 Removed Cargo.lock from .gitignore - thanks to [0323pin](https://github.com/0323pin)
