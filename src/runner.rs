@@ -145,6 +145,71 @@ pub async fn check_for_updates(state: &AppState, tx: mpsc::Sender<Action>) {
 }
 
 /// Check dependencies with intelligent caching and streaming updates
+async fn check_single_dependency(
+    dep: Dependency,
+    client: &AsyncClient,
+    tx: &mpsc::Sender<Action>,
+    project_name: &str,
+    use_cache: bool,
+    cache_duration: std::time::Duration,
+    now: SystemTime,
+) -> Option<Dependency> {
+    let mut updated_dep = dep.clone();
+    let should_check = if use_cache {
+        if let Some(last_checked) = updated_dep.last_checked {
+            if let Ok(elapsed) = now.duration_since(last_checked) {
+                elapsed > cache_duration
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    if should_check {
+        updated_dep.check_status = DependencyCheckStatus::Checking;
+
+        let _ = tx
+            .send(Action::UpdateDependencyCheckStatus(
+                project_name.to_string(),
+                updated_dep.name.clone(),
+                DependencyCheckStatus::Checking,
+            ))
+            .await;
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.get_crate(&updated_dep.name),
+        )
+        .await
+        {
+            Ok(Ok(crate_info)) => {
+                updated_dep.latest_version = Some(crate_info.crate_data.max_version);
+                updated_dep.check_status = DependencyCheckStatus::Checked;
+                updated_dep.last_checked = Some(SystemTime::now());
+            }
+            _ => {
+                updated_dep.check_status = DependencyCheckStatus::Checked;
+                updated_dep.last_checked = Some(SystemTime::now());
+            }
+        }
+    } else {
+        updated_dep.check_status = DependencyCheckStatus::Checked;
+    }
+
+    let _ = tx
+        .send(Action::UpdateSingleDependency(
+            project_name.to_string(),
+            updated_dep.clone(),
+        ))
+        .await;
+
+    Some(updated_dep)
+}
+
 pub async fn check_dependencies_with_cache(
     project_name: String,
     deps: Vec<Dependency>,
@@ -155,15 +220,12 @@ pub async fn check_dependencies_with_cache(
 ) {
     let cache = UpdateCache::new();
     let semaphore = Arc::new(Semaphore::new(PARALLEL_UPDATE_CHECKS));
-    let client_result = AsyncClient::new(
+    let client = match AsyncClient::new(
         "carwash/0.1.0 (https://github.com/epistates/carwash)",
         std::time::Duration::from_secs(1),
-    );
-
-    let client = match client_result {
+    ) {
         Ok(client) => client,
         Err(_) => {
-            // Client failed - send deps with no updates
             let _ = tx
                 .send(Action::UpdateDependencies(project_name, deps))
                 .await;
@@ -180,72 +242,21 @@ pub async fn check_dependencies_with_cache(
         let project_name_clone = project_name.clone();
 
         let task = tokio::spawn(async move {
-            // Acquire semaphore permit (limits concurrent requests)
             let _permit = semaphore_clone.acquire().await.ok()?;
-
-            let mut updated_dep = dep.clone();
-            let should_check = if use_cache {
-                if let Some(last_checked) = updated_dep.last_checked {
-                    if let Ok(elapsed) = now.duration_since(last_checked) {
-                        elapsed > cache_duration
-                    } else {
-                        true
-                    }
-                } else {
-                    true
-                }
-            } else {
-                true
-            };
-
-            if should_check {
-                updated_dep.check_status = DependencyCheckStatus::Checking;
-
-                // Send UI update showing this dep is being checked
-                let _ = tx_clone
-                    .send(Action::UpdateDependencyCheckStatus(
-                        project_name_clone.clone(),
-                        updated_dep.name.clone(),
-                        DependencyCheckStatus::Checking,
-                    ))
-                    .await;
-
-                // Perform the check with timeout
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    client_clone.get_crate(&updated_dep.name),
-                )
-                .await
-                {
-                    Ok(Ok(crate_info)) => {
-                        updated_dep.latest_version = Some(crate_info.crate_data.max_version);
-                        updated_dep.check_status = DependencyCheckStatus::Checked;
-                        updated_dep.last_checked = Some(SystemTime::now());
-                    }
-                    _ => {
-                        updated_dep.check_status = DependencyCheckStatus::Checked;
-                        updated_dep.last_checked = Some(SystemTime::now());
-                    }
-                }
-            } else {
-                // Using cached data
-                updated_dep.check_status = DependencyCheckStatus::Checked;
-            }
-
-            // Send individual update for UI streaming
-            let _ = tx_clone
-                .send(Action::UpdateSingleDependency(
-                    project_name_clone,
-                    updated_dep.clone(),
-                ))
-                .await;
-
-            Some(updated_dep)
+            check_single_dependency(
+                dep,
+                &client_clone,
+                &tx_clone,
+                &project_name_clone,
+                use_cache,
+                cache_duration,
+                now,
+            )
+            .await
         });
         tasks.push(task);
     }
 
-    // Collect all results but don't block UI
     let mut updated_deps = Vec::new();
     for task in tasks {
         if let Ok(Some(dep)) = task.await {
@@ -253,36 +264,113 @@ pub async fn check_dependencies_with_cache(
         }
     }
 
-    // Save cache if we have a project path
     if let Some(path) = project_path {
         if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock")) {
             let mut cached_deps = std::collections::HashMap::new();
             for dep in &updated_deps {
-                // CRITICAL: Only cache dependencies that were successfully checked
-                // If latest_version is None (network error, timeout, etc.), don't cache it
                 if dep.latest_version.is_some() {
                     cached_deps.insert(
                         dep.name.clone(),
                         crate::cache::CachedDependency {
                             latest_version: dep.latest_version.clone(),
-                            // CRITICAL: Use the actual check time, not current time!
                             cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
                         },
                     );
                 }
             }
 
-            // Only save if we have checked dependencies
             if !cached_deps.is_empty() {
                 let _ = cache.save(&path, lock_hash, cached_deps.clone());
             }
         }
     }
 
-    // Send final batch update
     let _ = tx
         .send(Action::UpdateDependencies(project_name, updated_deps))
         .await;
+}
+
+async fn spawn_and_stream_command(
+    command_str: &str,
+    project: &Project,
+    tx: &mpsc::Sender<Action>,
+    tab_index: usize,
+) -> anyhow::Result<()> {
+    let start_time = std::time::Instant::now();
+    let args: Vec<&str> = command_str.split_whitespace().collect();
+
+    if args.is_empty() {
+        anyhow::bail!("Empty command");
+    }
+
+    let _ = tx
+        .send(Action::AddOutput(
+            tab_index,
+            format!("$ cargo {} (in {})", command_str, project.path.display()),
+        ))
+        .await;
+    let _ = tx.send(Action::AddOutput(tab_index, "".to_string())).await;
+
+    let mut cmd = TokioCommand::new("cargo");
+    cmd.args(&args)
+        .current_dir(&project.path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd.spawn()?;
+
+    let stdout = child.stdout.take().expect("stdout was configured as piped");
+    let stderr = child.stderr.take().expect("stderr was configured as piped");
+
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    let mut line_count = 0;
+    loop {
+        tokio::select! {
+            Ok(Some(line)) = stdout_reader.next_line() => {
+                let _ = tx.send(Action::AddOutput(tab_index, line)).await;
+                line_count += 1;
+            }
+            Ok(Some(line)) = stderr_reader.next_line() => {
+                let _ = tx.send(Action::AddOutput(tab_index, line)).await;
+                line_count += 1;
+            }
+            else => break,
+        }
+    }
+
+    let status = child.wait().await?;
+    let elapsed = start_time.elapsed();
+    let _ = tx.send(Action::AddOutput(tab_index, "".to_string())).await;
+
+    if status.success() {
+        let _ = tx
+            .send(Action::AddOutput(
+                tab_index,
+                format!(
+                    "✓ Finished successfully in {:.2}s ({} lines)",
+                    elapsed.as_secs_f64(),
+                    line_count
+                ),
+            ))
+            .await;
+    } else {
+        let code = status.code().unwrap_or(-1);
+        let _ = tx
+            .send(Action::AddOutput(
+                tab_index,
+                format!(
+                    "❌ Failed with exit code {} after {:.2}s",
+                    code,
+                    elapsed.as_secs_f64()
+                ),
+            ))
+            .await;
+    }
+
+    Ok(())
 }
 
 pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<Action>) {
@@ -311,7 +399,6 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
         return;
     }
 
-    // Get the starting tab index before spawning tasks
     let start_tab_count = state.tabs.len();
 
     for (i, project) in projects_to_run.into_iter().enumerate() {
@@ -320,133 +407,17 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
         let tab_title = format!("{}: {}", command_str, project.name);
         let tab_index = start_tab_count + i;
 
-        // Create tab first
         let _ = tx.send(Action::CreateTab(tab_title)).await;
 
         tokio::spawn(async move {
-            let start_time = std::time::Instant::now();
-            let args: Vec<&str> = command_str.split_whitespace().collect();
-
-            if args.is_empty() {
+            if let Err(e) = spawn_and_stream_command(&command_str, &project, &tx, tab_index).await {
                 let _ = tx
                     .send(Action::AddOutput(
                         tab_index,
-                        "Error: Empty command".to_string(),
-                    ))
-                    .await;
-                let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                return;
-            }
-
-            // Log command start
-            let _ = tx
-                .send(Action::AddOutput(
-                    tab_index,
-                    format!("$ cargo {} (in {})", command_str, project.path.display()),
-                ))
-                .await;
-            let _ = tx.send(Action::AddOutput(tab_index, "".to_string())).await;
-
-            let mut cmd = TokioCommand::new("cargo");
-            cmd.args(&args)
-                .current_dir(&project.path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-
-            let mut child = match cmd.spawn() {
-                Ok(child) => child,
-                Err(e) => {
-                    let _ = tx
-                        .send(Action::AddOutput(
-                            tab_index,
-                            format!("❌ Error: Failed to spawn cargo process: {}", e),
-                        ))
-                        .await;
-                    let _ = tx.send(Action::AddOutput(tab_index, "".to_string())).await;
-                    let _ = tx
-                        .send(Action::AddOutput(tab_index, "Possible causes:".to_string()))
-                        .await;
-                    let _ = tx
-                        .send(Action::AddOutput(
-                            tab_index,
-                            "  - cargo is not installed or not in PATH".to_string(),
-                        ))
-                        .await;
-                    let _ = tx
-                        .send(Action::AddOutput(
-                            tab_index,
-                            "  - Project directory is invalid".to_string(),
-                        ))
-                        .await;
-                    let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                    return;
-                }
-            };
-
-            let stdout = child.stdout.take().expect("stdout was configured as piped");
-            let stderr = child.stderr.take().expect("stderr was configured as piped");
-
-            let mut stdout_reader = BufReader::new(stdout).lines();
-            let mut stderr_reader = BufReader::new(stderr).lines();
-
-            let mut line_count = 0;
-            loop {
-                tokio::select! {
-                    Ok(Some(line)) = stdout_reader.next_line() => {
-                        let _ = tx.send(Action::AddOutput(tab_index, line)).await;
-                        line_count += 1;
-                    }
-                    Ok(Some(line)) = stderr_reader.next_line() => {
-                        let _ = tx.send(Action::AddOutput(tab_index, line)).await;
-                        line_count += 1;
-                    }
-                    else => break,
-                }
-            }
-
-            let status = match child.wait().await {
-                Ok(status) => status,
-                Err(e) => {
-                    let _ = tx
-                        .send(Action::AddOutput(
-                            tab_index,
-                            format!("❌ Error: Failed to wait for process: {}", e),
-                        ))
-                        .await;
-                    let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                    return;
-                }
-            };
-
-            let elapsed = start_time.elapsed();
-            let _ = tx.send(Action::AddOutput(tab_index, "".to_string())).await;
-
-            if status.success() {
-                let _ = tx
-                    .send(Action::AddOutput(
-                        tab_index,
-                        format!(
-                            "✓ Finished successfully in {:.2}s ({} lines)",
-                            elapsed.as_secs_f64(),
-                            line_count
-                        ),
-                    ))
-                    .await;
-            } else {
-                let code = status.code().unwrap_or(-1);
-                let _ = tx
-                    .send(Action::AddOutput(
-                        tab_index,
-                        format!(
-                            "❌ Failed with exit code {} after {:.2}s",
-                            code,
-                            elapsed.as_secs_f64()
-                        ),
+                        format!("❌ Error: {}", e),
                     ))
                     .await;
             }
-
             let _ = tx.send(Action::FinishCommand(tab_index)).await;
         });
     }
