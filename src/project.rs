@@ -35,9 +35,10 @@ pub enum DependencyCheckStatus {
 }
 
 /// Visual status of a project's update check state
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ProjectCheckStatus {
     /// Not checked yet or cache invalidated (Gray)
+    #[default]
     Unchecked,
     /// Currently being checked for updates (Blue)
     Checking,
@@ -45,12 +46,6 @@ pub enum ProjectCheckStatus {
     HasUpdates,
     /// All dependencies up to date (Green)
     UpToDate,
-}
-
-impl Default for ProjectCheckStatus {
-    fn default() -> Self {
-        Self::Unchecked
-    }
 }
 
 /// Represents a single dependency with version information
