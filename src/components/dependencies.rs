@@ -26,9 +26,7 @@ impl DependenciesPane {
             && dep.latest_version.as_ref().unwrap() != &dep.current_version;
 
         let (icon, style) = match dep.check_status {
-            DependencyCheckStatus::NotChecked => {
-                ("⋯", Style::default().fg(Color::DarkGray))
-            }
+            DependencyCheckStatus::NotChecked => ("⋯", Style::default().fg(Color::DarkGray)),
             DependencyCheckStatus::Checking => ("⟳", Style::default().fg(Color::Cyan)),
             DependencyCheckStatus::Checked => {
                 if is_outdated {
@@ -50,7 +48,10 @@ impl DependenciesPane {
                 ratatui::text::Span::raw(" "),
                 ratatui::text::Span::styled(&dep.name, Style::default().fg(Color::White)),
                 ratatui::text::Span::raw(" "),
-                ratatui::text::Span::styled(&dep.current_version, Style::default().fg(Color::DarkGray)),
+                ratatui::text::Span::styled(
+                    &dep.current_version,
+                    Style::default().fg(Color::DarkGray),
+                ),
                 ratatui::text::Span::styled(" → ", Style::default().fg(Color::Yellow)),
                 ratatui::text::Span::styled(
                     dep.latest_version.as_ref().unwrap(),
@@ -136,24 +137,33 @@ impl Component for DependenciesPane {
             let mut not_checked_count = 0;
             let mut checking_count = 0;
 
-            let dependency_items: Vec<ListItem> = p.dependencies.iter().map(|dep| {
-                let is_outdated = dep.latest_version.is_some()
-                    && dep.latest_version.as_ref().unwrap() != &dep.current_version;
+            let dependency_items: Vec<ListItem> = p
+                .dependencies
+                .iter()
+                .map(|dep| {
+                    let is_outdated = dep.latest_version.is_some()
+                        && dep.latest_version.as_ref().unwrap() != &dep.current_version;
 
-                if is_outdated {
-                    outdated_count += 1;
-                }
+                    if is_outdated {
+                        outdated_count += 1;
+                    }
 
-                match dep.check_status {
-                    DependencyCheckStatus::NotChecked => not_checked_count += 1,
-                    DependencyCheckStatus::Checking => checking_count += 1,
-                    DependencyCheckStatus::Checked => {}
-                }
+                    match dep.check_status {
+                        DependencyCheckStatus::NotChecked => not_checked_count += 1,
+                        DependencyCheckStatus::Checking => checking_count += 1,
+                        DependencyCheckStatus::Checked => {}
+                    }
 
-                Self::create_dependency_list_item(dep)
-            }).collect();
+                    Self::create_dependency_list_item(dep)
+                })
+                .collect();
 
-            let (title, title_style) = Self::get_title(&p.dependencies, outdated_count, not_checked_count, checking_count);
+            let (title, title_style) = Self::get_title(
+                &p.dependencies,
+                outdated_count,
+                not_checked_count,
+                checking_count,
+            );
 
             let dependency_list = List::new(dependency_items).block(
                 Block::default()

@@ -412,10 +412,7 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
         tokio::spawn(async move {
             if let Err(e) = spawn_and_stream_command(&command_str, &project, &tx, tab_index).await {
                 let _ = tx
-                    .send(Action::AddOutput(
-                        tab_index,
-                        format!("❌ Error: {}", e),
-                    ))
+                    .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
                     .await;
             }
             let _ = tx.send(Action::FinishCommand(tab_index)).await;

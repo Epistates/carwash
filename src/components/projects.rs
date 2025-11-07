@@ -95,14 +95,13 @@ impl ProjectList {
         } else {
             "◪"
         };
-        let checkbox_style =
-            if selected_count == workspace_members.len() && selected_count > 0 {
-                Style::default().fg(Color::Green)
-            } else if selected_count > 0 {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
+        let checkbox_style = if selected_count == workspace_members.len() && selected_count > 0 {
+            Style::default().fg(Color::Green)
+        } else if selected_count > 0 {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
         let mut has_checking = false;
         let mut has_updates = false;
         let mut has_unchecked = false;
@@ -243,7 +242,7 @@ impl Component for ProjectList {
                 }
             }
         }
-        
+
         let selected_count = app.selected_projects.len();
         let total_count = visible_projects.len();
         let all_count = app.projects.len();
@@ -272,10 +271,9 @@ impl Component for ProjectList {
         let mut list_items = items;
         if !help_text.is_empty() {
             for line in help_text.lines().skip(1) {
-                list_items.push(ListItem::new(ratatui::text::Line::from(ratatui::text::Span::styled(
-                    line,
-                    Style::default().fg(Color::DarkGray),
-                ))));
+                list_items.push(ListItem::new(ratatui::text::Line::from(
+                    ratatui::text::Span::styled(line, Style::default().fg(Color::DarkGray)),
+                )));
             }
         }
 

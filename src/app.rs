@@ -69,8 +69,6 @@ pub struct Tab {
     pub is_finished: bool,
 }
 
-
-
 impl Default for AppState {
     fn default() -> Self {
         let command_history = vec![
@@ -135,8 +133,9 @@ impl AppState {
     pub fn get_visible_projects(&self) -> Vec<&Project> {
         let mut last_workspace: Option<&String> = None;
 
-        self.projects.iter().filter(|project| {
-            match &project.workspace_name {
+        self.projects
+            .iter()
+            .filter(|project| match &project.workspace_name {
                 Some(ws_name) => {
                     let is_new_workspace = last_workspace != Some(ws_name);
                     if is_new_workspace {
@@ -148,8 +147,8 @@ impl AppState {
                     last_workspace = None;
                     true
                 }
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     /// Get the currently selected workspace name (if cursor is on a workspace item)

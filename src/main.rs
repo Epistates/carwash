@@ -71,12 +71,8 @@ fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
 
 fn restore_terminal() -> anyhow::Result<()> {
     disable_raw_mode().context("Failed to disable raw mode")?;
-    execute!(
-        io::stdout(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )
-    .context("Failed to leave alternate screen")?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+        .context("Failed to leave alternate screen")?;
     Ok(())
 }
 
