@@ -2,6 +2,75 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [0.3.0] - 2025-11-07
+
+### 🏗️ Major Refactoring Release
+
+**Code Quality Improvements**
+- Extracted helper functions throughout codebase for better modularity
+- UI component rendering extracted into focused functions
+- Reduced cognitive complexity in main rendering loops
+- Improved testability with smaller, single-responsibility functions
+
+**Dependency Pane Refactoring**
+- Extracted `create_dependency_list_item()` for dependency rendering
+- Extracted `get_title()` for status-aware title generation
+- Replaced imperative loops with functional iterators
+- Significantly improved readability of dependency display logic
+
+**Project List Refactoring**
+- Extracted `create_workspace_header()` for workspace row rendering
+- Extracted `create_project_list_item()` for project row rendering
+- Reduced main draw loop from 200+ to ~30 lines
+- Better separation between data and presentation
+
+**State Management Improvements**
+- Refactored AppState to use derived Clone trait
+- Implemented Default trait for cleaner initialization
+- Optimized `get_visible_projects()` with iterator chains
+- Better handling of workspace visibility logic
+
+**Handler Function Improvements**
+- Extracted `toggle_workspace_selection()` for workspace selection
+- Extracted `toggle_single_project_selection()` for project selection
+- Extracted `queue_background_updates_on_enable()` for settings updates
+- Extracted `update_project_dependencies()` and `update_wizard_dependencies()`
+- Simplified `handle_save_settings()` with cleaner error handling
+
+**Terminal & Error Handling**
+- Extracted `setup_terminal()` for initialization
+- Extracted `restore_terminal()` for cleanup
+- Extracted `reset_checking_status()` to deduplicate status reset
+- Better error propagation with anyhow context
+- Cleaner early returns with `anyhow::bail!()`
+
+**Async Task Improvements**
+- Extracted `check_single_dependency()` for individual checks
+- Extracted `spawn_and_stream_command()` for command execution
+- Better async task organization and separation
+- Improved error handling in command spawning
+
+**Dependencies**
+- Updated clap: 4.5.50 → 4.5.51
+- Updated chrono: unspecified → 0.4.42
+- Updated directories: 5.0 → 6.0.0
+- Updated serde_json: unspecified → 1.0.145
+- Updated thiserror: 1.0.69 → 2.0.17
+- Cleaned up unused transitive dependencies
+
+**Code Quality**
+- Applied Rust idioms throughout (derived Default, fixed clippy warnings)
+- Improved code organization and maintainability
+- Zero behavior changes - purely structural improvements
+- All 34 tests passing
+- Clippy clean with no warnings
+
+### 🔄 Breaking Changes
+
+None. Fully backward compatible.
+
+---
+
 ## [0.2.2] - 2025-10-30
 
 Improve codebase: refactor monolithic files
