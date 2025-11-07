@@ -21,8 +21,5 @@ Thumbs.db
 
 .strategy
 # Development notes
-*_ANALYSIS.md
-*_OVERHAUL.md
-*_FIX.md
-*_FIXES.md
-IMPLEMENTATION_DETAILS.md
+*.md
+!README.md
