@@ -24,13 +24,14 @@ use ratatui::{
 use std::io;
 use tokio::sync::mpsc;
 
+use anyhow::Context;
+
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     // Set up panic handler to ensure clean terminal restoration
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = restore_terminal();
         original_hook(panic_info);
     }));
 
@@ -38,58 +39,44 @@ async fn main() -> io::Result<()> {
 
     // Check if we have a TTY (after argument parsing so --help works)
     if !crossterm::tty::IsTty::is_tty(&io::stdin()) {
-        eprintln!("Error: CarWash requires an interactive terminal (TTY).");
-        eprintln!("Please run directly in a terminal, not through pipes or redirects.");
-        std::process::exit(1);
+        anyhow::bail!("CarWash requires an interactive terminal (TTY).");
     }
 
-    let target_directory = args.target_directory.clone();
-
-    // Initialize terminal
-    if let Err(e) = enable_raw_mode() {
-        eprintln!("Error: Failed to enable raw mode: {}", e);
-        eprintln!("Make sure you're running in a proper terminal.");
-        std::process::exit(1);
-    }
-
-    let mut stdout = io::stdout();
-    if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
-        let _ = disable_raw_mode();
-        eprintln!("Error: Failed to initialize terminal: {}", e);
-        std::process::exit(1);
-    }
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = match Terminal::new(backend) {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = disable_raw_mode();
-            eprintln!("Error: Failed to create terminal: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let mut terminal = setup_terminal().context("Failed to set up terminal")?;
 
     // Clear screen immediately to prevent any error messages from showing
     let _ = terminal.clear();
 
     let mut state = AppState::new();
-    let res = run_app(&mut terminal, &mut state, target_directory).await;
+    let res = run_app(&mut terminal, &mut state, args.target_directory).await;
 
-    // Clean up terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    restore_terminal().context("Failed to restore terminal")?;
 
-    // Report errors only after terminal is restored
     if let Err(err) = res {
         eprintln!("Error: {:?}", err);
         std::process::exit(1);
     }
 
+    Ok(())
+}
+
+fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
+    enable_raw_mode().context("Failed to enable raw mode")?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .context("Failed to enter alternate screen")?;
+    let backend = CrosstermBackend::new(stdout);
+    Terminal::new(backend).context("Failed to create terminal")
+}
+
+fn restore_terminal() -> anyhow::Result<()> {
+    disable_raw_mode().context("Failed to disable raw mode")?;
+    execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .context("Failed to leave alternate screen")?;
     Ok(())
 }
 
@@ -243,6 +230,19 @@ async fn handle_event(
     Ok(())
 }
 
+fn reset_checking_status(state: &mut AppState) {
+    for project in &mut state.all_projects {
+        if project.check_status == ProjectCheckStatus::Checking {
+            project.check_status = ProjectCheckStatus::Unchecked;
+        }
+    }
+    for project in &mut state.projects {
+        if project.check_status == ProjectCheckStatus::Checking {
+            project.check_status = ProjectCheckStatus::Unchecked;
+        }
+    }
+}
+
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
@@ -316,17 +316,7 @@ async fn run_app<B: Backend>(
                         load_cache_progress(&mut state.projects);
 
                         // Reset any "Checking" status to "Unchecked" (app was interrupted)
-                        // These projects will be queued below to resume checking
-                        for project in &mut state.all_projects {
-                            if project.check_status == ProjectCheckStatus::Checking {
-                                project.check_status = ProjectCheckStatus::Unchecked;
-                            }
-                        }
-                        for project in &mut state.projects {
-                            if project.check_status == ProjectCheckStatus::Checking {
-                                project.check_status = ProjectCheckStatus::Unchecked;
-                            }
-                        }
+                        reset_checking_status(state);
 
                         if state.settings.background_updates_enabled {
                             // NOW queue projects for background checks (after cache is loaded)
