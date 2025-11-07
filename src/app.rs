@@ -18,7 +18,7 @@ use std::collections::HashSet;
 ///
 /// This struct maintains all mutable state including the project list, UI selections,
 /// command history, and various input states for different UI modes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     /// Whether the application should quit
     pub should_quit: bool,
@@ -69,33 +69,10 @@ pub struct Tab {
     pub is_finished: bool,
 }
 
-impl Clone for AppState {
-    fn clone(&self) -> Self {
-        Self {
-            should_quit: self.should_quit,
-            is_scanning: self.is_scanning,
-            is_checking_updates: self.is_checking_updates,
-            mode: self.mode.clone(),
-            tree_state: self.tree_state.clone(),
-            projects: self.projects.clone(),
-            all_projects: self.all_projects.clone(),
-            collapsed_workspaces: self.collapsed_workspaces.clone(),
-            selected_projects: self.selected_projects.clone(),
-            tabs: self.tabs.clone(),
-            active_tab: self.active_tab,
-            command_history: self.command_history.clone(),
-            palette: self.palette.clone(),
-            updater: self.updater.clone(),
-            text_input: self.text_input.clone(),
-            update_queue: self.update_queue.clone(),
-            settings: self.settings.clone(),
-            settings_modal: self.settings_modal.clone(),
-        }
-    }
-}
 
-impl AppState {
-    pub fn new() -> Self {
+
+impl Default for AppState {
+    fn default() -> Self {
         let command_history = vec![
             "test".into(),
             "check".into(),
@@ -137,6 +114,12 @@ impl AppState {
             settings_modal: SettingsModalState::new(),
         }
     }
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn get_selected_project(&self) -> Option<&Project> {
         if let Some(selected_index) = self.tree_state.selected() {
@@ -150,30 +133,23 @@ impl AppState {
 
     /// Get list of projects that should be visible (excluding collapsed workspace members)
     pub fn get_visible_projects(&self) -> Vec<&Project> {
-        let mut visible = Vec::new();
-        let mut last_workspace: Option<String> = None;
+        let mut last_workspace: Option<&String> = None;
 
-        for project in &self.projects {
+        self.projects.iter().filter(|project| {
             match &project.workspace_name {
                 Some(ws_name) => {
-                    // If workspace changed or this is the first in a workspace, always show
-                    if last_workspace.as_ref() != Some(ws_name) {
-                        visible.push(project);
-                        last_workspace = Some(ws_name.clone());
-                    } else if !self.collapsed_workspaces.contains(ws_name) {
-                        // Show member if workspace is expanded
-                        visible.push(project);
+                    let is_new_workspace = last_workspace != Some(ws_name);
+                    if is_new_workspace {
+                        last_workspace = Some(ws_name);
                     }
+                    is_new_workspace || !self.collapsed_workspaces.contains(ws_name)
                 }
                 None => {
-                    // Standalone project, always show
-                    visible.push(project);
                     last_workspace = None;
+                    true
                 }
             }
-        }
-
-        visible
+        }).collect()
     }
 
     /// Get the currently selected workspace name (if cursor is on a workspace item)
