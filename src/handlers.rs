@@ -129,50 +129,64 @@ pub fn handle_select_child(state: &mut AppState) {
 
 /// Handle toggling project selection
 pub fn handle_toggle_selection(state: &mut AppState) {
-    if let Some(selected_index) = state.tree_state.selected() {
+    let selected_index = match state.tree_state.selected() {
+        Some(i) => i,
+        None => return,
+    };
+
+    let (project_name, workspace_name) = {
         let visible_projects = state.get_visible_projects();
+        let project = match visible_projects.get(selected_index) {
+            Some(p) => *p,
+            None => return,
+        };
+        (project.name.clone(), project.workspace_name.clone())
+    };
 
-        if let Some(project) = visible_projects.get(selected_index) {
-            if let Some(workspace_name) = project.workspace_name.clone() {
-                let is_workspace_header = visible_projects
-                    .iter()
-                    .position(|p| p.workspace_name.as_ref() == Some(&workspace_name))
-                    == Some(selected_index);
+    if let Some(workspace_name) = workspace_name {
+        let visible_projects = state.get_visible_projects();
+        let is_workspace_header = visible_projects
+            .iter()
+            .position(|p| p.workspace_name.as_ref() == Some(&workspace_name))
+            == Some(selected_index);
 
-                if is_workspace_header {
-                    let workspace_members: Vec<String> = state
-                        .projects
-                        .iter()
-                        .filter(|p| p.workspace_name.as_ref() == Some(&workspace_name))
-                        .map(|p| p.name.clone())
-                        .collect();
-
-                    if workspace_members.is_empty() {
-                        return;
-                    }
-
-                    let all_selected = workspace_members
-                        .iter()
-                        .all(|name| state.selected_projects.contains(name));
-
-                    if all_selected {
-                        for name in workspace_members {
-                            state.selected_projects.remove(&name);
-                        }
-                    } else {
-                        for name in workspace_members {
-                            state.selected_projects.insert(name);
-                        }
-                    }
-                    return;
-                }
-            }
-
-            let project_name = project.name.clone();
-            if !state.selected_projects.remove(&project_name) {
-                state.selected_projects.insert(project_name);
-            }
+        if is_workspace_header {
+            toggle_workspace_selection(state, &workspace_name);
+            return;
         }
+    }
+
+    toggle_single_project_selection(state, &project_name);
+}
+
+fn toggle_workspace_selection(state: &mut AppState, workspace_name: &str) {
+    let workspace_members: Vec<String> = state
+        .projects
+        .iter()
+        .filter(|p| p.workspace_name.as_deref() == Some(workspace_name))
+        .map(|p| p.name.clone())
+        .collect();
+
+    if workspace_members.is_empty() {
+        return;
+    }
+
+    let all_selected = workspace_members
+        .iter()
+        .all(|name| state.selected_projects.contains(name));
+
+    for name in workspace_members {
+        if all_selected {
+            state.selected_projects.remove(&name);
+        } else {
+            state.selected_projects.insert(name);
+        }
+    }
+}
+
+fn toggle_single_project_selection(state: &mut AppState, project_name: &str) {
+    if !state.selected_projects.remove(project_name) {
+        state.selected_projects.insert(project_name.to_string());
     }
 }
 
@@ -195,11 +209,9 @@ pub fn handle_settings_toggle_background(state: &mut AppState) {
 /// Persist settings from the modal, validating input and updating background queue
 pub fn handle_save_settings(state: &mut AppState) {
     let raw_value = state.settings_modal.cache_minutes_input.value().trim();
-    let parsed_minutes = raw_value.parse::<u64>().ok().filter(|v| *v > 0);
-
-    let minutes = match parsed_minutes {
-        Some(value) => value,
-        None => {
+    let minutes = match raw_value.parse::<u64>() {
+        Ok(value) if value > 0 => value,
+        _ => {
             state.settings_modal.error_message =
                 Some("Cache TTL must be a positive number of minutes".to_string());
             return;
@@ -227,32 +239,36 @@ pub fn handle_save_settings(state: &mut AppState) {
     }
 
     if !was_background_enabled && state.settings.background_updates_enabled {
-        let now = std::time::SystemTime::now();
-        let cache_duration = state.settings.cache_duration();
+        queue_background_updates_on_enable(state);
+    }
+}
 
-        for project in &state.all_projects {
-            if project.dependencies.is_empty() {
-                continue;
-            }
+fn queue_background_updates_on_enable(state: &mut AppState) {
+    let now = std::time::SystemTime::now();
+    let cache_duration = state.settings.cache_duration();
 
-            let needs_check = project.dependencies.iter().any(|dep| {
-                if let Some(last_checked) = dep.last_checked {
-                    if let Ok(elapsed) = now.duration_since(last_checked) {
-                        elapsed > cache_duration
-                    } else {
-                        true
-                    }
+    for project in &state.all_projects {
+        if project.dependencies.is_empty() {
+            continue;
+        }
+
+        let needs_check = project.dependencies.iter().any(|dep| {
+            if let Some(last_checked) = dep.last_checked {
+                if let Ok(elapsed) = now.duration_since(last_checked) {
+                    elapsed > cache_duration
                 } else {
                     true
                 }
-            });
-
-            if needs_check {
-                state.update_queue.add_task(crate::runner::UpdateCheckTask {
-                    project_name: project.name.clone(),
-                    is_priority: false,
-                });
+            } else {
+                true
             }
+        });
+
+        if needs_check {
+            state.update_queue.add_task(crate::runner::UpdateCheckTask {
+                project_name: project.name.clone(),
+                is_priority: false,
+            });
         }
     }
 }
@@ -406,17 +422,23 @@ pub fn handle_update_dependencies(
     project_name: String,
     deps: Vec<crate::project::Dependency>,
 ) {
-    // CRITICAL: Check if wizard is open AND if this is the LOCKED project
-    // This prevents background updates for other projects from changing the wizard display
     let is_wizard_locked_project = state.mode == Mode::UpdateWizard
         && state.updater.locked_project_name.as_ref() == Some(&project_name);
 
-    // Calculate project check status based on dependencies
+    update_project_dependencies(state, &project_name, deps.clone());
+
+    if is_wizard_locked_project {
+        update_wizard_dependencies(state, deps);
+    }
+}
+
+fn update_project_dependencies(
+    state: &mut AppState,
+    project_name: &str,
+    deps: Vec<crate::project::Dependency>,
+) {
     let new_check_status = Project::compute_check_status_from_deps(&deps);
 
-    // Update in all_projects (the source of truth)
-    // CRITICAL: ALWAYS update, even when wizard is open!
-    // This ensures all 3 views (wizard, explorer, dependency pane) update simultaneously
     if let Some(all_proj) = state
         .all_projects
         .iter_mut()
@@ -426,39 +448,29 @@ pub fn handle_update_dependencies(
         all_proj.check_status = new_check_status.clone();
     }
 
-    // Also update in filtered projects if it exists there
-    // CRITICAL: ALWAYS update, even when wizard is open!
     if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
-        proj.dependencies = deps.clone();
+        proj.dependencies = deps;
         proj.check_status = new_check_status;
     }
+}
 
-    // CRITICAL: Update wizard display UNCONDITIONALLY if this is the LOCKED project
-    // Don't nest this inside the state.projects.find() block above!
-    // The project might not be in the filtered list, but wizard should still update
-    if is_wizard_locked_project {
-        state.updater.outdated_dependencies = deps
-            .into_iter()
-            .filter(|d| {
-                d.latest_version
-                    .as_ref()
-                    .map(|latest| latest != &d.current_version)
-                    .unwrap_or(false)
-            })
-            .collect();
+fn update_wizard_dependencies(state: &mut AppState, deps: Vec<crate::project::Dependency>) {
+    state.updater.outdated_dependencies = deps
+        .into_iter()
+        .filter(|d| {
+            d.latest_version
+                .as_ref()
+                .map(|latest| latest != &d.current_version)
+                .unwrap_or(false)
+        })
+        .collect();
 
-        // Select first item if there are outdated dependencies
-        if !state.updater.outdated_dependencies.is_empty() {
-            state.updater.list_state.select(Some(0));
-        }
-
-        // CRITICAL FIX: ALWAYS clear the checking flag when we update the wizard
-        // Don't be too clever about user_check_in_progress - if we're updating the wizard
-        // with dependency data for the locked project, the check is DONE. Period.
-        // Any extra complexity just creates bugs.
-        state.is_checking_updates = false;
-        state.updater.user_check_in_progress = false;
+    if !state.updater.outdated_dependencies.is_empty() {
+        state.updater.list_state.select(Some(0));
     }
+
+    state.is_checking_updates = false;
+    state.updater.user_check_in_progress = false;
 }
 
 /// Handle start of dependency update stream
