@@ -1,6 +1,6 @@
 [package]
 name = "carwash"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Nicholas Paterno <nick@epistates.com>"]
 description = "A beautiful TUI for managing multiple Rust projects with workspace support, dependency management, and parallel command execution"
@@ -40,7 +40,7 @@ too_many_arguments = "allow"
 module_name_repetitions = "allow"
 
 [dependencies]
-cargo-lock = "10.1.0"
+cargo-lock = "11.0.0"
 clap = { version = "4.5.51", features = ["derive"] }
 crates_io_api = "0.12.0"
 crossterm = { version = "0.28.1", features = ["event-stream"] }
@@ -52,6 +52,7 @@ rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
 toml = "0.9.8"
+once_cell = "1.19"
 tui-input = "0.14.0"
 tui-tree-widget = "0.23.1"
 walkdir = "2.5.0"
