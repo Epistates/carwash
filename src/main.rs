@@ -166,10 +166,22 @@ async fn handle_event(
                     KeyCode::Char('q') => Some(Action::Quit),
                     KeyCode::Char('?') => Some(Action::ShowHelp),
                     KeyCode::Char('s') | KeyCode::Char('S') => Some(Action::ShowSettings),
+                    KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::CycleTheme),
                     KeyCode::Char(':') => Some(Action::ShowCommandPalette),
-                    KeyCode::Char('u') => {
-                        // Open update wizard for selected project
-                        Some(Action::StartUpdateWizard)
+                    KeyCode::Char('/') => Some(Action::EnterFilterMode),
+                    KeyCode::Char('u') => Some(Action::StartUpdateWizard),
+                    // Layout adjustment controls
+                    KeyCode::Char('{') | KeyCode::Char('[') => Some(Action::DecreaseLeftPane),
+                    KeyCode::Char('}') | KeyCode::Char(']') => Some(Action::IncreaseLeftPane),
+                    KeyCode::Char('(') | KeyCode::Char('-') => Some(Action::DecreaseTopRight),
+                    KeyCode::Char(')') | KeyCode::Char('+') => Some(Action::IncreaseTopRight),
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            Some(Action::ResetLayout)
+                        } else {
+                            let mut project_list = ProjectList::new();
+                            project_list.handle_key_events(key.code, state)
+                        }
                     }
                     _ => {
                         let mut project_list = ProjectList::new();
@@ -196,6 +208,30 @@ async fn handle_event(
             Mode::Settings => {
                 let mut settings = SettingsModal::new();
                 settings.handle_key_events(key.code, state)
+            }
+            Mode::Filter => {
+                // Handle filter mode keys
+                match key.code {
+                    KeyCode::Esc => Some(Action::ExitFilterMode),
+                    KeyCode::Enter => Some(Action::ExitFilterMode),
+                    KeyCode::Char(c) => Some(Action::UpdateFilterInput(
+                        state.filter.input.clone() + &c.to_string(),
+                    )),
+                    KeyCode::Backspace => {
+                        let mut input = state.filter.input.clone();
+                        input.pop();
+                        Some(Action::UpdateFilterInput(input))
+                    }
+                    KeyCode::Up => {
+                        state.filter.select_previous();
+                        None
+                    }
+                    KeyCode::Down => {
+                        state.filter.select_next();
+                        None
+                    }
+                    _ => None,
+                }
             }
         };
 
@@ -287,7 +323,16 @@ async fn run_app<B: Backend>(
             // Prioritize keyboard events with biased selection
             biased;
 
-            Some(Ok(event)) = event_stream.next() => {
+            // Poll events with a timeout to keep UI responsive
+            Some(Ok(event)) = async {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    event_stream.next()
+                )
+                .await
+                .ok()
+                .flatten()
+            } => {
                 handle_event(event, state, &action_tx).await?;
             }
             Some(action) = action_rx.recv() => {
