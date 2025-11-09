@@ -1,3 +1,13 @@
+//! UI module for CarWash
+//!
+//! This module contains all UI-related functionality including styling, theming,
+//! layout management, and component rendering orchestration.
+
+pub mod styles;
+pub mod theme;
+pub mod layout;
+pub mod modal;
+
 use crate::app::AppState;
 use crate::components::{
     Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
@@ -11,6 +21,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+// Re-export commonly used items
+pub use styles::{Colors, ColorScheme};
+pub use theme::{Theme, ThemeManager};
+
+/// Main UI rendering function
 pub fn ui(f: &mut Frame, app: &mut AppState) {
     let mut dependencies = DependenciesPane::new();
     let mut output = TabbedOutputPane::new();
@@ -31,14 +46,20 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
         .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
         .split(f.area());
 
+    // Use dynamic layout preferences from config
+    let left_percent = app.config.layout.left_pane_percent;
+    let right_percent = 100 - left_percent;
+    let top_right_percent = app.config.layout.top_right_percent;
+    let bottom_right_percent = 100 - top_right_percent;
+
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+        .constraints([Constraint::Percentage(left_percent), Constraint::Percentage(right_percent)].as_ref())
         .split(main_chunks[0]);
 
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+        .constraints([Constraint::Percentage(top_right_percent), Constraint::Percentage(bottom_right_percent)].as_ref())
         .split(top_chunks[1]);
 
     project_list.draw(f, app, top_chunks[0]);
