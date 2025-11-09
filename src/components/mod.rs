@@ -9,13 +9,16 @@ use crossterm::event::KeyCode;
 use ratatui::{Frame, layout::Rect};
 
 pub mod dependencies;
+pub mod filter;
 pub mod help;
 pub mod output;
 pub mod palette;
+pub mod progress;
 pub mod projects;
 pub mod settings;
 pub mod status;
 pub mod text_input;
+pub mod tree_view;
 pub mod updater;
 
 /// Trait for UI components in CarWash
