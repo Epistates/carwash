@@ -123,7 +123,7 @@ impl ProgressState {
 
     /// Check if all projects are finished
     pub fn is_complete(&self) -> bool {
-        self.projects.len() > 0 && self.completed_count() == self.projects.len()
+        !self.projects.is_empty() && self.completed_count() == self.projects.len()
     }
 
     /// Clear progress state
@@ -199,7 +199,7 @@ impl ProgressComponent {
                     .borders(Borders::ALL),
             )
             .gauge_style(Style::default().fg(colors.success))
-            .percent(overall as u16)
+            .percent(overall)
             .label(format!("{}%", overall));
 
         Paragraph::new(format!("Overall: {}/{} complete", completed, state.total))

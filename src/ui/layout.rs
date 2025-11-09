@@ -41,14 +41,14 @@ impl LayoutPreferences {
 
     /// Adjust left pane width
     pub fn adjust_left_pane(&mut self, percent: u16) {
-        let percent = percent.max(20).min(80); // Constrain to reasonable range
+        let percent = percent.clamp(20, 80); // Constrain to reasonable range
         self.left_pane_percent = percent;
         self.right_pane_percent = 100 - percent;
     }
 
     /// Adjust top-right pane height
     pub fn adjust_top_right(&mut self, percent: u16) {
-        let percent = percent.max(20).min(80);
+        let percent = percent.clamp(20, 80);
         self.top_right_percent = percent;
         self.bottom_right_percent = 100 - percent;
     }

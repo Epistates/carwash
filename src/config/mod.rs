@@ -15,7 +15,7 @@ pub use keybinding_config::KeybindingConfig;
 pub use theme_config::ThemeConfig;
 
 /// Main configuration structure for CarWash
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Theme configuration
     pub theme: ThemeConfig,
@@ -111,7 +111,7 @@ impl Config {
                 if path.exists() {
                     match fs::read_to_string(&path) {
                         Ok(content) => match toml::from_str::<Config>(&content) {
-                            Ok(config) => return config,
+                            Ok(config) => config,
                             Err(e) => {
                                 eprintln!("Warning: Failed to parse config: {}", e);
                                 Self::default()
@@ -157,17 +157,6 @@ impl Config {
     /// Get mutable theme configuration
     pub fn theme_mut(&mut self) -> &mut ThemeConfig {
         &mut self.theme
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            theme: ThemeConfig::default(),
-            layout: LayoutConfig::default(),
-            keybindings: KeybindingConfig::default(),
-            progress: ProgressConfig::default(),
-        }
     }
 }
 
