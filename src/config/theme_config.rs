@@ -213,8 +213,7 @@ mod tests {
     fn test_config_serialization() {
         let config = ThemeConfig::default();
         let toml_str = toml::to_string(&config).expect("Failed to serialize");
-        let deserialized: ThemeConfig = toml::from_str(&toml_str)
-            .expect("Failed to deserialize");
+        let deserialized: ThemeConfig = toml::from_str(&toml_str).expect("Failed to deserialize");
         assert_eq!(config.current, deserialized.current);
     }
 }

@@ -114,24 +114,51 @@ impl KeybindingConfig {
     /// Default CarWash keybindings (blended vim+standard)
     fn default_scheme_bindings(&self) -> HashMap<String, Vec<String>> {
         vec![
-            ("SelectNext".to_string(), vec!["j".to_string(), "Down".to_string()]),
-            ("SelectPrevious".to_string(), vec!["k".to_string(), "Up".to_string()]),
+            (
+                "SelectNext".to_string(),
+                vec!["j".to_string(), "Down".to_string()],
+            ),
+            (
+                "SelectPrevious".to_string(),
+                vec!["k".to_string(), "Up".to_string()],
+            ),
             ("SelectUp".to_string(), vec!["Up".to_string()]),
             ("SelectDown".to_string(), vec!["Down".to_string()]),
-            ("SelectParent".to_string(), vec!["h".to_string(), "Left".to_string()]),
-            ("SelectChild".to_string(), vec!["l".to_string(), "Right".to_string()]),
+            (
+                "SelectParent".to_string(),
+                vec!["h".to_string(), "Left".to_string()],
+            ),
+            (
+                "SelectChild".to_string(),
+                vec!["l".to_string(), "Right".to_string()],
+            ),
             ("ToggleSelection".to_string(), vec!["space".to_string()]),
             ("SearchProjects".to_string(), vec!["/".to_string()]),
             ("EnterFilter".to_string(), vec!["/".to_string()]),
             ("ExitFilter".to_string(), vec!["Esc".to_string()]),
-            ("CycleTheme".to_string(), vec!["t".to_string(), "T".to_string()]),
-            ("IncreaseLeftPane".to_string(), vec!["]".to_string(), "{".to_string()]),
+            (
+                "CycleTheme".to_string(),
+                vec!["t".to_string(), "T".to_string()],
+            ),
+            (
+                "IncreaseLeftPane".to_string(),
+                vec!["]".to_string(), "{".to_string()],
+            ),
             ("DecreaseLeftPane".to_string(), vec!["[".to_string()]),
-            ("IncreaseTopRight".to_string(), vec![")".to_string(), "+".to_string()]),
-            ("DecreaseTopRight".to_string(), vec!["-".to_string(), "(".to_string()]),
+            (
+                "IncreaseTopRight".to_string(),
+                vec![")".to_string(), "+".to_string()],
+            ),
+            (
+                "DecreaseTopRight".to_string(),
+                vec!["-".to_string(), "(".to_string()],
+            ),
             ("ResetLayout".to_string(), vec!["R".to_string()]),
             ("ShowCommandPalette".to_string(), vec![":".to_string()]),
-            ("ShowSettings".to_string(), vec!["s".to_string(), "S".to_string()]),
+            (
+                "ShowSettings".to_string(),
+                vec!["s".to_string(), "S".to_string()],
+            ),
             ("ShowHelp".to_string(), vec!["?".to_string()]),
             ("StartUpdateWizard".to_string(), vec!["u".to_string()]),
             ("CheckForUpdates".to_string(), vec!["u".to_string()]),
@@ -199,18 +226,72 @@ impl KeybindingConfig {
     pub fn actions_with_keys(&self) -> Vec<(String, Vec<String>, &'static str)> {
         let bindings = self.get_bindings();
         vec![
-            ("SelectNext".to_string(), bindings.get("SelectNext").cloned().unwrap_or_default(), KeyAction::SelectNext.description()),
-            ("SelectPrevious".to_string(), bindings.get("SelectPrevious").cloned().unwrap_or_default(), KeyAction::SelectPrevious.description()),
-            ("SelectParent".to_string(), bindings.get("SelectParent").cloned().unwrap_or_default(), KeyAction::SelectParent.description()),
-            ("SelectChild".to_string(), bindings.get("SelectChild").cloned().unwrap_or_default(), KeyAction::SelectChild.description()),
-            ("ToggleSelection".to_string(), bindings.get("ToggleSelection").cloned().unwrap_or_default(), KeyAction::ToggleSelection.description()),
-            ("SearchProjects".to_string(), bindings.get("SearchProjects").cloned().unwrap_or_default(), KeyAction::SearchProjects.description()),
-            ("CycleTheme".to_string(), bindings.get("CycleTheme").cloned().unwrap_or_default(), KeyAction::CycleTheme.description()),
-            ("ShowCommandPalette".to_string(), bindings.get("ShowCommandPalette").cloned().unwrap_or_default(), KeyAction::ShowCommandPalette.description()),
-            ("ShowSettings".to_string(), bindings.get("ShowSettings").cloned().unwrap_or_default(), KeyAction::ShowSettings.description()),
-            ("ShowHelp".to_string(), bindings.get("ShowHelp").cloned().unwrap_or_default(), KeyAction::ShowHelp.description()),
-            ("StartUpdateWizard".to_string(), bindings.get("StartUpdateWizard").cloned().unwrap_or_default(), KeyAction::StartUpdateWizard.description()),
-            ("Quit".to_string(), bindings.get("Quit").cloned().unwrap_or_default(), KeyAction::Quit.description()),
+            (
+                "SelectNext".to_string(),
+                bindings.get("SelectNext").cloned().unwrap_or_default(),
+                KeyAction::SelectNext.description(),
+            ),
+            (
+                "SelectPrevious".to_string(),
+                bindings.get("SelectPrevious").cloned().unwrap_or_default(),
+                KeyAction::SelectPrevious.description(),
+            ),
+            (
+                "SelectParent".to_string(),
+                bindings.get("SelectParent").cloned().unwrap_or_default(),
+                KeyAction::SelectParent.description(),
+            ),
+            (
+                "SelectChild".to_string(),
+                bindings.get("SelectChild").cloned().unwrap_or_default(),
+                KeyAction::SelectChild.description(),
+            ),
+            (
+                "ToggleSelection".to_string(),
+                bindings.get("ToggleSelection").cloned().unwrap_or_default(),
+                KeyAction::ToggleSelection.description(),
+            ),
+            (
+                "SearchProjects".to_string(),
+                bindings.get("SearchProjects").cloned().unwrap_or_default(),
+                KeyAction::SearchProjects.description(),
+            ),
+            (
+                "CycleTheme".to_string(),
+                bindings.get("CycleTheme").cloned().unwrap_or_default(),
+                KeyAction::CycleTheme.description(),
+            ),
+            (
+                "ShowCommandPalette".to_string(),
+                bindings
+                    .get("ShowCommandPalette")
+                    .cloned()
+                    .unwrap_or_default(),
+                KeyAction::ShowCommandPalette.description(),
+            ),
+            (
+                "ShowSettings".to_string(),
+                bindings.get("ShowSettings").cloned().unwrap_or_default(),
+                KeyAction::ShowSettings.description(),
+            ),
+            (
+                "ShowHelp".to_string(),
+                bindings.get("ShowHelp").cloned().unwrap_or_default(),
+                KeyAction::ShowHelp.description(),
+            ),
+            (
+                "StartUpdateWizard".to_string(),
+                bindings
+                    .get("StartUpdateWizard")
+                    .cloned()
+                    .unwrap_or_default(),
+                KeyAction::StartUpdateWizard.description(),
+            ),
+            (
+                "Quit".to_string(),
+                bindings.get("Quit").cloned().unwrap_or_default(),
+                KeyAction::Quit.description(),
+            ),
         ]
     }
 }
@@ -266,7 +347,9 @@ mod tests {
     #[test]
     fn test_custom_overrides() {
         let mut config = KeybindingConfig::default();
-        config.custom.insert("SelectNext".to_string(), vec!["w".to_string()]);
+        config
+            .custom
+            .insert("SelectNext".to_string(), vec!["w".to_string()]);
 
         let bindings = config.get_bindings();
         assert_eq!(bindings.get("SelectNext"), Some(&vec!["w".to_string()]));
@@ -289,8 +372,8 @@ mod tests {
     fn test_serialization() {
         let config = KeybindingConfig::default();
         let toml_str = toml::to_string(&config).expect("Failed to serialize");
-        let deserialized: KeybindingConfig = toml::from_str(&toml_str)
-            .expect("Failed to deserialize");
+        let deserialized: KeybindingConfig =
+            toml::from_str(&toml_str).expect("Failed to deserialize");
         assert_eq!(config.scheme, deserialized.scheme);
     }
 }

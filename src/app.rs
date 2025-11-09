@@ -213,7 +213,9 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::ShowHelp => handle_show_help(state),
         Action::ShowSettings => handle_show_settings(state),
         Action::CloseSettings => handle_close_settings(state),
-        Action::FinishProjectScan(projects, target_dir) => handle_finish_project_scan(state, projects, target_dir),
+        Action::FinishProjectScan(projects, target_dir) => {
+            handle_finish_project_scan(state, projects, target_dir)
+        }
         Action::UpdateTextInput(s) => handle_update_text_input(state, s),
         Action::SelectNext => handle_select_next(state),
         Action::SelectPrevious => handle_select_previous(state),
@@ -349,7 +351,10 @@ mod tests {
         project.dependencies = vec![]; // Empty dependencies - should be filtered out
         let projects = vec![project];
 
-        reducer(&mut state, Action::FinishProjectScan(projects, ".".to_string()));
+        reducer(
+            &mut state,
+            Action::FinishProjectScan(projects, ".".to_string()),
+        );
         assert!(!state.is_scanning);
         assert_eq!(state.mode, Mode::Normal);
         // Projects with empty dependencies should be filtered

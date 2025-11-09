@@ -3,16 +3,16 @@
 //! This module handles loading, saving, and managing user configuration including
 //! themes, keybindings, layout preferences, and other settings.
 
-pub mod theme_config;
 pub mod keybinding_config;
+pub mod theme_config;
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Context, Result};
 
-pub use theme_config::ThemeConfig;
 pub use keybinding_config::KeybindingConfig;
+pub use theme_config::ThemeConfig;
 
 /// Main configuration structure for CarWash
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,15 +139,12 @@ impl Config {
 
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
-        fs::write(&path, content)
-            .context("Failed to write config file")?;
+        fs::write(&path, content).context("Failed to write config file")?;
 
         Ok(())
     }
@@ -204,8 +201,10 @@ mod tests {
     fn test_config_serialization() {
         let config = Config::default();
         let toml_str = toml::to_string(&config).expect("Failed to serialize");
-        let deserialized: Config = toml::from_str(&toml_str)
-            .expect("Failed to deserialize");
-        assert_eq!(config.layout.left_pane_percent, deserialized.layout.left_pane_percent);
+        let deserialized: Config = toml::from_str(&toml_str).expect("Failed to deserialize");
+        assert_eq!(
+            config.layout.left_pane_percent,
+            deserialized.layout.left_pane_percent
+        );
     }
 }

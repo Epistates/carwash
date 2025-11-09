@@ -3,10 +3,10 @@
 //! This module contains all UI-related functionality including styling, theming,
 //! layout management, and component rendering orchestration.
 
-pub mod styles;
-pub mod theme;
 pub mod layout;
 pub mod modal;
+pub mod styles;
+pub mod theme;
 
 use crate::app::AppState;
 use crate::components::{
@@ -22,7 +22,7 @@ use ratatui::{
 };
 
 // Re-export commonly used items
-pub use styles::{Colors, ColorScheme};
+pub use styles::{ColorScheme, Colors};
 pub use theme::{Theme, ThemeManager};
 
 /// Main UI rendering function
@@ -54,12 +54,24 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
 
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(left_percent), Constraint::Percentage(right_percent)].as_ref())
+        .constraints(
+            [
+                Constraint::Percentage(left_percent),
+                Constraint::Percentage(right_percent),
+            ]
+            .as_ref(),
+        )
         .split(main_chunks[0]);
 
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(top_right_percent), Constraint::Percentage(bottom_right_percent)].as_ref())
+        .constraints(
+            [
+                Constraint::Percentage(top_right_percent),
+                Constraint::Percentage(bottom_right_percent),
+            ]
+            .as_ref(),
+        )
         .split(top_chunks[1]);
 
     project_list.draw(f, app, top_chunks[0]);

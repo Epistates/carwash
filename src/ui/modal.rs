@@ -6,11 +6,11 @@
 use crate::ui::layout::centered_rect;
 use crate::ui::styles::Colors;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 /// Common modal styling and rendering utilities
@@ -56,19 +56,39 @@ impl ModalRenderer {
     pub fn render_help_lines(colors: Colors) -> Vec<Line<'static>> {
         vec![
             Line::from(vec![
-                Span::styled("Arrows/hjkl", Style::default().fg(colors.selection).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Arrows/hjkl",
+                    Style::default()
+                        .fg(colors.selection)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" - Navigate"),
             ]),
             Line::from(vec![
-                Span::styled("Space", Style::default().fg(colors.selection).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Space",
+                    Style::default()
+                        .fg(colors.selection)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" - Select"),
             ]),
             Line::from(vec![
-                Span::styled("Enter", Style::default().fg(colors.selection).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(colors.selection)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" - Confirm"),
             ]),
             Line::from(vec![
-                Span::styled("Esc", Style::default().fg(colors.selection).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(colors.selection)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" - Cancel"),
             ]),
         ]

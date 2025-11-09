@@ -53,7 +53,11 @@ pub fn handle_close_settings(state: &mut AppState) {
 }
 
 /// Handle completing project scan
-pub fn handle_finish_project_scan(state: &mut AppState, projects: Vec<Project>, target_directory: String) {
+pub fn handle_finish_project_scan(
+    state: &mut AppState,
+    projects: Vec<Project>,
+    target_directory: String,
+) {
     state.all_projects = projects.clone();
     // Only show projects with dependencies
     state.projects = projects
@@ -155,7 +159,11 @@ pub fn handle_select_parent(state: &mut AppState) {
                 // Only collapse if it's an expanded directory
                 if node.node_type.is_directory() && node.expanded {
                     // Find and toggle the node
-                    toggle_node_expanded(tree_root, node.node_type.path(), state.settings.show_all_folders);
+                    toggle_node_expanded(
+                        tree_root,
+                        node.node_type.path(),
+                        state.settings.show_all_folders,
+                    );
 
                     // Re-flatten the tree
                     state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
@@ -181,7 +189,11 @@ pub fn handle_select_child(state: &mut AppState) {
                 // Only expand if it's a collapsed directory
                 if node.node_type.is_directory() && !node.expanded {
                     // Find and toggle the node
-                    toggle_node_expanded(tree_root, node.node_type.path(), state.settings.show_all_folders);
+                    toggle_node_expanded(
+                        tree_root,
+                        node.node_type.path(),
+                        state.settings.show_all_folders,
+                    );
 
                     // Re-flatten the tree
                     state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
@@ -196,8 +208,50 @@ pub fn handle_select_child(state: &mut AppState) {
     }
 }
 
+/// Recursively load and expand all directories under a node
+fn load_all_descendants(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
+    // Load this node's children if not already loaded
+    if !node.children_loaded && node.node_type.is_directory() {
+        crate::project::load_directory_children(node, show_all_folders);
+    }
+
+    // Expand this node if it's a directory
+    if node.node_type.is_directory() && !node.expanded {
+        node.expanded = true;
+    }
+
+    // Recursively load all children
+    for child in &mut node.children {
+        if child.node_type.is_directory() {
+            load_all_descendants(child, show_all_folders);
+        }
+    }
+}
+
+/// Load children and expand a node by its path (used for selection)
+fn load_and_expand_node(
+    node: &mut crate::tree::TreeNode,
+    target_path: &std::path::Path,
+    show_all_folders: bool,
+) {
+    if node.node_type.path() == target_path {
+        // Recursively load all descendants to find all projects
+        load_all_descendants(node, show_all_folders);
+        return;
+    }
+
+    // Recursively search for the node
+    for child in &mut node.children {
+        load_and_expand_node(child, target_path, show_all_folders);
+    }
+}
+
 /// Toggle the expanded state of a node by its path
-fn toggle_node_expanded(node: &mut crate::tree::TreeNode, target_path: &std::path::Path, show_all_folders: bool) {
+fn toggle_node_expanded(
+    node: &mut crate::tree::TreeNode,
+    target_path: &std::path::Path,
+    show_all_folders: bool,
+) {
     if node.node_type.path() == target_path {
         // If expanding and children not loaded, load them first
         if !node.expanded && !node.children_loaded {
@@ -231,9 +285,21 @@ pub fn handle_toggle_selection(state: &mut AppState) {
     let node_depth = node.depth;
 
     match &node_type_clone {
-        crate::tree::TreeNodeType::Directory { .. } => {
-            // For directories, toggle all projects under this directory
-            // Collect all project names in this directory's subtree
+        crate::tree::TreeNodeType::Directory { path, .. } => {
+            // For directories, we need to ensure children are loaded first
+            // so we can actually select the projects inside
+            if let Some(tree_root) = &mut state.tree_root {
+                let path_clone = path.clone();
+                let show_all_folders = state.settings.show_all_folders;
+
+                // Load children if not already loaded, and expand the directory
+                load_and_expand_node(tree_root, &path_clone, show_all_folders);
+
+                // Re-flatten the tree to reflect the newly loaded children
+                state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
+            }
+
+            // Now collect all project names in this directory's subtree
             let mut project_names = Vec::new();
 
             // Iterate through subsequent nodes until we leave this directory
@@ -251,7 +317,9 @@ pub fn handle_toggle_selection(state: &mut AppState) {
 
             // Toggle all projects in this directory
             if !project_names.is_empty() {
-                let all_selected = project_names.iter().all(|name| state.selected_projects.contains(name));
+                let all_selected = project_names
+                    .iter()
+                    .all(|name| state.selected_projects.contains(name));
                 if all_selected {
                     // Deselect all
                     for name in project_names {
@@ -772,9 +840,7 @@ pub fn handle_update_filter_input(state: &mut AppState, input: String) {
         flattened_tree: crate::tree::FlattenedTree,
     }
 
-    let temp = TempState {
-        flattened_tree,
-    };
+    let temp = TempState { flattened_tree };
 
     // Update filter with input
     state.filter.input = input;

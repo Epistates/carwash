@@ -145,7 +145,8 @@ impl FlattenedTree {
     fn flatten_recursive(&mut self, node: &TreeNode, index: &mut usize) {
         // Add this node to the flat list
         self.items.push((node.clone(), *index));
-        self.path_to_index.insert(node.node_type.path().to_path_buf(), *index);
+        self.path_to_index
+            .insert(node.node_type.path().to_path_buf(), *index);
         *index += 1;
 
         // If this is an expanded directory, add its children

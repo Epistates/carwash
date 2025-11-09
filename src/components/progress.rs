@@ -49,9 +49,7 @@ impl ProjectProgress {
 
     /// Get elapsed time since start
     pub fn elapsed(&self) -> Duration {
-        self.started_at
-            .elapsed()
-            .unwrap_or(Duration::from_secs(0))
+        self.started_at.elapsed().unwrap_or(Duration::from_secs(0))
     }
 
     /// Get elapsed time or duration if finished
@@ -144,10 +142,7 @@ impl ProgressComponent {
     }
 
     /// Render a progress bar for a single project
-    pub fn render_project_progress(
-        colors: Colors,
-        progress: &ProjectProgress,
-    ) -> Line<'static> {
+    pub fn render_project_progress(colors: Colors, progress: &ProjectProgress) -> Line<'static> {
         let progress_str = format!("[{}%]", progress.progress);
         let step_str = progress.current_step.clone();
 
@@ -176,13 +171,13 @@ impl ProgressComponent {
         let status_str = if progress.is_finished { "✓" } else { "⟳" };
 
         Line::from(vec![
-            Span::styled(format!("{} ", status_str), Style::default().fg(status_color)),
+            Span::styled(
+                format!("{} ", status_str),
+                Style::default().fg(status_color),
+            ),
             Span::styled(name, Style::default().fg(colors.text)),
             Span::raw(" "),
-            Span::styled(
-                format!("{:<15}", step_str),
-                Style::default().fg(colors.dim),
-            ),
+            Span::styled(format!("{:<15}", step_str), Style::default().fg(colors.dim)),
             Span::styled(
                 format!("{:>5}", progress_str),
                 Style::default().fg(status_color),
@@ -213,11 +208,7 @@ impl ProgressComponent {
 }
 
 impl Component for ProgressComponent {
-    fn handle_key_events(
-        &mut self,
-        _key: KeyCode,
-        _app: &mut AppState,
-    ) -> Option<Action> {
+    fn handle_key_events(&mut self, _key: KeyCode, _app: &mut AppState) -> Option<Action> {
         None
     }
 

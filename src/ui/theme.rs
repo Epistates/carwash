@@ -52,7 +52,10 @@ impl ThemeManager {
     /// Switch to the next theme in the cycle
     pub fn next_theme(&mut self) {
         let schemes = ColorScheme::all();
-        let current_idx = schemes.iter().position(|&s| s == self.current_scheme).unwrap_or(0);
+        let current_idx = schemes
+            .iter()
+            .position(|&s| s == self.current_scheme)
+            .unwrap_or(0);
         let next_idx = (current_idx + 1) % schemes.len();
         self.set_scheme(schemes[next_idx]);
     }
@@ -60,7 +63,10 @@ impl ThemeManager {
     /// Switch to the previous theme in the cycle
     pub fn previous_theme(&mut self) {
         let schemes = ColorScheme::all();
-        let current_idx = schemes.iter().position(|&s| s == self.current_scheme).unwrap_or(0);
+        let current_idx = schemes
+            .iter()
+            .position(|&s| s == self.current_scheme)
+            .unwrap_or(0);
         let next_idx = if current_idx == 0 {
             schemes.len() - 1
         } else {

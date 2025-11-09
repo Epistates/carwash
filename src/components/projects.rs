@@ -23,7 +23,10 @@ impl ProjectList {
     /// - Blue (⟳): Currently checking for updates
     /// - Yellow (⚠): Some dependencies are outdated
     /// - Green (✓): All dependencies up to date
-    fn get_project_status(p: &crate::project::Project, colors: crate::ui::styles::Colors) -> (&'static str, Style) {
+    fn get_project_status(
+        p: &crate::project::Project,
+        colors: crate::ui::styles::Colors,
+    ) -> (&'static str, Style) {
         use crate::project::ProjectCheckStatus;
 
         match p.check_status {
@@ -97,7 +100,6 @@ impl ProjectList {
             ratatui::text::Span::styled(&project.name, name_style),
         ]))
     }
-
 }
 
 impl Component for ProjectList {
@@ -129,7 +131,10 @@ impl Component for ProjectList {
                     let indent = "  ".repeat(node.depth);
 
                     // Check if any children are selected
-                    let has_selected_children = app.flattened_tree.items.iter()
+                    let has_selected_children = app
+                        .flattened_tree
+                        .items
+                        .iter()
                         .skip(idx + 1)
                         .take_while(|(child_node, _)| child_node.depth > node.depth)
                         .filter_map(|(child_node, _)| {
@@ -153,9 +158,7 @@ impl Component for ProjectList {
                             .fg(colors.selection)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default()
-                            .fg(colors.dim)
-                            .add_modifier(Modifier::BOLD)
+                        Style::default().fg(colors.dim).add_modifier(Modifier::BOLD)
                     };
 
                     items.push(ListItem::new(ratatui::text::Line::from(vec![
@@ -183,7 +186,10 @@ impl Component for ProjectList {
         }
 
         let selected_count = app.selected_projects.len();
-        let total_count = app.flattened_tree.items.iter()
+        let total_count = app
+            .flattened_tree
+            .items
+            .iter()
             .filter(|(node, _)| node.node_type.is_project())
             .count();
         let all_count = app.all_projects.len();

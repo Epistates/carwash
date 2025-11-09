@@ -63,16 +63,14 @@ async fn main() -> anyhow::Result<()> {
 fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .context("Failed to enter alternate screen")?;
+    execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend).context("Failed to create terminal")
 }
 
 fn restore_terminal() -> anyhow::Result<()> {
     disable_raw_mode().context("Failed to disable raw mode")?;
-    execute!(io::stdout(), LeaveAlternateScreen)
-        .context("Failed to leave alternate screen")?;
+    execute!(io::stdout(), LeaveAlternateScreen).context("Failed to leave alternate screen")?;
     Ok(())
 }
 

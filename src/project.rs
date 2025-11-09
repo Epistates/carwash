@@ -533,7 +533,8 @@ fn directory_contains_rust_projects(path: &Path) -> bool {
                     || name_str == "target"
                     || name_str == "node_modules"
                     || name_str == "vendor"
-                    || name_str == "third_party" {
+                    || name_str == "third_party"
+                {
                     continue;
                 }
             }
@@ -595,7 +596,8 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                 || file_name == "target"
                 || file_name == "node_modules"
                 || file_name == "vendor"
-                || file_name == "third_party" {
+                || file_name == "third_party"
+            {
                 continue;
             }
 
@@ -617,10 +619,22 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                             } else if toml.package.is_some() {
                                 // It's a real project - add as project node
                                 let project = Project {
-                                    name: toml.package.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| file_name.to_string()),
+                                    name: toml
+                                        .package
+                                        .as_ref()
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_else(|| file_name.to_string()),
                                     path: path.clone(),
-                                    version: toml.package.as_ref().map(|p| p.version.clone()).unwrap_or_default(),
-                                    authors: toml.package.as_ref().and_then(|p| p.authors.clone()).unwrap_or_default(),
+                                    version: toml
+                                        .package
+                                        .as_ref()
+                                        .map(|p| p.version.clone())
+                                        .unwrap_or_default(),
+                                    authors: toml
+                                        .package
+                                        .as_ref()
+                                        .and_then(|p| p.authors.clone())
+                                        .unwrap_or_default(),
                                     dependencies: Vec::new(), // Will be loaded on-demand when needed
                                     workspace_root: None,
                                     workspace_name: None,
@@ -628,7 +642,8 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                                     status: ProjectStatus::Pending,
                                     check_status: ProjectCheckStatus::Unchecked,
                                 };
-                                let project_node = crate::tree::TreeNode::project(project, node.depth + 1);
+                                let project_node =
+                                    crate::tree::TreeNode::project(project, node.depth + 1);
                                 children.push(project_node);
                             }
                         }
@@ -645,23 +660,23 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
         }
 
         // Sort children: directories first, then projects, alphabetically within each group
-        children.sort_by(|a, b| {
-            match (&a.node_type, &b.node_type) {
-                (crate::tree::TreeNodeType::Directory { name: a_name, .. },
-                 crate::tree::TreeNodeType::Directory { name: b_name, .. }) => {
-                    a_name.cmp(b_name)
-                }
-                (crate::tree::TreeNodeType::Project(a_proj),
-                 crate::tree::TreeNodeType::Project(b_proj)) => {
-                    a_proj.name.cmp(&b_proj.name)
-                }
-                (crate::tree::TreeNodeType::Directory { .. }, crate::tree::TreeNodeType::Project(_)) => {
-                    std::cmp::Ordering::Less
-                }
-                (crate::tree::TreeNodeType::Project(_), crate::tree::TreeNodeType::Directory { .. }) => {
-                    std::cmp::Ordering::Greater
-                }
-            }
+        children.sort_by(|a, b| match (&a.node_type, &b.node_type) {
+            (
+                crate::tree::TreeNodeType::Directory { name: a_name, .. },
+                crate::tree::TreeNodeType::Directory { name: b_name, .. },
+            ) => a_name.cmp(b_name),
+            (
+                crate::tree::TreeNodeType::Project(a_proj),
+                crate::tree::TreeNodeType::Project(b_proj),
+            ) => a_proj.name.cmp(&b_proj.name),
+            (
+                crate::tree::TreeNodeType::Directory { .. },
+                crate::tree::TreeNodeType::Project(_),
+            ) => std::cmp::Ordering::Less,
+            (
+                crate::tree::TreeNodeType::Project(_),
+                crate::tree::TreeNodeType::Directory { .. },
+            ) => std::cmp::Ordering::Greater,
         });
 
         node.children = children;

@@ -119,28 +119,28 @@ impl Colors {
     /// Nord theme - Arctic, north-bluish color palette
     pub fn nord() -> Self {
         Self {
-            selection: Color::Rgb(136, 192, 208),     // nord8
-            success: Color::Rgb(163, 190, 140),       // nord14 - green
-            warning: Color::Rgb(235, 203, 139),       // nord13 - yellow
-            error: Color::Rgb(191, 97, 106),          // nord11 - red
-            muted: Color::Rgb(76, 86, 106),           // nord3
-            text: Color::Rgb(236, 239, 244),          // nord4
-            dim: Color::Rgb(216, 222, 233),           // nord6
-            primary: Color::Rgb(136, 192, 208),       // nord8 - cyan
+            selection: Color::Rgb(136, 192, 208), // nord8
+            success: Color::Rgb(163, 190, 140),   // nord14 - green
+            warning: Color::Rgb(235, 203, 139),   // nord13 - yellow
+            error: Color::Rgb(191, 97, 106),      // nord11 - red
+            muted: Color::Rgb(76, 86, 106),       // nord3
+            text: Color::Rgb(236, 239, 244),      // nord4
+            dim: Color::Rgb(216, 222, 233),       // nord6
+            primary: Color::Rgb(136, 192, 208),   // nord8 - cyan
         }
     }
 
     /// Dracula theme - Dark, vampiric colors
     pub fn dracula() -> Self {
         Self {
-            selection: Color::Rgb(139, 233, 253),     // cyan
-            success: Color::Rgb(80, 250, 123),        // green
-            warning: Color::Rgb(241, 250, 140),       // yellow
-            error: Color::Rgb(255, 121, 198),         // pink
-            muted: Color::Rgb(98, 114, 164),          // comment gray
-            text: Color::Rgb(248, 248, 242),          // foreground
-            dim: Color::Rgb(68, 71, 90),              // background
-            primary: Color::Rgb(189, 147, 249),       // purple
+            selection: Color::Rgb(139, 233, 253), // cyan
+            success: Color::Rgb(80, 250, 123),    // green
+            warning: Color::Rgb(241, 250, 140),   // yellow
+            error: Color::Rgb(255, 121, 198),     // pink
+            muted: Color::Rgb(98, 114, 164),      // comment gray
+            text: Color::Rgb(248, 248, 242),      // foreground
+            dim: Color::Rgb(68, 71, 90),          // background
+            primary: Color::Rgb(189, 147, 249),   // purple
         }
     }
 }
@@ -157,9 +157,7 @@ impl StyledComponent {
     }
 
     pub fn directory_unselected(colors: Colors) -> Style {
-        Style::default()
-            .fg(colors.dim)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(colors.dim).add_modifier(Modifier::BOLD)
     }
 
     pub fn project_selected(colors: Colors) -> Style {
@@ -226,9 +224,7 @@ impl StyledComponent {
     }
 
     pub fn status_bar_normal(colors: Colors) -> Style {
-        Style::default()
-            .fg(colors.text)
-            .bg(Color::Rgb(40, 40, 60))
+        Style::default().fg(colors.text).bg(Color::Rgb(40, 40, 60))
     }
 
     pub fn status_bar_mode_indicator(colors: Colors) -> Style {
@@ -245,9 +241,7 @@ impl StyledComponent {
     }
 
     pub fn modal_background(colors: Colors) -> Style {
-        Style::default()
-            .fg(colors.text)
-            .bg(Color::Rgb(30, 30, 50))
+        Style::default().fg(colors.text).bg(Color::Rgb(30, 30, 50))
     }
 
     pub fn modal_border(colors: Colors) -> Style {
@@ -257,9 +251,7 @@ impl StyledComponent {
     }
 
     pub fn input_field(colors: Colors) -> Style {
-        Style::default()
-            .fg(colors.text)
-            .bg(Color::Rgb(20, 20, 40))
+        Style::default().fg(colors.text).bg(Color::Rgb(20, 20, 40))
     }
 
     pub fn help_text(colors: Colors) -> Style {
