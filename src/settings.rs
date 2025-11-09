@@ -11,6 +11,8 @@ const DEFAULT_CACHE_TTL_MINUTES: u64 = 5;
 pub struct AppSettings {
     pub background_updates_enabled: bool,
     pub cache_ttl_minutes: u64,
+    #[serde(default)]
+    pub show_all_folders: bool,
 }
 
 impl Default for AppSettings {
@@ -18,6 +20,7 @@ impl Default for AppSettings {
         Self {
             background_updates_enabled: false,
             cache_ttl_minutes: DEFAULT_CACHE_TTL_MINUTES,
+            show_all_folders: false,
         }
     }
 }

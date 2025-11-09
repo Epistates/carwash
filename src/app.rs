@@ -4,13 +4,15 @@
 //! It manages the project tree, command history, tabs, and various UI modes.
 
 use crate::components::{
-    palette::CommandPaletteState, settings::SettingsModalState, text_input::TextInputState,
-    updater::UpdateWizardState,
+    filter::FilterState, palette::CommandPaletteState, progress::ProgressState,
+    settings::SettingsModalState, text_input::TextInputState, updater::UpdateWizardState,
 };
+use crate::config::Config;
 use crate::events::{Action, Mode};
 use crate::project::Project;
 use crate::runner::UpdateQueue;
 use crate::settings::AppSettings;
+use crate::tree::{FlattenedTree, TreeNode, TreeSelectionState};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
@@ -28,7 +30,13 @@ pub struct AppState {
     pub is_checking_updates: bool,
     /// Current application mode
     pub mode: Mode,
-    /// State of the project tree view
+    /// Root node of the hierarchical project tree
+    pub tree_root: Option<TreeNode>,
+    /// Flattened view of the tree for rendering and navigation
+    pub flattened_tree: FlattenedTree,
+    /// Tree navigation and selection state
+    pub tree_selection: TreeSelectionState,
+    /// State of the project tree view (legacy, kept for compatibility)
     pub tree_state: ListState,
     /// Filtered list of projects currently displayed
     pub projects: Vec<Project>,
@@ -56,6 +64,12 @@ pub struct AppState {
     pub settings: AppSettings,
     /// Modal state for editing settings
     pub settings_modal: SettingsModalState,
+    /// Filter/search state
+    pub filter: FilterState,
+    /// Application configuration (themes, layout, keybindings, etc.)
+    pub config: Config,
+    /// Progress tracking for command execution
+    pub progress: Option<ProgressState>,
 }
 
 /// Represents a tab pane for displaying command output
@@ -96,6 +110,9 @@ impl Default for AppState {
             is_scanning: true,
             is_checking_updates: false,
             mode: Mode::Loading,
+            tree_root: None,
+            flattened_tree: FlattenedTree::new(),
+            tree_selection: TreeSelectionState::new(),
             tree_state,
             projects: Vec::new(),
             all_projects: Vec::new(),
@@ -110,6 +127,9 @@ impl Default for AppState {
             update_queue: UpdateQueue::new(),
             settings: AppSettings::load(),
             settings_modal: SettingsModalState::new(),
+            filter: FilterState::new(),
+            config: Config::load(),
+            progress: None,
         }
     }
 }
@@ -117,6 +137,25 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Get the current active color scheme based on config
+    pub fn current_colors(&self) -> crate::ui::styles::Colors {
+        self.config.theme().current_scheme().colors()
+    }
+
+    /// Get keybindings from config
+    pub fn get_keybindings(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.config.keybindings.get_bindings()
+    }
+
+    /// Check if a key matches an action
+    pub fn key_matches_action(&self, key: &str, action: &str) -> bool {
+        if let Some(keys) = self.config.keybindings.get_action_keys(action) {
+            keys.iter().any(|k| k.eq_ignore_ascii_case(key))
+        } else {
+            false
+        }
     }
 
     pub fn get_selected_project(&self) -> Option<&Project> {
@@ -174,7 +213,7 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::ShowHelp => handle_show_help(state),
         Action::ShowSettings => handle_show_settings(state),
         Action::CloseSettings => handle_close_settings(state),
-        Action::FinishProjectScan(projects) => handle_finish_project_scan(state, projects),
+        Action::FinishProjectScan(projects, target_dir) => handle_finish_project_scan(state, projects, target_dir),
         Action::UpdateTextInput(s) => handle_update_text_input(state, s),
         Action::SelectNext => handle_select_next(state),
         Action::SelectPrevious => handle_select_previous(state),
@@ -228,6 +267,19 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::UpdateProjectCheckStatus(project_name, check_status) => {
             handle_update_project_check_status(state, project_name, check_status)
         }
+        Action::EnterFilterMode => handle_enter_filter_mode(state),
+        Action::ExitFilterMode => handle_exit_filter_mode(state),
+        Action::UpdateFilterInput(input) => handle_update_filter_input(state, input),
+        Action::ClearFilter => handle_clear_filter(state),
+        Action::CycleTheme => handle_cycle_theme(state),
+        Action::SetTheme(theme_name) => handle_set_theme(state, theme_name),
+        Action::IncreaseLeftPane => handle_increase_left_pane(state),
+        Action::DecreaseLeftPane => handle_decrease_left_pane(state),
+        Action::IncreaseTopRight => handle_increase_top_right(state),
+        Action::DecreaseTopRight => handle_decrease_top_right(state),
+        Action::ResetLayout => handle_reset_layout(state),
+        Action::SaveConfig => handle_save_config(state),
+        Action::ToggleShowAllFolders => handle_toggle_show_all_folders(state),
     }
 }
 
@@ -297,7 +349,7 @@ mod tests {
         project.dependencies = vec![]; // Empty dependencies - should be filtered out
         let projects = vec![project];
 
-        reducer(&mut state, Action::FinishProjectScan(projects));
+        reducer(&mut state, Action::FinishProjectScan(projects, ".".to_string()));
         assert!(!state.is_scanning);
         assert_eq!(state.mode, Mode::Normal);
         // Projects with empty dependencies should be filtered
@@ -308,7 +360,13 @@ mod tests {
     fn test_reducer_toggle_selection() {
         let mut state = AppState::new();
         let project = create_test_project("test1");
-        state.projects = vec![project];
+        state.projects = vec![project.clone()];
+
+        // Create a simple tree with one project node
+        let project_node = crate::tree::TreeNode::project(project, 0);
+        let mut flattened = crate::tree::FlattenedTree::new();
+        flattened.items.push((project_node, 0));
+        state.flattened_tree = flattened;
         state.tree_state.select(Some(0));
 
         // Select the project

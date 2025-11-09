@@ -23,13 +23,13 @@ impl ProjectList {
     /// - Blue (⟳): Currently checking for updates
     /// - Yellow (⚠): Some dependencies are outdated
     /// - Green (✓): All dependencies up to date
-    fn get_project_status(p: &crate::project::Project) -> (&'static str, Style) {
+    fn get_project_status(p: &crate::project::Project, colors: crate::ui::styles::Colors) -> (&'static str, Style) {
         use crate::project::ProjectCheckStatus;
 
         match p.check_status {
             ProjectCheckStatus::Unchecked => {
                 // Gray - not checked yet or cache invalidated
-                ("⋯", Style::default().fg(Color::DarkGray))
+                ("⋯", Style::default().fg(colors.muted))
             }
             ProjectCheckStatus::Checking => {
                 // Blue - currently being checked
@@ -45,153 +45,59 @@ impl ProjectList {
                 (
                     "⚠",
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(colors.warning)
                         .add_modifier(Modifier::BOLD),
                 )
             }
             ProjectCheckStatus::UpToDate => {
                 // Green - all up to date
-                ("✓", Style::default().fg(Color::Green))
+                ("✓", Style::default().fg(colors.success))
             }
         }
     }
 }
 
 impl ProjectList {
-    fn create_workspace_header<'a>(
-        collapsed_workspaces: &'a std::collections::HashSet<String>,
-        projects: &'a [crate::project::Project],
+    /// Create a list item for a project from the tree (with indentation)
+    fn create_tree_project_item<'a>(
         selected_projects: &'a std::collections::HashSet<String>,
-        p: &'a crate::project::Project,
-        visible_idx: usize,
-        selected_index: Option<usize>,
+        project: &'a crate::project::Project,
+        depth: usize,
+        is_selected: bool,
+        colors: crate::ui::styles::Colors,
     ) -> ListItem<'a> {
-        let ws_name = p.workspace_name.as_ref().unwrap();
-        let is_collapsed = collapsed_workspaces.contains(ws_name);
-        let collapse_indicator = if is_collapsed { "▸" } else { "▾" };
-        let is_highlighted = selected_index == Some(visible_idx);
-        let indicator = if is_highlighted { "▶ " } else { "  " };
-        let header_style = if is_highlighted {
+        let (status_icon, status_style) = Self::get_project_status(project, colors);
+
+        let is_checked = selected_projects.contains(&project.name);
+        let checkbox_symbol = if is_checked { "☑" } else { "☐" };
+        let checkbox_style = if is_checked {
+            Style::default().fg(colors.success)
+        } else {
+            Style::default().fg(colors.muted)
+        };
+
+        let indicator = if is_selected { "▶ " } else { "  " };
+        let indent = "  ".repeat(depth);
+
+        let name_style = if is_selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors.text)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(Color::Rgb(150, 150, 200))
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(colors.text)
         };
-        let workspace_members: Vec<&crate::project::Project> = projects
-            .iter()
-            .filter(|proj| proj.workspace_name.as_ref() == Some(ws_name))
-            .collect();
-        let selected_count = workspace_members
-            .iter()
-            .filter(|proj| selected_projects.contains(&proj.name))
-            .count();
-        let checkbox_symbol = if workspace_members.is_empty() || selected_count == 0 {
-            "☐"
-        } else if selected_count == workspace_members.len() {
-            "☑"
-        } else {
-            "◪"
-        };
-        let checkbox_style = if selected_count == workspace_members.len() && selected_count > 0 {
-            Style::default().fg(Color::Green)
-        } else if selected_count > 0 {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let mut has_checking = false;
-        let mut has_updates = false;
-        let mut has_unchecked = false;
-        for proj in &workspace_members {
-            match proj.check_status {
-                crate::project::ProjectCheckStatus::Checking => has_checking = true,
-                crate::project::ProjectCheckStatus::HasUpdates => has_updates = true,
-                crate::project::ProjectCheckStatus::Unchecked => has_unchecked = true,
-                crate::project::ProjectCheckStatus::UpToDate => {}
-            }
-        }
-        let (status_icon, status_style) = if has_checking {
-            (
-                "⟳",
-                Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if has_updates {
-            (
-                "⚠",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else if has_unchecked {
-            ("⋯", Style::default().fg(Color::DarkGray))
-        } else {
-            ("✓", Style::default().fg(Color::Green))
-        };
-        let line = ratatui::text::Line::from(vec![
+
+        ListItem::new(ratatui::text::Line::from(vec![
             ratatui::text::Span::raw(indicator),
+            ratatui::text::Span::raw(indent),
             ratatui::text::Span::styled(checkbox_symbol, checkbox_style),
             ratatui::text::Span::raw(" "),
             ratatui::text::Span::styled(status_icon, status_style),
             ratatui::text::Span::raw(" "),
-            ratatui::text::Span::styled(
-                format!(
-                    "{} {} ({} projects)",
-                    collapse_indicator,
-                    ws_name,
-                    workspace_members.len()
-                ),
-                header_style,
-            ),
-        ]);
-        ListItem::new(line)
+            ratatui::text::Span::styled(&project.name, name_style),
+        ]))
     }
 
-    fn create_project_list_item<'a>(
-        selected_projects: &'a std::collections::HashSet<String>,
-        p: &'a crate::project::Project,
-        visible_idx: usize,
-        selected_index: Option<usize>,
-    ) -> ListItem<'a> {
-        let is_selected = selected_projects.contains(&p.name);
-        let is_highlighted = selected_index == Some(visible_idx);
-        let checkbox = if is_selected { "☑" } else { "☐" };
-        let indicator = if is_highlighted { "▶ " } else { "  " };
-        let (status_icon, status_style) = Self::get_project_status(p);
-        let name_style = if is_selected {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
-        } else if is_highlighted {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let checkbox_style = if is_selected {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let line = ratatui::text::Line::from(vec![
-            ratatui::text::Span::raw(indicator),
-            ratatui::text::Span::styled(checkbox, checkbox_style),
-            ratatui::text::Span::raw(" "),
-            ratatui::text::Span::styled(status_icon, status_style),
-            ratatui::text::Span::raw(" "),
-            ratatui::text::Span::styled(&p.name, name_style),
-            ratatui::text::Span::styled(
-                format!(" (v{})", p.version),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
-        ListItem::new(line)
-    }
 }
 
 impl Component for ProjectList {
@@ -208,44 +114,79 @@ impl Component for ProjectList {
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
         let selected_index = app.tree_state.selected();
-        let visible_projects: Vec<crate::project::Project> =
-            app.get_visible_projects().into_iter().cloned().collect();
-
         let mut items: Vec<ListItem> = Vec::new();
-        let mut current_workspace: Option<String> = None;
+        let colors = app.current_colors();
 
-        for (visible_idx, p) in visible_projects.iter().enumerate() {
-            let is_first_in_workspace = match &p.workspace_name {
-                Some(ws_name) => current_workspace.as_ref() != Some(ws_name),
-                None => false,
-            };
+        // Render from flattened tree instead of projects list
+        for (idx, (node, _)) in app.flattened_tree.items.iter().enumerate() {
+            let is_selected = selected_index == Some(idx);
 
-            if is_first_in_workspace {
-                items.push(Self::create_workspace_header(
-                    &app.collapsed_workspaces,
-                    &app.projects,
-                    &app.selected_projects,
-                    p,
-                    visible_idx,
-                    selected_index,
-                ));
-                current_workspace = p.workspace_name.clone();
-            } else {
-                items.push(Self::create_project_list_item(
-                    &app.selected_projects,
-                    p,
-                    visible_idx,
-                    selected_index,
-                ));
-                if p.workspace_name.is_none() {
-                    current_workspace = None;
+            match &node.node_type {
+                crate::tree::TreeNodeType::Directory { name, .. } => {
+                    // Render directory node with expand/collapse indicator
+                    let indicator = if is_selected { "▶ " } else { "  " };
+                    let collapse_indicator = if node.expanded { "▾" } else { "▸" };
+                    let indent = "  ".repeat(node.depth);
+
+                    // Check if any children are selected
+                    let has_selected_children = app.flattened_tree.items.iter()
+                        .skip(idx + 1)
+                        .take_while(|(child_node, _)| child_node.depth > node.depth)
+                        .filter_map(|(child_node, _)| {
+                            if let crate::tree::TreeNodeType::Project(p) = &child_node.node_type {
+                                Some(&p.name)
+                            } else {
+                                None
+                            }
+                        })
+                        .any(|name| app.selected_projects.contains(name));
+
+                    let checkbox_symbol = if has_selected_children { "☑" } else { "☐" };
+                    let checkbox_style = if has_selected_children {
+                        Style::default().fg(colors.success)
+                    } else {
+                        Style::default().fg(colors.muted)
+                    };
+
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(colors.selection)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(colors.dim)
+                            .add_modifier(Modifier::BOLD)
+                    };
+
+                    items.push(ListItem::new(ratatui::text::Line::from(vec![
+                        ratatui::text::Span::raw(indicator),
+                        ratatui::text::Span::raw(indent),
+                        ratatui::text::Span::styled(checkbox_symbol, checkbox_style),
+                        ratatui::text::Span::raw(" "),
+                        ratatui::text::Span::styled(
+                            format!("{} {}", collapse_indicator, name),
+                            style,
+                        ),
+                    ])));
+                }
+                crate::tree::TreeNodeType::Project(project) => {
+                    // Render project node
+                    items.push(Self::create_tree_project_item(
+                        &app.selected_projects,
+                        project,
+                        node.depth,
+                        is_selected,
+                        colors,
+                    ));
                 }
             }
         }
 
         let selected_count = app.selected_projects.len();
-        let total_count = visible_projects.len();
-        let all_count = app.projects.len();
+        let total_count = app.flattened_tree.items.iter()
+            .filter(|(node, _)| node.node_type.is_project())
+            .count();
+        let all_count = app.all_projects.len();
 
         let title = if selected_count > 0 {
             if all_count > total_count {
@@ -272,7 +213,7 @@ impl Component for ProjectList {
         if !help_text.is_empty() {
             for line in help_text.lines().skip(1) {
                 list_items.push(ListItem::new(ratatui::text::Line::from(
-                    ratatui::text::Span::styled(line, Style::default().fg(Color::DarkGray)),
+                    ratatui::text::Span::styled(line, Style::default().fg(colors.muted)),
                 )));
             }
         }
@@ -282,7 +223,7 @@ impl Component for ProjectList {
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
                     .title(title)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(colors.primary)),
             )
             .highlight_style(
                 Style::default()

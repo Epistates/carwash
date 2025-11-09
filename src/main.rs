@@ -12,7 +12,7 @@ use carwash::ui::ui;
 
 use clap::Parser;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{Event, KeyCode, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+    execute!(stdout, EnterAlternateScreen)
         .context("Failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend).context("Failed to create terminal")
@@ -71,7 +71,7 @@ fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
 
 fn restore_terminal() -> anyhow::Result<()> {
     disable_raw_mode().context("Failed to disable raw mode")?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+    execute!(io::stdout(), LeaveAlternateScreen)
         .context("Failed to leave alternate screen")?;
     Ok(())
 }
@@ -167,6 +167,7 @@ async fn handle_event(
                     KeyCode::Char('?') => Some(Action::ShowHelp),
                     KeyCode::Char('s') | KeyCode::Char('S') => Some(Action::ShowSettings),
                     KeyCode::Char('t') | KeyCode::Char('T') => Some(Action::CycleTheme),
+                    KeyCode::Char('a') | KeyCode::Char('A') => Some(Action::ToggleShowAllFolders),
                     KeyCode::Char(':') => Some(Action::ShowCommandPalette),
                     KeyCode::Char('/') => Some(Action::EnterFilterMode),
                     KeyCode::Char('u') => Some(Action::StartUpdateWizard),
@@ -283,15 +284,22 @@ async fn run_app<B: Backend>(
     let (action_tx, mut action_rx) = mpsc::channel(100);
     let mut event_stream = crossterm::event::EventStream::new();
 
+    // Set up frame rate for consistent redraws (following ratatui async pattern)
+    const FRAMES_PER_SECOND: f32 = 30.0;
+    let period = std::time::Duration::from_secs_f32(1.0 / FRAMES_PER_SECOND);
+    let mut interval = tokio::time::interval(period);
+
     // Track last cache save time for periodic persistence
     let mut last_cache_save = std::time::Instant::now();
 
     let action_tx_clone = action_tx.clone();
+    let target_directory_clone = target_directory.clone();
     tokio::spawn(async move {
         // Use tokio::spawn_blocking with timeout
+        let target_dir_for_scan = target_directory_clone.clone();
         let scan_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            tokio::task::spawn_blocking(move || find_rust_projects(&target_directory)),
+            tokio::task::spawn_blocking(move || find_rust_projects(&target_dir_for_scan)),
         )
         .await;
 
@@ -299,41 +307,33 @@ async fn run_app<B: Backend>(
             Ok(Ok(projects)) => {
                 // Just send the scan result - queuing happens AFTER cache is loaded
                 let _ = action_tx_clone
-                    .send(Action::FinishProjectScan(projects))
+                    .send(Action::FinishProjectScan(projects, target_directory_clone))
                     .await;
             }
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - send empty list and continue
                 let _ = action_tx_clone
-                    .send(Action::FinishProjectScan(Vec::new()))
+                    .send(Action::FinishProjectScan(Vec::new(), ".".to_string()))
                     .await;
             }
         }
     });
 
     loop {
-        // Draw UI (with timeout protection)
-        if let Err(e) = terminal.draw(|f| ui(f, state)) {
-            // If drawing fails, try to recover
-            eprintln!("Draw error: {}", e);
-            return Err(e);
-        }
-
         tokio::select! {
             // Prioritize keyboard events with biased selection
             biased;
 
-            // Poll events with a timeout to keep UI responsive
-            Some(Ok(event)) = async {
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    event_stream.next()
-                )
-                .await
-                .ok()
-                .flatten()
-            } => {
+            // Handle keyboard events (events come in as they happen)
+            Some(Ok(event)) = event_stream.next() => {
                 handle_event(event, state, &action_tx).await?;
+            }
+            // Redraw at consistent frame rate (30 FPS)
+            _ = interval.tick() => {
+                if let Err(e) = terminal.draw(|f| ui(f, state)) {
+                    eprintln!("Draw error: {}", e);
+                    return Err(e);
+                }
             }
             Some(action) = action_rx.recv() => {
                 match &action {
@@ -346,7 +346,7 @@ async fn run_app<B: Backend>(
                             reducer(state, Action::EnterNormalMode);
                         }
                     }
-                    Action::FinishProjectScan(_) => {
+                    Action::FinishProjectScan(_, _) => {
                         // Process the scan result FIRST (copies projects to state)
                         reducer(state, action);
 

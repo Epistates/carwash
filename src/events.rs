@@ -20,7 +20,7 @@ pub enum Command {
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Project scanning has finished with results
-    FinishProjectScan(Vec<Project>),
+    FinishProjectScan(Vec<Project>, String), // (projects, target_directory)
     /// Move selection to next item
     SelectNext,
     /// Move selection to previous item
@@ -91,6 +91,32 @@ pub enum Action {
     QueueBackgroundUpdate(String, bool),
     /// Update the visual check status of a project
     UpdateProjectCheckStatus(String, crate::project::ProjectCheckStatus),
+    /// Enter filter/search mode
+    EnterFilterMode,
+    /// Exit filter/search mode
+    ExitFilterMode,
+    /// Update filter input text
+    UpdateFilterInput(String),
+    /// Clear filter
+    ClearFilter,
+    /// Cycle to next theme
+    CycleTheme,
+    /// Set a specific theme by name
+    SetTheme(String),
+    /// Increase left pane width
+    IncreaseLeftPane,
+    /// Decrease left pane width
+    DecreaseLeftPane,
+    /// Increase top-right pane height
+    IncreaseTopRight,
+    /// Decrease top-right pane height
+    DecreaseTopRight,
+    /// Reset layout to defaults
+    ResetLayout,
+    /// Save configuration to disk
+    SaveConfig,
+    /// Toggle showing all folders (default: only Rust project folders)
+    ToggleShowAllFolders,
     /// Quit the application
     Quit,
 }
@@ -102,6 +128,8 @@ pub enum Mode {
     Loading,
     /// Normal browsing mode
     Normal,
+    /// Filter/search mode (like vim's / search)
+    Filter,
     /// Command palette is open
     CommandPalette,
     /// Update wizard is open

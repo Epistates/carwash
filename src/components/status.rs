@@ -31,9 +31,9 @@ impl Component for StatusBar {
             Mode::Loading => ("LOADING", Color::Yellow, "Scanning for projects..."),
             Mode::Normal => {
                 let hint = if app.tabs.len() > 1 {
-                    "':' command | 'u' updates | 's' settings | ←→/hl collapse/expand | tabs: ←→ | '?' help"
+                    "':' cmd | '/' search | 't' theme | 'u' updates | 's' set | ←→ nav | [](){} resize | 'R' reset | tabs: ←→ | '?' help"
                 } else {
-                    "':' command | 'u' updates | 's' settings | ←→/hl collapse/expand | '?' help | 'q' quit"
+                    "':' cmd | '/' search | 't' theme | 'u' updates | 's' set | ←→ nav | [](){} resize | 'R' reset | '?' help | 'q' quit"
                 };
                 ("NORMAL", Color::Green, hint)
             }
@@ -54,6 +54,11 @@ impl Component for StatusBar {
             ),
             Mode::TextInput => ("INPUT", Color::Blue, "Enter confirm | Esc cancel"),
             Mode::Help => ("HELP", Color::Yellow, "Esc or 'q' to close"),
+            Mode::Filter => (
+                "FILTER",
+                Color::Cyan,
+                "Type to search | ↑↓ navigate | Enter select | Esc cancel",
+            ),
         };
 
         let status_line = if app.is_checking_updates {
