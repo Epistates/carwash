@@ -41,16 +41,19 @@
 //! - [`events`] - Event handling and command processing
 //! - [`project`] - Project structure and dependency management
 //! - [`runner`] - Task execution and update checking
+//! - [`tree`] - Hierarchical project tree structure with lazy loading
 //! - [`ui`] - Terminal UI rendering
 
 pub mod app;
 pub mod cache;
 pub mod components;
+pub mod config;
 pub mod events;
 mod handlers;
 pub mod project;
 pub mod runner;
 pub mod settings;
+pub mod tree;
 pub mod ui;
 
 pub use clap::Parser;
