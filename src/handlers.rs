@@ -53,7 +53,7 @@ pub fn handle_close_settings(state: &mut AppState) {
 }
 
 /// Handle completing project scan
-pub fn handle_finish_project_scan(state: &mut AppState, projects: Vec<Project>) {
+pub fn handle_finish_project_scan(state: &mut AppState, projects: Vec<Project>, target_directory: String) {
     state.all_projects = projects.clone();
     // Only show projects with dependencies
     state.projects = projects
@@ -69,6 +69,17 @@ pub fn handle_finish_project_scan(state: &mut AppState, projects: Vec<Project>) 
         .collect();
     state.collapsed_workspaces = workspace_names;
 
+    // Build the hierarchical project tree from the ACTUAL target directory
+    let mut tree_root = crate::project::build_project_tree(&target_directory);
+
+    // Load the root level children immediately (since root starts expanded)
+    crate::project::load_directory_children(&mut tree_root, state.settings.show_all_folders);
+
+    state.tree_root = Some(tree_root.clone());
+
+    // Flatten the tree for rendering
+    state.flattened_tree = crate::tree::FlattenedTree::from_tree(&tree_root);
+
     if !state.projects.is_empty() {
         state.tree_state.select(Some(0));
     }
@@ -83,47 +94,122 @@ pub fn handle_update_text_input(state: &mut AppState, s: String) {
 
 /// Handle selecting next item in list
 pub fn handle_select_next(state: &mut AppState) {
-    let visible_count = state.get_visible_projects().len();
-    let i = match state.tree_state.selected() {
-        Some(i) => {
-            if i >= visible_count.saturating_sub(1) {
-                0
-            } else {
-                i + 1
+    // Use tree navigation if tree is available
+    if state.tree_root.is_some() {
+        let max_index = state.flattened_tree.items.len().saturating_sub(1);
+        // Update tree_state (used by ProjectList for rendering)
+        let current = state.tree_state.selected().unwrap_or(0);
+        let next = if current >= max_index { 0 } else { current + 1 };
+        state.tree_state.select(Some(next));
+    } else {
+        // Fallback to old project-based navigation
+        let visible_count = state.get_visible_projects().len();
+        let i = match state.tree_state.selected() {
+            Some(i) => {
+                if i >= visible_count.saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
             }
-        }
-        None => 0,
-    };
-    state.tree_state.select(Some(i));
+            None => 0,
+        };
+        state.tree_state.select(Some(i));
+    }
 }
 
 /// Handle selecting previous item in list
 pub fn handle_select_previous(state: &mut AppState) {
-    let visible_count = state.get_visible_projects().len();
-    let i = match state.tree_state.selected() {
-        Some(i) => {
-            if i == 0 {
-                visible_count.saturating_sub(1)
-            } else {
-                i - 1
+    // Use tree navigation if tree is available
+    if state.tree_root.is_some() {
+        let max_index = state.flattened_tree.items.len().saturating_sub(1);
+        // Update tree_state (used by ProjectList for rendering)
+        let current = state.tree_state.selected().unwrap_or(0);
+        let prev = if current == 0 { max_index } else { current - 1 };
+        state.tree_state.select(Some(prev));
+    } else {
+        // Fallback to old project-based navigation
+        let visible_count = state.get_visible_projects().len();
+        let i = match state.tree_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    visible_count.saturating_sub(1)
+                } else {
+                    i - 1
+                }
             }
-        }
-        None => 0,
-    };
-    state.tree_state.select(Some(i));
-}
-
-/// Handle selecting parent (collapse workspace)
-pub fn handle_select_parent(state: &mut AppState) {
-    if let Some(workspace_name) = state.get_selected_workspace() {
-        state.collapsed_workspaces.insert(workspace_name);
+            None => 0,
+        };
+        state.tree_state.select(Some(i));
     }
 }
 
-/// Handle selecting child (expand workspace)
+/// Handle selecting parent (collapse directory/workspace)
+pub fn handle_select_parent(state: &mut AppState) {
+    // Use tree navigation if tree is available
+    if let Some(tree_root) = &mut state.tree_root {
+        if let Some(selected_idx) = state.tree_state.selected() {
+            if selected_idx < state.flattened_tree.items.len() {
+                let (node, _) = &state.flattened_tree.items[selected_idx];
+
+                // Only collapse if it's an expanded directory
+                if node.node_type.is_directory() && node.expanded {
+                    // Find and toggle the node
+                    toggle_node_expanded(tree_root, node.node_type.path(), state.settings.show_all_folders);
+
+                    // Re-flatten the tree
+                    state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
+                }
+            }
+        }
+    } else {
+        // Fallback to old workspace-based collapse
+        if let Some(workspace_name) = state.get_selected_workspace() {
+            state.collapsed_workspaces.insert(workspace_name);
+        }
+    }
+}
+
+/// Handle selecting child (expand directory/workspace)
 pub fn handle_select_child(state: &mut AppState) {
-    if let Some(workspace_name) = state.get_selected_workspace() {
-        state.collapsed_workspaces.remove(&workspace_name);
+    // Use tree navigation if tree is available
+    if let Some(tree_root) = &mut state.tree_root {
+        if let Some(selected_idx) = state.tree_state.selected() {
+            if selected_idx < state.flattened_tree.items.len() {
+                let (node, _) = &state.flattened_tree.items[selected_idx];
+
+                // Only expand if it's a collapsed directory
+                if node.node_type.is_directory() && !node.expanded {
+                    // Find and toggle the node
+                    toggle_node_expanded(tree_root, node.node_type.path(), state.settings.show_all_folders);
+
+                    // Re-flatten the tree
+                    state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
+                }
+            }
+        }
+    } else {
+        // Fallback to old workspace-based expand
+        if let Some(workspace_name) = state.get_selected_workspace() {
+            state.collapsed_workspaces.remove(&workspace_name);
+        }
+    }
+}
+
+/// Toggle the expanded state of a node by its path
+fn toggle_node_expanded(node: &mut crate::tree::TreeNode, target_path: &std::path::Path, show_all_folders: bool) {
+    if node.node_type.path() == target_path {
+        // If expanding and children not loaded, load them first
+        if !node.expanded && !node.children_loaded {
+            crate::project::load_directory_children(node, show_all_folders);
+        }
+        node.toggle_expanded();
+        return;
+    }
+
+    // Recursively search for the node
+    for child in &mut node.children {
+        toggle_node_expanded(child, target_path, show_all_folders);
     }
 }
 
@@ -134,52 +220,55 @@ pub fn handle_toggle_selection(state: &mut AppState) {
         None => return,
     };
 
-    let (project_name, workspace_name) = {
-        let visible_projects = state.get_visible_projects();
-        let project = match visible_projects.get(selected_index) {
-            Some(p) => *p,
-            None => return,
-        };
-        (project.name.clone(), project.workspace_name.clone())
+    // Get the selected node from the flattened tree
+    let node = match state.flattened_tree.items.get(selected_index) {
+        Some((node, _)) => node,
+        None => return,
     };
 
-    if let Some(workspace_name) = workspace_name {
-        let visible_projects = state.get_visible_projects();
-        let is_workspace_header = visible_projects
-            .iter()
-            .position(|p| p.workspace_name.as_ref() == Some(&workspace_name))
-            == Some(selected_index);
+    // Clone what we need to avoid borrow issues
+    let node_type_clone = node.node_type.clone();
+    let node_depth = node.depth;
 
-        if is_workspace_header {
-            toggle_workspace_selection(state, &workspace_name);
-            return;
+    match &node_type_clone {
+        crate::tree::TreeNodeType::Directory { .. } => {
+            // For directories, toggle all projects under this directory
+            // Collect all project names in this directory's subtree
+            let mut project_names = Vec::new();
+
+            // Iterate through subsequent nodes until we leave this directory
+            for (child_node, _) in state.flattened_tree.items.iter().skip(selected_index + 1) {
+                // Stop when we reach a node at the same or lower depth (sibling or parent)
+                if child_node.depth <= node_depth {
+                    break;
+                }
+
+                // If it's a project, add it to our list
+                if let crate::tree::TreeNodeType::Project(project) = &child_node.node_type {
+                    project_names.push(project.name.clone());
+                }
+            }
+
+            // Toggle all projects in this directory
+            if !project_names.is_empty() {
+                let all_selected = project_names.iter().all(|name| state.selected_projects.contains(name));
+                if all_selected {
+                    // Deselect all
+                    for name in project_names {
+                        state.selected_projects.remove(&name);
+                    }
+                } else {
+                    // Select all
+                    for name in project_names {
+                        state.selected_projects.insert(name);
+                    }
+                }
+            }
         }
-    }
-
-    toggle_single_project_selection(state, &project_name);
-}
-
-fn toggle_workspace_selection(state: &mut AppState, workspace_name: &str) {
-    let workspace_members: Vec<String> = state
-        .projects
-        .iter()
-        .filter(|p| p.workspace_name.as_deref() == Some(workspace_name))
-        .map(|p| p.name.clone())
-        .collect();
-
-    if workspace_members.is_empty() {
-        return;
-    }
-
-    let all_selected = workspace_members
-        .iter()
-        .all(|name| state.selected_projects.contains(name));
-
-    for name in workspace_members {
-        if all_selected {
-            state.selected_projects.remove(&name);
-        } else {
-            state.selected_projects.insert(name);
+        crate::tree::TreeNodeType::Project(project) => {
+            // Toggle single project
+            let project_name = project.name.clone();
+            toggle_single_project_selection(state, &project_name);
         }
     }
 }
@@ -656,4 +745,165 @@ pub fn handle_update_project_check_status(
     if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
         proj.check_status = check_status;
     }
+}
+
+/// Handle entering filter/search mode
+pub fn handle_enter_filter_mode(state: &mut AppState) {
+    state.mode = crate::events::Mode::Filter;
+    state.filter.clear();
+}
+
+/// Handle exiting filter/search mode
+pub fn handle_exit_filter_mode(state: &mut AppState) {
+    state.mode = crate::events::Mode::Normal;
+    // If a match was selected, update tree selection to that item
+    if let Some(idx) = state.filter.selected_tree_index() {
+        state.tree_selection.selected_index = Some(idx);
+    }
+    state.filter.clear();
+}
+
+/// Handle updating filter input text
+pub fn handle_update_filter_input(state: &mut AppState, input: String) {
+    let flattened_tree = state.flattened_tree.clone();
+
+    // Create a temporary AppState-like struct for filtering
+    struct TempState {
+        flattened_tree: crate::tree::FlattenedTree,
+    }
+
+    let temp = TempState {
+        flattened_tree,
+    };
+
+    // Update filter with input
+    state.filter.input = input;
+    state.filter.selected = 0;
+    state.filter.filtered_indices.clear();
+
+    if state.filter.input.is_empty() {
+        state.filter.filtered_indices = (0..temp.flattened_tree.items.len()).collect();
+    } else {
+        let input_lower = state.filter.input.to_lowercase();
+
+        for (idx, (node, _)) in temp.flattened_tree.items.iter().enumerate() {
+            let matches = match &node.node_type {
+                crate::tree::TreeNodeType::Directory { name, .. } => {
+                    name.to_lowercase().contains(&input_lower)
+                }
+                crate::tree::TreeNodeType::Project(project) => {
+                    project.name.to_lowercase().contains(&input_lower)
+                        || project
+                            .path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(&input_lower)
+                }
+            };
+
+            if matches {
+                state.filter.filtered_indices.push(idx);
+            }
+        }
+    }
+
+    if state.filter.selected >= state.filter.filtered_indices.len() {
+        state.filter.selected = state.filter.filtered_indices.len().saturating_sub(1);
+    }
+}
+
+/// Handle clearing filter
+pub fn handle_clear_filter(state: &mut AppState) {
+    state.filter.clear();
+}
+
+/// Handle cycling to the next theme
+pub fn handle_cycle_theme(state: &mut AppState) {
+    state.config.theme_mut().cycle_next();
+    // Save the new theme preference to config file
+    let _ = state.config.save();
+}
+
+/// Handle setting a specific theme
+pub fn handle_set_theme(state: &mut AppState, theme_name: String) {
+    state.config.theme_mut().set_theme(&theme_name);
+    // Save the new theme preference to config file
+    let _ = state.config.save();
+}
+
+/// Handle saving configuration to disk
+pub fn handle_save_config(state: &mut AppState) {
+    if let Err(e) = state.config.save() {
+        eprintln!("Failed to save config: {}", e);
+    }
+}
+
+/// Handle toggling show_all_folders setting
+pub fn handle_toggle_show_all_folders(state: &mut AppState) {
+    // Toggle the setting
+    state.settings.show_all_folders = !state.settings.show_all_folders;
+
+    // Save the setting
+    if let Err(e) = state.settings.save() {
+        eprintln!("Failed to save settings: {}", e);
+    }
+
+    // Rebuild the tree with the new setting
+    if let Some(tree_root) = &mut state.tree_root {
+        // Mark all nodes as needing reload
+        mark_all_nodes_unloaded(tree_root);
+
+        // Reload root children with new setting
+        crate::project::load_directory_children(tree_root, state.settings.show_all_folders);
+
+        // Re-flatten the tree
+        state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
+    }
+}
+
+/// Recursively mark all nodes as needing reload
+fn mark_all_nodes_unloaded(node: &mut crate::tree::TreeNode) {
+    node.children_loaded = false;
+    node.children.clear();
+    for child in &mut node.children {
+        mark_all_nodes_unloaded(child);
+    }
+}
+
+/// Handle increasing left pane width
+pub fn handle_increase_left_pane(state: &mut AppState) {
+    let current = state.config.layout.left_pane_percent;
+    let new_width = (current + 5).min(80); // Max 80%
+    state.config.layout.left_pane_percent = new_width;
+    let _ = state.config.save();
+}
+
+/// Handle decreasing left pane width
+pub fn handle_decrease_left_pane(state: &mut AppState) {
+    let current = state.config.layout.left_pane_percent;
+    let new_width = current.saturating_sub(5).max(20); // Min 20%
+    state.config.layout.left_pane_percent = new_width;
+    let _ = state.config.save();
+}
+
+/// Handle increasing top-right pane height
+pub fn handle_increase_top_right(state: &mut AppState) {
+    let current = state.config.layout.top_right_percent;
+    let new_height = (current + 5).min(80); // Max 80%
+    state.config.layout.top_right_percent = new_height;
+    let _ = state.config.save();
+}
+
+/// Handle decreasing top-right pane height
+pub fn handle_decrease_top_right(state: &mut AppState) {
+    let current = state.config.layout.top_right_percent;
+    let new_height = current.saturating_sub(5).max(20); // Min 20%
+    state.config.layout.top_right_percent = new_height;
+    let _ = state.config.save();
+}
+
+/// Handle resetting layout to defaults
+pub fn handle_reset_layout(state: &mut AppState) {
+    state.config.layout = crate::config::LayoutConfig::default();
+    let _ = state.config.save();
 }

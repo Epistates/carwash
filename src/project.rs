@@ -330,15 +330,23 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
             .unwrap_or_else(|| PathBuf::from(path))
     };
 
-    // First pass: Find all Cargo.toml files and identify workspaces
-    for entry in WalkDir::new(&base_path)
+    // Build gitignore matcher
+    let mut builder = ignore::WalkBuilder::new(&base_path);
+    builder
         .follow_links(true)
-        .into_iter()
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .hidden(true) // We'll filter hidden ourselves
         .filter_entry(|e| {
             // Skip common directories that won't contain projects
             let file_name = e.file_name().to_string_lossy();
             !file_name.starts_with('.') && file_name != "target" && file_name != "node_modules"
-        })
+        });
+
+    // First pass: Find all Cargo.toml files and identify workspaces
+    for entry in builder
+        .build()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name() == "Cargo.toml")
     {
@@ -433,6 +441,233 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     });
 
     result
+}
+
+/// Build a hierarchical tree of projects organized by directory structure
+///
+/// This function takes a root path and builds a tree where:
+/// - Directories are intermediate nodes that can be expanded/collapsed
+/// - Projects (Cargo.toml files) are leaf nodes
+/// - Subdirectories are only expanded if they contain projects
+///
+/// # Arguments
+///
+/// * `path` - The root directory path to scan
+///
+/// # Returns
+///
+/// A `TreeNode` representing the root of the directory tree
+pub fn build_project_tree(path: &str) -> crate::tree::TreeNode {
+    let base_path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|| PathBuf::from(path))
+    };
+
+    // Build ONLY the root level - no recursive scanning!
+    // Children will be loaded lazily when directories are expanded
+    build_tree_level_only(&base_path, 0)
+}
+
+/// Build a single level of the tree (non-recursive)
+fn build_tree_level_only(dir_path: &Path, depth: usize) -> crate::tree::TreeNode {
+    let dir_name = dir_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("projects")
+        .to_string();
+
+    let mut node = crate::tree::TreeNode::directory(dir_name, dir_path.to_path_buf(), depth);
+    node.children_loaded = false; // Mark as not loaded yet
+    node.expanded = depth == 0; // Only expand root by default
+
+    node
+}
+
+/// Check if a path should be ignored based on gitignore rules
+fn should_ignore_path(path: &Path, parent_dir: &Path) -> bool {
+    // Build a gitignore matcher for the parent directory
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(parent_dir);
+
+    // Add .gitignore from parent if it exists
+    let gitignore_path = parent_dir.join(".gitignore");
+    if gitignore_path.exists() {
+        let _ = builder.add(&gitignore_path);
+    }
+
+    let gitignore = match builder.build() {
+        Ok(gi) => gi,
+        Err(_) => return false, // If we can't build gitignore, don't ignore
+    };
+
+    // Check if path is ignored
+    gitignore.matched(path, path.is_dir()).is_ignore()
+}
+
+/// Check if a directory contains any Rust projects (recursively, but shallow scan)
+/// This does a quick check to see if we should show a directory even when show_all_folders=false
+fn directory_contains_rust_projects(path: &Path) -> bool {
+    // Check if this directory itself is a Rust project or workspace
+    let cargo_toml_path = path.join("Cargo.toml");
+    if cargo_toml_path.exists() {
+        return true;
+    }
+
+    // Check immediate children for Rust projects
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let child_path = entry.path();
+
+            // Skip if ignored by gitignore
+            if should_ignore_path(&child_path, path) {
+                continue;
+            }
+
+            // Skip hidden and common non-project directories
+            if let Some(name) = child_path.file_name() {
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with('.')
+                    || name_str == "target"
+                    || name_str == "node_modules"
+                    || name_str == "vendor"
+                    || name_str == "third_party" {
+                    continue;
+                }
+            }
+
+            // Check if child directory is a Rust project/workspace OR contains Rust projects
+            if child_path.is_dir() {
+                if child_path.join("Cargo.toml").exists() {
+                    return true;
+                }
+                // Recursively check one more level for nested projects (e.g., crates/)
+                if let Ok(nested_entries) = std::fs::read_dir(&child_path) {
+                    for nested in nested_entries.filter_map(|e| e.ok()) {
+                        if nested.path().is_dir() && nested.path().join("Cargo.toml").exists() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Load children for a directory node (lazy loading)
+/// This scans only the immediate children (1 level deep)
+///
+/// If `show_all_folders` is false, only directories containing Rust projects (Cargo.toml) are shown.
+/// If `show_all_folders` is true, all directories are shown.
+pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
+    if node.children_loaded {
+        return; // Already loaded
+    }
+
+    let dir_path = match &node.node_type {
+        crate::tree::TreeNodeType::Directory { path, .. } => path,
+        _ => return, // Not a directory
+    };
+
+    // Scan for Rust projects directly in this directory
+    if let Ok(entries) = std::fs::read_dir(dir_path) {
+        let mut children = Vec::new();
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+
+            // Skip if ignored by gitignore
+            if should_ignore_path(&path, dir_path) {
+                continue;
+            }
+
+            let file_name = match path.file_name() {
+                Some(name) => name.to_string_lossy(),
+                None => continue,
+            };
+
+            // Skip hidden directories and common build directories
+            if file_name.starts_with('.')
+                || file_name == "target"
+                || file_name == "node_modules"
+                || file_name == "vendor"
+                || file_name == "third_party" {
+                continue;
+            }
+
+            if path.is_dir() {
+                // Check if this directory IS a Rust project
+                let cargo_toml_path = path.join("Cargo.toml");
+                if cargo_toml_path.exists() {
+                    // Parse Cargo.toml to check if it's a workspace-only or a real project
+                    if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
+                        if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
+                            // Check if this is a workspace-only Cargo.toml (no [package] section)
+                            if toml.package.is_none() && toml.workspace.is_some() {
+                                // It's a workspace root - treat as expandable directory
+                                if show_all_folders || directory_contains_rust_projects(&path) {
+                                    let mut dir_node = build_tree_level_only(&path, node.depth + 1);
+                                    dir_node.expanded = false;
+                                    children.push(dir_node);
+                                }
+                            } else if toml.package.is_some() {
+                                // It's a real project - add as project node
+                                let project = Project {
+                                    name: toml.package.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| file_name.to_string()),
+                                    path: path.clone(),
+                                    version: toml.package.as_ref().map(|p| p.version.clone()).unwrap_or_default(),
+                                    authors: toml.package.as_ref().and_then(|p| p.authors.clone()).unwrap_or_default(),
+                                    dependencies: Vec::new(), // Will be loaded on-demand when needed
+                                    workspace_root: None,
+                                    workspace_name: None,
+                                    cargo_lock_hash: None,
+                                    status: ProjectStatus::Pending,
+                                    check_status: ProjectCheckStatus::Unchecked,
+                                };
+                                let project_node = crate::tree::TreeNode::project(project, node.depth + 1);
+                                children.push(project_node);
+                            }
+                        }
+                    }
+                } else {
+                    // No Cargo.toml - check if we should show it as a directory
+                    if show_all_folders || directory_contains_rust_projects(&path) {
+                        let mut dir_node = build_tree_level_only(&path, node.depth + 1);
+                        dir_node.expanded = false;
+                        children.push(dir_node);
+                    }
+                }
+            }
+        }
+
+        // Sort children: directories first, then projects, alphabetically within each group
+        children.sort_by(|a, b| {
+            match (&a.node_type, &b.node_type) {
+                (crate::tree::TreeNodeType::Directory { name: a_name, .. },
+                 crate::tree::TreeNodeType::Directory { name: b_name, .. }) => {
+                    a_name.cmp(b_name)
+                }
+                (crate::tree::TreeNodeType::Project(a_proj),
+                 crate::tree::TreeNodeType::Project(b_proj)) => {
+                    a_proj.name.cmp(&b_proj.name)
+                }
+                (crate::tree::TreeNodeType::Directory { .. }, crate::tree::TreeNodeType::Project(_)) => {
+                    std::cmp::Ordering::Less
+                }
+                (crate::tree::TreeNodeType::Project(_), crate::tree::TreeNodeType::Directory { .. }) => {
+                    std::cmp::Ordering::Greater
+                }
+            }
+        });
+
+        node.children = children;
+    }
+
+    node.children_loaded = true;
 }
 
 #[cfg(test)]
@@ -572,5 +807,33 @@ members = ["crate1", "crate2"]
         // Verify that projects are properly discovered
         // (the exact number depends on the test environment)
         let _ = projects_dot;
+    }
+
+    #[test]
+    fn test_build_project_tree() {
+        // Test that tree building doesn't panic
+        let tree = build_project_tree(".");
+
+        // Tree should have a root node
+        assert_eq!(tree.node_type.name(), "carwash");
+
+        // Root should be a directory
+        assert!(tree.node_type.is_directory());
+
+        // Root should be expanded by default
+        assert!(tree.expanded);
+
+        // Tree structure should be created successfully
+        let _ = tree;
+    }
+
+    #[test]
+    fn test_tree_navigation() {
+        // Test tree flattening
+        let tree = build_project_tree(".");
+        let flattened = crate::tree::FlattenedTree::from_tree(&tree);
+
+        // Flattened tree should have at least the root node
+        assert!(!flattened.items.is_empty());
     }
 }
