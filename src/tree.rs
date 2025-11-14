@@ -138,21 +138,40 @@ impl FlattenedTree {
     pub fn from_tree(root: &TreeNode) -> Self {
         let mut flattened = FlattenedTree::new();
         let mut index = 0;
-        flattened.flatten_recursive(root, &mut index);
+        flattened.flatten_recursive(root, &mut index, 0);
         flattened
     }
 
-    fn flatten_recursive(&mut self, node: &TreeNode, index: &mut usize) {
-        // Add this node to the flat list
-        self.items.push((node.clone(), *index));
-        self.path_to_index
-            .insert(node.node_type.path().to_path_buf(), *index);
-        *index += 1;
+    fn flatten_recursive(&mut self, node: &TreeNode, index: &mut usize, depth_adjustment: usize) {
+        // Check if this is a "crates" directory (Rust convention for workspace members)
+        let is_crates_dir = if let TreeNodeType::Directory { name, .. } = &node.node_type {
+            name == "crates"
+        } else {
+            false
+        };
 
-        // If this is an expanded directory, add its children
-        if node.node_type.is_directory() && node.expanded {
-            for child in &node.children {
-                self.flatten_recursive(child, index);
+        if is_crates_dir {
+            // Skip this node in the display, but process children with increased depth adjustment
+            if node.expanded {
+                for child in &node.children {
+                    self.flatten_recursive(child, index, depth_adjustment + 1);
+                }
+            }
+        } else {
+            // Normal node - add to display with adjusted depth
+            let mut adjusted_node = node.clone();
+            adjusted_node.depth = adjusted_node.depth.saturating_sub(depth_adjustment);
+
+            self.items.push((adjusted_node, *index));
+            self.path_to_index
+                .insert(node.node_type.path().to_path_buf(), *index);
+            *index += 1;
+
+            // If this is an expanded directory, add its children
+            if node.node_type.is_directory() && node.expanded {
+                for child in &node.children {
+                    self.flatten_recursive(child, index, depth_adjustment);
+                }
             }
         }
     }

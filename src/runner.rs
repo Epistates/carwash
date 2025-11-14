@@ -290,6 +290,43 @@ pub async fn check_dependencies_with_cache(
         .await;
 }
 
+/// Recalculate the size of a single project after a command (e.g., cargo clean)
+async fn recalculate_project_size(project: &Project, tx: &mpsc::Sender<Action>) {
+    let project_name = project.name.clone();
+    let project_path = project.path.clone();
+    let workspace_root = project.workspace_root.clone();
+    let tx = tx.clone();
+
+    tokio::spawn(async move {
+        let total_size = crate::project::calculate_directory_size(&project_path);
+
+        // For workspace members, look for target/ at workspace root
+        // For standalone projects, look in the project directory
+        let target_size = {
+            let target_path = if let Some(ws_root) = workspace_root {
+                ws_root.join("target")
+            } else {
+                project_path.join("target")
+            };
+
+            if target_path.exists() && target_path.is_dir() {
+                crate::project::calculate_directory_size(&target_path)
+            } else {
+                Some(0)
+            }
+        };
+
+        // Send update back to main thread
+        let _ = tx
+            .send(Action::UpdateProjectSize(
+                project_name,
+                total_size,
+                target_size,
+            ))
+            .await;
+    });
+}
+
 async fn spawn_and_stream_command(
     command_str: &str,
     project: &Project,
@@ -356,6 +393,9 @@ async fn spawn_and_stream_command(
                 ),
             ))
             .await;
+
+        // Note: Size recalculation for clean commands is handled in run_command()
+        // with sequential execution for workspace members to avoid race conditions
     } else {
         let code = status.code().unwrap_or(-1);
         let _ = tx
@@ -400,22 +440,81 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
     }
 
     let start_tab_count = state.tabs.len();
+    let is_clean_command = command_str.contains("clean");
 
-    for (i, project) in projects_to_run.into_iter().enumerate() {
-        let tx = tx.clone();
-        let command_str = command_str.to_string();
-        let tab_title = format!("{}: {}", command_str, project.name);
-        let tab_index = start_tab_count + i;
+    // For clean commands on workspace members, we need to run sequentially to avoid race conditions
+    // Group projects by workspace root
+    if is_clean_command {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
 
-        let _ = tx.send(Action::CreateTab(tab_title)).await;
+        let mut workspace_groups: HashMap<Option<PathBuf>, Vec<(usize, Project)>> = HashMap::new();
+        for (i, project) in projects_to_run.into_iter().enumerate() {
+            workspace_groups
+                .entry(project.workspace_root.clone())
+                .or_insert_with(Vec::new)
+                .push((i, project));
+        }
 
-        tokio::spawn(async move {
-            if let Err(e) = spawn_and_stream_command(&command_str, &project, &tx, tab_index).await {
-                let _ = tx
-                    .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
-                    .await;
+        // Process each workspace group
+        for (_ws_root, group) in workspace_groups {
+            let has_shared_target = group.len() > 1 && group[0].1.workspace_root.is_some();
+
+            for (i, project) in group {
+                let tx = tx.clone();
+                let command_str = command_str.to_string();
+                let tab_title = format!("{}: {}", command_str, project.name);
+                let tab_index = start_tab_count + i;
+
+                let _ = tx.send(Action::CreateTab(tab_title)).await;
+
+                if has_shared_target {
+                    // Run sequentially for workspace members sharing a target
+                    if let Err(e) =
+                        spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
+                    {
+                        let _ = tx
+                            .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
+                            .await;
+                    }
+                    recalculate_project_size(&project, &tx).await;
+                    let _ = tx.send(Action::FinishCommand(tab_index)).await;
+                } else {
+                    // Run in parallel for standalone projects
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
+                        {
+                            let _ = tx
+                                .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
+                                .await;
+                        }
+                        recalculate_project_size(&project, &tx).await;
+                        let _ = tx.send(Action::FinishCommand(tab_index)).await;
+                    });
+                }
             }
-            let _ = tx.send(Action::FinishCommand(tab_index)).await;
-        });
+        }
+    } else {
+        // Non-clean commands: run in parallel as before
+        for (i, project) in projects_to_run.into_iter().enumerate() {
+            let tx = tx.clone();
+            let command_str = command_str.to_string();
+            let tab_title = format!("{}: {}", command_str, project.name);
+            let tab_index = start_tab_count + i;
+
+            let _ = tx.send(Action::CreateTab(tab_title)).await;
+
+            tokio::spawn(async move {
+                if let Err(e) =
+                    spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
+                {
+                    let _ = tx
+                        .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
+                        .await;
+                }
+                let _ = tx.send(Action::FinishCommand(tab_index)).await;
+            });
+        }
     }
 }
