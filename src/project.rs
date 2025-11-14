@@ -102,6 +102,10 @@ pub struct Project {
     pub cargo_lock_hash: Option<u64>,
     /// Visual status of update checking for UI display
     pub check_status: ProjectCheckStatus,
+    /// Total size of the project directory in bytes (calculated on demand)
+    pub total_size: Option<u64>,
+    /// Size of the target/ directory in bytes (potential savings from cargo clean)
+    pub target_size: Option<u64>,
 }
 
 impl Project {
@@ -156,19 +160,21 @@ impl Project {
             Vec::new()
         };
 
-        let authors = package.authors.clone().unwrap_or_default();
+        let authors = package.authors_vec();
 
         Some(Self {
             name: package.name.clone(),
             path: project_path,
             status: ProjectStatus::Pending,
-            version: package.version.clone(),
+            version: package.version_string(),
             authors,
             dependencies,
             workspace_root,
             workspace_name,
             cargo_lock_hash: None, // No hash available here, will be calculated later
             check_status: ProjectCheckStatus::Unchecked, // Start as unchecked
+            total_size: None,      // Calculate on demand
+            target_size: None,     // Calculate on demand
         })
     }
 
@@ -267,6 +273,55 @@ impl Project {
             ProjectCheckStatus::UpToDate
         }
     }
+
+    /// Calculate the total size of the project directory
+    pub fn calculate_total_size(&self) -> Option<u64> {
+        calculate_directory_size(&self.path)
+    }
+
+    /// Calculate the size of the target/ directory (potential cargo clean savings)
+    pub fn calculate_target_size(&self) -> Option<u64> {
+        let target_path = self.path.join("target");
+        if target_path.exists() && target_path.is_dir() {
+            calculate_directory_size(&target_path)
+        } else {
+            Some(0)
+        }
+    }
+
+    /// Format size in human-readable format (KB, MB, GB, TB)
+    pub fn format_size(bytes: u64) -> String {
+        const KB: u64 = 1024;
+        const MB: u64 = KB * 1024;
+        const GB: u64 = MB * 1024;
+        const TB: u64 = GB * 1024;
+
+        if bytes >= TB {
+            format!("{:.1}TB", bytes as f64 / TB as f64)
+        } else if bytes >= GB {
+            format!("{:.1}GB", bytes as f64 / GB as f64)
+        } else if bytes >= MB {
+            format!("{:.1}MB", bytes as f64 / MB as f64)
+        } else if bytes >= KB {
+            format!("{:.1}KB", bytes as f64 / KB as f64)
+        } else {
+            format!("{}B", bytes)
+        }
+    }
+}
+
+/// Calculate the total size of a directory and all its contents
+pub fn calculate_directory_size(path: &Path) -> Option<u64> {
+    use walkdir::WalkDir;
+
+    WalkDir::new(path)
+        .follow_links(false) // Don't follow symlinks to avoid infinite loops
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .reduce(|acc, size| acc + size)
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,14 +339,52 @@ pub struct CargoToml {
 #[derive(Debug, Deserialize)]
 pub struct Package {
     pub name: String,
-    pub version: String,
+    /// Version can be a string OR workspace-inherited (version.workspace = true)
     #[serde(default)]
-    pub authors: Option<Vec<String>>,
+    pub version: Option<toml::Value>,
+    /// Authors can be an array OR workspace-inherited (authors.workspace = true)
+    #[serde(default)]
+    pub authors: Option<toml::Value>,
+}
+
+impl Package {
+    /// Extract version as a string, handling workspace inheritance
+    pub fn version_string(&self) -> String {
+        match &self.version {
+            Some(toml::Value::String(s)) => s.clone(),
+            Some(toml::Value::Table(t))
+                if t.get("workspace") == Some(&toml::Value::Boolean(true)) =>
+            {
+                "workspace".to_string()
+            }
+            _ => "0.0.0".to_string(),
+        }
+    }
+
+    /// Extract authors as a vector, handling workspace inheritance
+    pub fn authors_vec(&self) -> Vec<String> {
+        match &self.authors {
+            Some(toml::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            Some(toml::Value::Table(t))
+                if t.get("workspace") == Some(&toml::Value::Boolean(true)) =>
+            {
+                vec![] // Workspace-inherited, actual values unknown
+            }
+            _ => vec![],
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Workspace {
     pub members: Vec<String>,
+    // Capture all other workspace fields (package, lints, dependencies, etc.)
+    // This ensures we can parse ANY workspace Cargo.toml without failures
+    #[serde(flatten)]
+    pub other: std::collections::HashMap<String, toml::Value>,
 }
 
 /// Recursively finds all Rust projects in the given directory path.
@@ -480,9 +573,11 @@ fn build_tree_level_only(dir_path: &Path, depth: usize) -> crate::tree::TreeNode
         .unwrap_or("projects")
         .to_string();
 
-    let mut node = crate::tree::TreeNode::directory(dir_name, dir_path.to_path_buf(), depth);
+    let mut node =
+        crate::tree::TreeNode::directory(dir_name.clone(), dir_path.to_path_buf(), depth);
     node.children_loaded = false; // Mark as not loaded yet
-    node.expanded = depth == 0; // Only expand root by default
+    // Expand root by default, and also auto-expand "crates" directories
+    node.expanded = depth == 0 || dir_name == "crates";
 
     node
 }
@@ -608,16 +703,20 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                     // Parse Cargo.toml to check if it's a workspace-only or a real project
                     if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
                         if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
-                            // Check if this is a workspace-only Cargo.toml (no [package] section)
-                            if toml.package.is_none() && toml.workspace.is_some() {
+                            // Check if this has a workspace section (with or without package)
+                            // Workspaces should be expandable directories to show their members
+                            if toml.workspace.is_some() {
                                 // It's a workspace root - treat as expandable directory
+                                // Even if it also has a [package] section, prioritize showing members
                                 if show_all_folders || directory_contains_rust_projects(&path) {
                                     let mut dir_node = build_tree_level_only(&path, node.depth + 1);
-                                    dir_node.expanded = false;
+                                    // Auto-expand workspace roots and load their children to show members
+                                    dir_node.expanded = true;
+                                    load_directory_children(&mut dir_node, show_all_folders);
                                     children.push(dir_node);
                                 }
                             } else if toml.package.is_some() {
-                                // It's a real project - add as project node
+                                // It's a standalone project (no workspace) - add as project node
                                 let project = Project {
                                     name: toml
                                         .package
@@ -628,12 +727,12 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                                     version: toml
                                         .package
                                         .as_ref()
-                                        .map(|p| p.version.clone())
+                                        .map(|p| p.version_string())
                                         .unwrap_or_default(),
                                     authors: toml
                                         .package
                                         .as_ref()
-                                        .and_then(|p| p.authors.clone())
+                                        .map(|p| p.authors_vec())
                                         .unwrap_or_default(),
                                     dependencies: Vec::new(), // Will be loaded on-demand when needed
                                     workspace_root: None,
@@ -641,6 +740,8 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                                     cargo_lock_hash: None,
                                     status: ProjectStatus::Pending,
                                     check_status: ProjectCheckStatus::Unchecked,
+                                    total_size: None,  // Calculate on demand
+                                    target_size: None, // Calculate on demand
                                 };
                                 let project_node =
                                     crate::tree::TreeNode::project(project, node.depth + 1);
@@ -651,8 +752,9 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                 } else {
                     // No Cargo.toml - check if we should show it as a directory
                     if show_all_folders || directory_contains_rust_projects(&path) {
-                        let mut dir_node = build_tree_level_only(&path, node.depth + 1);
-                        dir_node.expanded = false;
+                        let dir_node = build_tree_level_only(&path, node.depth + 1);
+                        // Don't override expanded state - build_tree_level_only sets it correctly
+                        // (e.g., "crates" directories are auto-expanded)
                         children.push(dir_node);
                     }
                 }
@@ -753,6 +855,37 @@ members = ["crate1", "crate2"]
         let cargo_toml = parsed.unwrap();
         assert!(cargo_toml.workspace.is_some());
         assert_eq!(cargo_toml.workspace.unwrap().members.len(), 2);
+    }
+
+    #[test]
+    fn test_cargo_toml_workspace_inherited_fields() {
+        // Test parsing Cargo.toml with workspace-inherited fields (like turbovault)
+        let toml_content = r#"
+[package]
+name = "test-crate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+serde = { workspace = true }
+"#;
+        let cargo_toml: Result<CargoToml, _> = toml::from_str(toml_content);
+        assert!(
+            cargo_toml.is_ok(),
+            "Should parse workspace-inherited fields: {:?}",
+            cargo_toml.err()
+        );
+
+        let parsed = cargo_toml.unwrap();
+        assert!(parsed.package.is_some());
+
+        let package = parsed.package.unwrap();
+        assert_eq!(package.name, "test-crate");
+        assert_eq!(package.version_string(), "workspace");
+        assert_eq!(package.authors_vec(), Vec::<String>::new()); // workspace-inherited, so empty
     }
 
     #[test]
