@@ -452,7 +452,7 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
         for (i, project) in projects_to_run.into_iter().enumerate() {
             workspace_groups
                 .entry(project.workspace_root.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((i, project));
         }
 
