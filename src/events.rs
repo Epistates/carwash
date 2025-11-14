@@ -117,6 +117,12 @@ pub enum Action {
     SaveConfig,
     /// Toggle showing all folders (default: only Rust project folders)
     ToggleShowAllFolders,
+    /// Calculate sizes for all projects (total + target directory)
+    CalculateProjectSizes,
+    /// Update a single project's size information
+    UpdateProjectSize(String, Option<u64>, Option<u64>),
+    /// Change focus to next pane
+    FocusNext,
     /// Quit the application
     Quit,
 }
@@ -140,6 +146,29 @@ pub enum Mode {
     Help,
     /// Settings modal is open
     Settings,
+}
+
+/// Tracks which pane currently has focus for keyboard input
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Focus {
+    /// Project list pane (left side)
+    #[default]
+    Projects,
+    /// Dependencies pane (top right)
+    Dependencies,
+    /// Command output pane (bottom right)
+    Output,
+}
+
+impl Focus {
+    /// Cycle to the next pane in focus order
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Projects => Self::Dependencies,
+            Self::Dependencies => Self::Output,
+            Self::Output => Self::Projects,
+        }
+    }
 }
 
 #[cfg(test)]

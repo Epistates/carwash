@@ -8,7 +8,7 @@ use crate::components::{
     settings::SettingsModalState, text_input::TextInputState, updater::UpdateWizardState,
 };
 use crate::config::Config;
-use crate::events::{Action, Mode};
+use crate::events::{Action, Focus, Mode};
 use crate::project::Project;
 use crate::runner::UpdateQueue;
 use crate::settings::AppSettings;
@@ -70,6 +70,8 @@ pub struct AppState {
     pub config: Config,
     /// Progress tracking for command execution
     pub progress: Option<ProgressState>,
+    /// Currently focused pane
+    pub focus: Focus,
 }
 
 /// Represents a tab pane for displaying command output
@@ -130,6 +132,7 @@ impl Default for AppState {
             filter: FilterState::new(),
             config: Config::load(),
             progress: None,
+            focus: Focus::default(),
         }
     }
 }
@@ -160,12 +163,22 @@ impl AppState {
 
     pub fn get_selected_project(&self) -> Option<&Project> {
         if let Some(selected_index) = self.tree_state.selected() {
-            // Get visible projects (accounting for collapsed workspaces)
-            let visible_projects = self.get_visible_projects();
-            visible_projects.get(selected_index).copied()
-        } else {
-            None
+            // Get the node from the flattened tree
+            if let Some((node, _index)) = self.flattened_tree.items.get(selected_index) {
+                // Check if it's a project node (not a directory)
+                if let crate::tree::TreeNodeType::Project(tree_project) = &node.node_type {
+                    // IMPORTANT: The tree contains cloned copies of projects,
+                    // but dependencies are updated in all_projects.
+                    // So we need to look up the project by name in all_projects
+                    // to get the current state with updated dependencies.
+                    return self
+                        .all_projects
+                        .iter()
+                        .find(|p| p.name == tree_project.name);
+                }
+            }
         }
+        None
     }
 
     /// Get list of projects that should be visible (excluding collapsed workspace members)
@@ -282,6 +295,13 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::ResetLayout => handle_reset_layout(state),
         Action::SaveConfig => handle_save_config(state),
         Action::ToggleShowAllFolders => handle_toggle_show_all_folders(state),
+        Action::CalculateProjectSizes => {
+            // Size calculation is handled in main event loop (async)
+        }
+        Action::UpdateProjectSize(project_name, total_size, target_size) => {
+            handle_update_project_size(state, project_name, total_size, target_size)
+        }
+        Action::FocusNext => handle_focus_next(state),
     }
 }
 
@@ -304,6 +324,8 @@ mod tests {
             workspace_name: None,
             cargo_lock_hash: None,
             check_status: crate::project::ProjectCheckStatus::Unchecked,
+            total_size: None,
+            target_size: None,
         }
     }
 
