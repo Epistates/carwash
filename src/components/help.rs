@@ -7,14 +7,22 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
-pub struct Help {}
+pub struct Help {
+    scroll: usize,
+    scroll_state: ScrollbarState,
+}
 
 impl Help {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            scroll: 0,
+            scroll_state: ScrollbarState::default(),
+        }
     }
 }
 
@@ -22,6 +30,26 @@ impl Component for Help {
     fn handle_key_events(&mut self, key: KeyCode, _app: &mut AppState) -> Option<Action> {
         match key {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => Some(Action::EnterNormalMode),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.scroll = self.scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.scroll = self.scroll.saturating_add(1);
+                None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(10);
+                None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(10);
+                None
+            }
+            KeyCode::Home => {
+                self.scroll = 0;
+                None
+            }
             _ => None,
         }
     }
@@ -74,12 +102,24 @@ impl Component for Help {
                 Span::raw("Collapse/Expand workspaces"),
             ]),
             Line::from(vec![
-                Span::styled("  Tab / Sh+Tab ", Style::default().fg(Color::Cyan)),
-                Span::raw("Cycle through output tabs"),
+                Span::styled("  Tab          ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cycle focus between panes (or switch output tabs when Output focused)"),
             ]),
             Line::from(vec![
-                Span::styled("  PgUp / PgDown ", Style::default().fg(Color::Cyan)),
-                Span::raw("Scroll output"),
+                Span::styled("  Ctrl+[ / ]   ", Style::default().fg(Color::Cyan)),
+                Span::raw("Switch between output tabs (works from any pane)"),
+            ]),
+            Line::from(vec![
+                Span::styled("  - / +        ", Style::default().fg(Color::Cyan)),
+                Span::raw("Adjust output pane height"),
+            ]),
+            Line::from(vec![
+                Span::styled("  [ ] / { }    ", Style::default().fg(Color::Cyan)),
+                Span::raw("Adjust left pane width"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Shift+R      ", Style::default().fg(Color::Cyan)),
+                Span::raw("Reset layout to defaults"),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -177,19 +217,60 @@ impl Component for Help {
             Line::from(
                 "  • Output is color-coded: errors (red), warnings (yellow), success (green)",
             ),
+            Line::from("  • Use Tab to cycle focus: Projects → Dependencies → Output"),
+            Line::from("  • Focus indicator shows current pane in the status bar"),
+            Line::from(
+                "  • When Output is focused: Tab/Shift+Tab switches tabs, PgUp/PgDown scrolls",
+            ),
+            Line::from("  • Use Ctrl+[ and Ctrl+] to switch tabs from any pane"),
             Line::from("  • Commands run in parallel across selected projects"),
             Line::from("  • Press 'u' on selected project to check for outdated dependencies"),
         ];
 
+        // Calculate content height and viewport
+        let content_height = help_lines.len();
+        let viewport_height = (chunks[1].height.saturating_sub(2)) as usize; // Subtract borders
+
+        // Clamp scroll to valid range
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        self.scroll = self.scroll.min(max_scroll);
+
         let help_para = Paragraph::new(help_lines)
             .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
             .wrap(Wrap { trim: false })
-            .scroll((0, 0));
+            .scroll((self.scroll as u16, 0));
 
         f.render_widget(help_para, chunks[1]);
 
+        // Render scrollbar if content is larger than viewport
+        if content_height > viewport_height {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let mut scrollbar_state = self
+                .scroll_state
+                .content_length(content_height)
+                .viewport_content_length(viewport_height)
+                .position(self.scroll);
+
+            let scrollbar_area = Rect {
+                x: chunks[1].x + chunks[1].width - 1,
+                y: chunks[1].y + 1,
+                width: 1,
+                height: chunks[1].height.saturating_sub(2),
+            };
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+
         // Footer
-        let footer = Paragraph::new(" Press ? or Esc to close ")
+        let footer_text = if content_height > viewport_height {
+            " ↑↓/j k: scroll | PgUp/PgDn: page | Home: top | ? or Esc: close "
+        } else {
+            " Press ? or Esc to close "
+        };
+        let footer = Paragraph::new(footer_text)
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center)
             .block(

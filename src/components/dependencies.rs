@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::components::Component;
-use crate::events::Action;
+use crate::events::{Action, Focus};
 use crate::project::DependencyCheckStatus;
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -165,11 +165,18 @@ impl Component for DependenciesPane {
                 checking_count,
             );
 
+            // Highlight border when focused
+            let border_style = if app.focus == Focus::Dependencies {
+                Style::default().fg(Color::Cyan)
+            } else {
+                title_style
+            };
+
             let dependency_list = List::new(dependency_items).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
-                    .border_style(title_style),
+                    .border_style(border_style),
             );
 
             f.render_widget(dependency_list, area);

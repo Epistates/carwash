@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::components::Component;
-use crate::events::{Action, Mode};
+use crate::events::{Action, Focus, Mode};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -31,9 +31,9 @@ impl Component for StatusBar {
             Mode::Loading => ("LOADING", Color::Yellow, "Scanning for projects..."),
             Mode::Normal => {
                 let hint = if app.tabs.len() > 1 {
-                    "':' cmd | '/' search | 't' theme | 'u' updates | 's' set | ←→ nav | [](){} resize | 'R' reset | tabs: ←→ | '?' help"
+                    "Tab: cycle focus | Ctrl+[/]: switch tabs | ':' cmd | '/' search | 'u' update | '?' help | 'q' quit"
                 } else {
-                    "':' cmd | '/' search | 't' theme | 'u' updates | 's' set | ←→ nav | [](){} resize | 'R' reset | '?' help | 'q' quit"
+                    "Tab: cycle focus | ':' cmd | '/' search | 't' theme | 'u' update | 's' settings | '?' help | 'q' quit"
                 };
                 ("NORMAL", Color::Green, hint)
             }
@@ -83,6 +83,23 @@ impl Component for StatusBar {
                     .add_modifier(Modifier::BOLD),
             );
 
+            // Focus indicator - only show in Normal mode
+            let focus_info = if app.mode == Mode::Normal {
+                let (icon, label) = match app.focus {
+                    Focus::Projects => ("📋", "Projects"),
+                    Focus::Dependencies => ("📦", "Dependencies"),
+                    Focus::Output => ("📄", "Output"),
+                };
+                Span::styled(
+                    format!(" {} {} ", icon, label),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("", Style::default())
+            };
+
             let selected_info = if !app.selected_projects.is_empty() {
                 Span::styled(
                     format!(" {} selected ", app.selected_projects.len()),
@@ -121,6 +138,7 @@ impl Component for StatusBar {
             Line::from(vec![
                 mode_span,
                 Span::raw(" "),
+                focus_info,
                 selected_info,
                 tabs_info,
                 Span::raw("│"),

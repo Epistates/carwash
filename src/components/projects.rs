@@ -90,7 +90,8 @@ impl ProjectList {
             Style::default().fg(colors.text)
         };
 
-        ListItem::new(ratatui::text::Line::from(vec![
+        // Build size information string if available
+        let mut spans = vec![
             ratatui::text::Span::raw(indicator),
             ratatui::text::Span::raw(indent),
             ratatui::text::Span::styled(checkbox_symbol, checkbox_style),
@@ -98,7 +99,34 @@ impl ProjectList {
             ratatui::text::Span::styled(status_icon, status_style),
             ratatui::text::Span::raw(" "),
             ratatui::text::Span::styled(&project.name, name_style),
-        ]))
+        ];
+
+        // Add size information if available
+        if let Some(target_size) = project.target_size {
+            let size_str = crate::project::Project::format_size(target_size);
+            let size_style = if target_size > 1_000_000_000 {
+                // > 1GB: red warning
+                Style::default()
+                    .fg(colors.error)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else if target_size > 100_000_000 {
+                // > 100MB: yellow warning
+                Style::default().fg(colors.warning)
+            } else if target_size > 0 {
+                // > 0: dim gray
+                Style::default().fg(colors.muted)
+            } else {
+                // 0 bytes: very dim
+                Style::default().fg(Color::Rgb(80, 80, 80))
+            };
+            spans.push(ratatui::text::Span::raw(" "));
+            spans.push(ratatui::text::Span::styled(
+                format!("📦{}", size_str),
+                size_style,
+            ));
+        }
+
+        ListItem::new(ratatui::text::Line::from(spans))
     }
 }
 
@@ -224,12 +252,19 @@ impl Component for ProjectList {
             }
         }
 
+        // Highlight border when focused
+        let border_color = if app.focus == crate::events::Focus::Projects {
+            Color::Cyan
+        } else {
+            colors.primary
+        };
+
         let project_list = ratatui::widgets::List::new(list_items)
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
                     .title(title)
-                    .border_style(Style::default().fg(colors.primary)),
+                    .border_style(Style::default().fg(border_color)),
             )
             .highlight_style(
                 Style::default()

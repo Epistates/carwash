@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::components::Component;
-use crate::events::Action;
+use crate::events::{Action, Focus};
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -100,8 +100,27 @@ impl Component for TabbedOutputPane {
                 })
                 .collect();
 
+            // Highlight border when focused
+            let border_style = if app.focus == Focus::Output {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+
+            // Add tab indicator showing current/total tabs
+            let tab_indicator = if app.tabs.len() > 1 {
+                format!(" Output ({}/{}) ", app.active_tab + 1, app.tabs.len())
+            } else {
+                " Output ".to_string()
+            };
+
             let tabs = Tabs::new(titles)
-                .block(Block::default().borders(Borders::ALL).title(" Output "))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(tab_indicator)
+                        .border_style(border_style),
+                )
                 .select(app.active_tab)
                 .style(Style::default())
                 .highlight_style(
