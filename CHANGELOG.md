@@ -2,6 +2,106 @@
 
 All notable changes to CarWash will be documented in this file.
 
+## [Unreleased]
+
+## [0.3.2] - 2025-11-14
+
+### New Features
+
+**Disk Space Analysis**
+- See `target/` directory sizes for all your projects at a glance
+- Color-coded indicators help identify space-hungry projects:
+  - Red (>1GB): Time to clean!
+  - Yellow (>100MB): Worth reviewing
+  - Gray (<100MB): Reasonable size
+  - Very dim (0B): Already clean
+- Sizes update automatically in the background
+- After running `cargo clean`, sizes recalculate instantly so you see the freed space immediately
+
+**Smarter Workspace Handling**
+- `crates/` directories are now transparent - workspace members appear directly under the workspace root
+- No need to manually expand `crates/` folders anymore
+- Cleaner view: `turbovault/crates/turbovault-core` becomes `turbovault/turbovault-core`
+- Workspaces with both `[workspace]` and `[package]` sections now display correctly with all members visible
+
+**Better Navigation**
+- Focus indicator in status bar shows which pane is active (Projects, Dependencies, or Output)
+- Tab key cycles between panes intelligently
+- Ctrl+[ and Ctrl+] switch between output tabs from anywhere
+- Output pane shows tab counter (e.g., "Output (2/5)")
+- Help screen now scrolls properly with arrow keys, j/k, PgUp/PgDn, and Home
+
+### Bug Fixes
+
+- Fixed issue where pressing 'u' to check for updates would check the wrong project
+- Fixed dependencies pane not showing when a project was selected
+- Fixed workspace members not appearing in the tree view
+- Fixed workspaces appearing as single projects instead of showing all members
+- Fixed `cargo clean` race conditions when running on multiple workspace members simultaneously
+  - Now runs sequentially within each workspace to prevent errors
+  - Each project still gets its own output tab for full visibility
+  - Standalone projects continue to run in parallel for speed
+
+## [0.3.1] - 2025-11-10
+
+### Hierarchical Tree Navigation
+
+**New Tree-Based UI System**
+- Introduced tree data structure with lazy loading support for large project hierarchies
+- New interactive tree view component for project navigation
+- Integrated hierarchical tree navigation throughout the application
+- Added tree state management with selection tracking
+
+**New Components**
+- `TreeView` component for collapsible/expandable navigation
+- `ProgressBar` component for visual feedback on operations
+- `Filter` component for fuzzy search and filtering
+- `Modal` component for dialogs and overlays
+- Separated UI concerns into modular components
+
+**Code Organization**
+- Extracted UI rendering into dedicated `src/ui/` module structure
+- Added `src/ui/layout.rs` for layout composition
+- Added `src/ui/modal.rs` for modal dialogs
+- Added `src/ui/styles.rs` for centralized styling
+- Added `src/ui/theme.rs` for theme management
+- Created `src/config/` module for configuration management
+- Added `src/config/keybinding_config.rs` for keyboard shortcuts
+- Added `src/config/theme_config.rs` for theme configuration
+
+**Architecture Improvements**
+- Restructured app state to support tree navigation
+- Enhanced `Project` struct with additional metadata
+- Improved event handling with new action types
+- Better separation of concerns between components and state
+- More modular and testable code structure
+
+**Development Tools**
+- Added `justfile` with convenient development recipes for common tasks
+- Makes development workflow faster and more consistent
+
+**Bug Fixes**
+- Fixed event stream polling to prevent UI freeze with timeout
+- Improved terminal responsiveness during intensive operations
+- Better handling of rapid state changes
+
+**Code Quality**
+- Applied Clippy recommendations and fixed linting warnings
+- Code formatting improvements throughout
+- All 34+ tests passing
+- Clippy clean with no warnings
+
+**Dependencies**
+- Updated to Cargo.toml compatibility
+- Maintained all security patches
+- No breaking changes to public API
+
+### 🔄 Breaking Changes
+
+None. Fully backward compatible with 0.3.0.
+
+---
+
 ## [0.3.0] - 2025-11-07
 
 ### 🏗️ Major Refactoring Release
@@ -117,7 +217,7 @@ Removed Cargo.lock from .gitignore - thanks to [0323pin](https://github.com/0323
 - Added comprehensive error messages with file paths and operation context
 - Better debugging with detailed error propagation
 
-### 🐛 Critical Bug Fixes
+### Critical Bug Fixes
 
 **Cache Timestamp Issues**
 - Fixed cache.rs resetting timestamps to "now" on load (prevented cache expiry logic from working)
@@ -135,7 +235,7 @@ Removed Cargo.lock from .gitignore - thanks to [0323pin](https://github.com/0323
 - Fixed status always being set to "Checking" even when all deps were cached
 - Fixed duplicate cache loading on startup (now loads once correctly)
 
-### 🎨 UI/UX Improvements
+### UI/UX Improvements
 
 **Update Wizard**
 - Wizard now locks to selected project, preventing background updates from changing display
@@ -186,7 +286,7 @@ None. Fully backward compatible.
 
 ## [0.1.2] - 2025-10-25
 
-### ✨ Features
+### Features
 
 **Background Update System**
 - Automatic background update checking on startup for all projects
@@ -215,7 +315,7 @@ None. Fully backward compatible.
 - Eliminates conflicting dual-purpose keybindings
 - Clearer, more intuitive navigation model
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - Fixed UI not updating with new dependency versions after successful updates
 - Resolved navigation conflicts between tab switching and workspace collapse/expand
@@ -231,7 +331,7 @@ None. Fully backward compatible.
 
 ## [0.1.1] - 2025-10-25
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - Fixed relative path resolution for `.` (current directory) argument
   - `carwash` and `carwash .` now work correctly when run from a directory
@@ -244,7 +344,7 @@ None. Fully backward compatible.
 
 ### 🎉 Initial Release - World-Class Edition
 
-#### ✨ Features
+#### Features
 
 **Core Functionality**
 - Multi-project Rust workspace management
@@ -282,14 +382,14 @@ None. Fully backward compatible.
 - Exit code reporting with success/failure indicators
 - Graceful degradation when cargo or network is unavailable
 
-#### 🎨 UI/UX
+#### UI/UX
 
 **Visual Design**
-- ☑/☐ Checkboxes for project selection
-- ▶ Indicator for current selection
-- ⚙ Running command indicator
-- ✓ Completion indicators
-- ⚠ Warning indicators
+- Checkboxes for project selection
+- Indicator for current selection
+- Running command indicator
+- Completion indicators
+- Warning indicators
 - Color-coded output:
   - Red: errors
   - Yellow: warnings
@@ -335,7 +435,7 @@ None. Fully backward compatible.
 - Architecture documentation
 - Contribution guidelines
 
-#### 🐛 Bug Fixes
+#### Bug Fixes
 
 - Fixed tab indexing in parallel command execution
 - Corrected tree state selection logic
