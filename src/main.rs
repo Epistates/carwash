@@ -2,10 +2,11 @@ use carwash::Args;
 use carwash::app::{AppState, reducer};
 use carwash::cache::UpdateCache;
 use carwash::components::{
-    Component, help::Help, palette::CommandPalette, projects::ProjectList, settings::SettingsModal,
-    text_input::TextInput, updater::UpdateWizard,
+    Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
+    palette::CommandPalette, projects::ProjectList, settings::SettingsModal, text_input::TextInput,
+    updater::UpdateWizard,
 };
-use carwash::events::{Action, Command, Mode};
+use carwash::events::{Action, Command, Focus, Mode};
 use carwash::project::{ProjectCheckStatus, find_rust_projects};
 use carwash::runner::{check_dependencies_with_cache, check_for_updates, run_command};
 use carwash::ui::ui;
@@ -161,6 +162,25 @@ async fn handle_event(
             Mode::Normal => {
                 // Handle normal mode keys without interfering with workspace navigation
                 match key.code {
+                    KeyCode::Tab => {
+                        // If Output pane has focus, let it handle Tab for tab switching
+                        // Otherwise, cycle focus between panes
+                        if state.focus == Focus::Output {
+                            let mut output = TabbedOutputPane::new();
+                            output.handle_key_events(key.code, state)
+                        } else {
+                            Some(Action::FocusNext)
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        // BackTab always handled by Output pane when it has focus
+                        if state.focus == Focus::Output {
+                            let mut output = TabbedOutputPane::new();
+                            output.handle_key_events(key.code, state)
+                        } else {
+                            None
+                        }
+                    }
                     KeyCode::Char('q') => Some(Action::Quit),
                     KeyCode::Char('?') => Some(Action::ShowHelp),
                     KeyCode::Char('s') | KeyCode::Char('S') => Some(Action::ShowSettings),
@@ -169,22 +189,71 @@ async fn handle_event(
                     KeyCode::Char(':') => Some(Action::ShowCommandPalette),
                     KeyCode::Char('/') => Some(Action::EnterFilterMode),
                     KeyCode::Char('u') => Some(Action::StartUpdateWizard),
+                    // Ctrl+[ and Ctrl+] for output tab navigation (works regardless of focus)
+                    KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Previous tab
+                        if state.active_tab > 0 {
+                            Some(Action::SwitchToTab(state.active_tab - 1))
+                        } else if !state.tabs.is_empty() {
+                            // Wrap around to last tab
+                            Some(Action::SwitchToTab(state.tabs.len() - 1))
+                        } else {
+                            None
+                        }
+                    }
+                    KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Next tab
+                        if state.active_tab < state.tabs.len().saturating_sub(1) {
+                            Some(Action::SwitchToTab(state.active_tab + 1))
+                        } else if !state.tabs.is_empty() {
+                            // Wrap around to first tab
+                            Some(Action::SwitchToTab(0))
+                        } else {
+                            None
+                        }
+                    }
                     // Layout adjustment controls
                     KeyCode::Char('{') | KeyCode::Char('[') => Some(Action::DecreaseLeftPane),
                     KeyCode::Char('}') | KeyCode::Char(']') => Some(Action::IncreaseLeftPane),
-                    KeyCode::Char('(') | KeyCode::Char('-') => Some(Action::DecreaseTopRight),
-                    KeyCode::Char(')') | KeyCode::Char('+') => Some(Action::IncreaseTopRight),
+                    KeyCode::Char('(') | KeyCode::Char('-') => Some(Action::IncreaseTopRight),
+                    KeyCode::Char(')') | KeyCode::Char('+') => Some(Action::DecreaseTopRight),
                     KeyCode::Char('r') | KeyCode::Char('R') => {
                         if key.modifiers.contains(KeyModifiers::SHIFT) {
                             Some(Action::ResetLayout)
                         } else {
-                            let mut project_list = ProjectList::new();
-                            project_list.handle_key_events(key.code, state)
+                            // Dispatch to focused component
+                            match state.focus {
+                                Focus::Projects => {
+                                    let mut project_list = ProjectList::new();
+                                    project_list.handle_key_events(key.code, state)
+                                }
+                                Focus::Dependencies => {
+                                    let mut deps = DependenciesPane::new();
+                                    deps.handle_key_events(key.code, state)
+                                }
+                                Focus::Output => {
+                                    let mut output = TabbedOutputPane::new();
+                                    output.handle_key_events(key.code, state)
+                                }
+                            }
                         }
                     }
                     _ => {
-                        let mut project_list = ProjectList::new();
-                        project_list.handle_key_events(key.code, state)
+                        // Dispatch to focused component
+                        match state.focus {
+                            Focus::Projects => {
+                                let mut project_list = ProjectList::new();
+                                project_list.handle_key_events(key.code, state)
+                            }
+                            Focus::Dependencies => {
+                                let mut deps = DependenciesPane::new();
+                                deps.handle_key_events(key.code, state)
+                            }
+                            Focus::Output => {
+                                let mut output = TabbedOutputPane::new();
+                                output.handle_key_events(key.code, state)
+                            }
+                        }
                     }
                 }
             }
@@ -410,6 +479,18 @@ async fn run_app<B: Backend>(
                                 }
                             }
                         }
+
+                        // Trigger size calculation in background (non-blocking)
+                        let tx = action_tx.clone();
+                        tokio::spawn(async move {
+                            // Small delay to let UI render first
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            let _ = tx.send(Action::CalculateProjectSizes).await;
+                        });
+                    }
+                    Action::CalculateProjectSizes => {
+                        // Spawn size calculation tasks for all projects
+                        carwash::handlers::handle_calculate_project_sizes(state, action_tx.clone()).await;
                     }
                     Action::StartUpdateWizard => {
                         let selected_project_name = state

@@ -49,7 +49,7 @@ pub mod cache;
 pub mod components;
 pub mod config;
 pub mod events;
-mod handlers;
+pub mod handlers;
 pub mod project;
 pub mod runner;
 pub mod settings;

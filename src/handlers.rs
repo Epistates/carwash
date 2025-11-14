@@ -4,7 +4,7 @@
 //! a clean separation between action dispatch and state mutation logic.
 
 use crate::app::{AppState, Tab};
-use crate::events::{Command, Mode};
+use crate::events::{Action, Command, Mode};
 use crate::project::Project;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -78,6 +78,9 @@ pub fn handle_finish_project_scan(
 
     // Load the root level children immediately (since root starts expanded)
     crate::project::load_directory_children(&mut tree_root, state.settings.show_all_folders);
+
+    // Auto-load children for any "crates" directories (they're auto-expanded)
+    load_crates_directories_recursively(&mut tree_root, state.settings.show_all_folders);
 
     state.tree_root = Some(tree_root.clone());
 
@@ -972,4 +975,122 @@ pub fn handle_decrease_top_right(state: &mut AppState) {
 pub fn handle_reset_layout(state: &mut AppState) {
     state.config.layout = crate::config::LayoutConfig::default();
     let _ = state.config.save();
+}
+
+/// Handle switching focus to next pane
+pub fn handle_focus_next(state: &mut AppState) {
+    state.focus = state.focus.next();
+}
+
+/// Recursively load children for any "crates" directories
+/// This ensures "crates" directories are automatically populated since they're auto-expanded
+fn load_crates_directories_recursively(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
+    // Check if this is a "crates" directory that needs loading
+    if let crate::tree::TreeNodeType::Directory { name, .. } = &node.node_type {
+        if name == "crates" && !node.children_loaded {
+            crate::project::load_directory_children(node, show_all_folders);
+        }
+    }
+
+    // Recursively check all children
+    for child in &mut node.children {
+        load_crates_directories_recursively(child, show_all_folders);
+    }
+}
+
+/// Handle calculating sizes for all projects
+/// This spawns async tasks to calculate sizes in the background
+pub async fn handle_calculate_project_sizes(
+    state: &AppState,
+    action_tx: tokio::sync::mpsc::Sender<Action>,
+) {
+    for project in &state.all_projects {
+        let project_name = project.name.clone();
+        let project_path = project.path.clone();
+        let tx = action_tx.clone();
+
+        // For workspace members, we need to check the workspace root for target/
+        let workspace_root = project.workspace_root.clone();
+
+        // Spawn task to calculate sizes in background
+        tokio::spawn(async move {
+            let total_size = crate::project::calculate_directory_size(&project_path);
+
+            // For workspace members, look for target/ at workspace root
+            // For standalone projects, look in the project directory
+            let target_size = {
+                let target_path = if let Some(ws_root) = workspace_root {
+                    ws_root.join("target")
+                } else {
+                    project_path.join("target")
+                };
+
+                if target_path.exists() && target_path.is_dir() {
+                    crate::project::calculate_directory_size(&target_path)
+                } else {
+                    Some(0)
+                }
+            };
+
+            // Send update back to main thread
+            let _ = tx
+                .send(Action::UpdateProjectSize(
+                    project_name,
+                    total_size,
+                    target_size,
+                ))
+                .await;
+        });
+    }
+}
+
+/// Handle updating a single project's size information
+pub fn handle_update_project_size(
+    state: &mut AppState,
+    project_name: String,
+    total_size: Option<u64>,
+    target_size: Option<u64>,
+) {
+    // Update in all_projects
+    if let Some(project) = state
+        .all_projects
+        .iter_mut()
+        .find(|p| p.name == project_name)
+    {
+        project.total_size = total_size;
+        project.target_size = target_size;
+    }
+
+    // Update in projects (filtered view)
+    if let Some(project) = state.projects.iter_mut().find(|p| p.name == project_name) {
+        project.total_size = total_size;
+        project.target_size = target_size;
+    }
+
+    // Update in tree nodes
+    if let Some(ref mut tree_root) = state.tree_root {
+        update_project_size_in_tree(tree_root, &project_name, total_size, target_size);
+
+        // Re-flatten tree to pick up changes
+        state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
+    }
+}
+
+/// Recursively update project size in tree
+fn update_project_size_in_tree(
+    node: &mut crate::tree::TreeNode,
+    project_name: &str,
+    total_size: Option<u64>,
+    target_size: Option<u64>,
+) {
+    if let crate::tree::TreeNodeType::Project(ref mut project) = node.node_type {
+        if project.name == project_name {
+            project.total_size = total_size;
+            project.target_size = target_size;
+        }
+    }
+
+    for child in &mut node.children {
+        update_project_size_in_tree(child, project_name, total_size, target_size);
+    }
 }
