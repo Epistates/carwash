@@ -56,6 +56,15 @@ cargo install --path .
 cargo run -- /path/to/your/rust/projects
 ```
 
+### Using a package manager
+
+`carwash` is available as a native package on NetBSD.
+To install it, simply run:
+
+```bash
+pkgin install carwash
+```
+
 ## 🚀 Quick Start
 
 ```bash
