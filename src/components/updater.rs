@@ -12,6 +12,13 @@ use ratatui::{
 };
 use std::collections::HashSet;
 
+/// Pending directory check for multiple projects
+#[derive(Debug, Clone)]
+pub struct PendingDirectoryCheck {
+    pub directory_name: String,
+    pub project_names: Vec<String>,
+}
+
 /// State for the update wizard UI component
 ///
 /// The wizard is "locked" to a specific project when it opens, ensuring that
@@ -26,6 +33,12 @@ pub struct UpdateWizardState {
     /// Whether a user-initiated check is in progress for the locked project
     /// This prevents background checks from clearing the is_checking_updates flag prematurely
     pub user_check_in_progress: bool,
+    /// Pending directory check (set when user presses 'u' on a directory)
+    /// The async handler will process this and queue all projects for checking
+    pub pending_directory_check: Option<PendingDirectoryCheck>,
+    /// Project name pending dependency reload after update command completes
+    /// Set when RunUpdate starts, cleared and processed when command finishes
+    pub pending_reload_project: Option<String>,
 }
 
 impl UpdateWizardState {
@@ -36,6 +49,8 @@ impl UpdateWizardState {
             list_state: ratatui::widgets::ListState::default(),
             locked_project_name: None,
             user_check_in_progress: false,
+            pending_directory_check: None,
+            pending_reload_project: None,
         }
     }
 }
@@ -192,9 +207,10 @@ impl Component for UpdateWizard {
                 .iter()
                 .map(|dep| {
                     let is_selected = app.updater.selected_dependencies.contains(&dep.name);
+                    let is_major = dep.is_major_update();
                     let checkbox = if is_selected { "☑" } else { "☐" };
 
-                    let line = Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(
                             checkbox,
                             if is_selected {
@@ -219,7 +235,19 @@ impl Component for UpdateWizard {
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                    ]);
+                    ];
+
+                    // Add note for major version updates
+                    if is_major {
+                        spans.push(Span::styled(
+                            " (major)",
+                            Style::default()
+                                .fg(Color::Magenta)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                    }
+
+                    let line = Line::from(spans);
 
                     ListItem::new(line)
                 })

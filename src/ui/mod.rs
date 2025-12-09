@@ -11,14 +11,13 @@ pub mod theme;
 use crate::app::AppState;
 use crate::components::{
     Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
-    palette::CommandPalette, projects::ProjectList, settings::SettingsModal, status::StatusBar,
-    text_input::TextInput, updater::UpdateWizard,
+    palette::CommandPalette, projects::ProjectList, settings::SettingsModal, spinner::Spinner,
+    status::StatusBar, text_input::TextInput, updater::UpdateWizard,
 };
 use crate::events::Mode;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
-    widgets::{Block, Borders, Paragraph},
+    layout::{Constraint, Direction, Layout},
 };
 
 // Re-export commonly used items
@@ -33,11 +32,8 @@ pub fn ui(f: &mut Frame, app: &mut AppState) {
     let mut project_list = ProjectList::new();
 
     if app.mode == Mode::Loading {
-        let loading_text = "Scanning for projects...";
-        let loading = Paragraph::new(loading_text)
-            .block(Block::default().borders(Borders::ALL).title("Loading"))
-            .alignment(Alignment::Center);
-        f.render_widget(loading, f.area());
+        let mut spinner = Spinner::new();
+        spinner.draw(f, app, f.area());
         return;
     }
 

@@ -64,6 +64,7 @@ impl ThemeConfig {
             "light" => ColorScheme::Light,
             "nord" => ColorScheme::Nord,
             "dracula" => ColorScheme::Dracula,
+            "cosmic" => ColorScheme::Cosmic,
             _ => ColorScheme::Dark,
         }
     }
@@ -75,7 +76,8 @@ impl ThemeConfig {
             ColorScheme::Dark => ColorScheme::Light,
             ColorScheme::Light => ColorScheme::Nord,
             ColorScheme::Nord => ColorScheme::Dracula,
-            ColorScheme::Dracula => ColorScheme::Dark,
+            ColorScheme::Dracula => ColorScheme::Cosmic,
+            ColorScheme::Cosmic => ColorScheme::Dark,
         }
     }
 
@@ -86,13 +88,14 @@ impl ThemeConfig {
             "light" => "Light".to_string(),
             "nord" => "Nord".to_string(),
             "dracula" => "Dracula".to_string(),
+            "cosmic" => "Cosmic".to_string(),
             name => format!("Custom: {}", name),
         }
     }
 
     /// List all available theme names
     pub fn available_themes() -> Vec<&'static str> {
-        vec!["dark", "light", "nord", "dracula"]
+        vec!["dark", "light", "nord", "dracula", "cosmic"]
     }
 
     /// Set the active theme by name
@@ -110,6 +113,7 @@ impl ThemeConfig {
             ColorScheme::Light => "light",
             ColorScheme::Nord => "nord",
             ColorScheme::Dracula => "dracula",
+            ColorScheme::Cosmic => "cosmic",
         }
         .to_string();
     }
@@ -121,6 +125,7 @@ impl ThemeConfig {
             "Light".to_string(),
             "Nord".to_string(),
             "Dracula".to_string(),
+            "Cosmic".to_string(),
         ]
     }
 }
@@ -158,6 +163,9 @@ mod tests {
 
         let config = ThemeConfig::new("dracula");
         assert_eq!(config.current_scheme(), ColorScheme::Dracula);
+
+        let config = ThemeConfig::new("cosmic");
+        assert_eq!(config.current_scheme(), ColorScheme::Cosmic);
     }
 
     #[test]
@@ -166,6 +174,9 @@ mod tests {
         assert_eq!(config.next_scheme(), ColorScheme::Light);
 
         let config = ThemeConfig::new("dracula");
+        assert_eq!(config.next_scheme(), ColorScheme::Cosmic);
+
+        let config = ThemeConfig::new("cosmic");
         assert_eq!(config.next_scheme(), ColorScheme::Dark);
     }
 
@@ -178,6 +189,8 @@ mod tests {
         assert_eq!(config.current, "nord");
         config.cycle_next();
         assert_eq!(config.current, "dracula");
+        config.cycle_next();
+        assert_eq!(config.current, "cosmic");
         config.cycle_next();
         assert_eq!(config.current, "dark");
     }
@@ -204,9 +217,10 @@ mod tests {
     #[test]
     fn test_available_themes() {
         let themes = ThemeConfig::available_themes();
-        assert_eq!(themes.len(), 4);
+        assert_eq!(themes.len(), 5);
         assert!(themes.contains(&"dark"));
         assert!(themes.contains(&"light"));
+        assert!(themes.contains(&"cosmic"));
     }
 
     #[test]

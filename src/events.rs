@@ -125,6 +125,13 @@ pub enum Action {
     FocusNext,
     /// Quit the application
     Quit,
+    /// Initialize the project tree with the root directory (shallow)
+    InitializeTree(String),
+    /// Request to expand a directory node (async lazy load)
+    /// Contains: (path, depth)
+    ExpandDirectory(std::path::PathBuf, usize),
+    /// Directory children have been loaded (async result)
+    DirectoryLoaded(std::path::PathBuf, Vec<crate::tree::TreeNode>),
 }
 
 /// Current mode of the application UI

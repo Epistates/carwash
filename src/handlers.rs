@@ -4,6 +4,7 @@
 //! a clean separation between action dispatch and state mutation logic.
 
 use crate::app::{AppState, Tab};
+use crate::components::PendingDirectoryCheck;
 use crate::events::{Action, Command, Mode};
 use crate::project::Project;
 use fuzzy_matcher::FuzzyMatcher;
@@ -165,7 +166,6 @@ pub fn handle_select_parent(state: &mut AppState) {
                     toggle_node_expanded(
                         tree_root,
                         node.node_type.path(),
-                        state.settings.show_all_folders,
                     );
 
                     // Re-flatten the tree
@@ -195,7 +195,6 @@ pub fn handle_select_child(state: &mut AppState) {
                     toggle_node_expanded(
                         tree_root,
                         node.node_type.path(),
-                        state.settings.show_all_folders,
                     );
 
                     // Re-flatten the tree
@@ -250,23 +249,19 @@ fn load_and_expand_node(
 }
 
 /// Toggle the expanded state of a node by its path
+/// NOTE: This does NOT load children - async loading is handled in main.rs via ExpandDirectory action
 fn toggle_node_expanded(
     node: &mut crate::tree::TreeNode,
     target_path: &std::path::Path,
-    show_all_folders: bool,
 ) {
     if node.node_type.path() == target_path {
-        // If expanding and children not loaded, load them first
-        if !node.expanded && !node.children_loaded {
-            crate::project::load_directory_children(node, show_all_folders);
-        }
         node.toggle_expanded();
         return;
     }
 
     // Recursively search for the node
     for child in &mut node.children {
-        toggle_node_expanded(child, target_path, show_all_folders);
+        toggle_node_expanded(child, target_path);
     }
 }
 
@@ -512,8 +507,73 @@ pub fn handle_palette_select_previous(state: &mut AppState) {
     state.palette.list_state.select(Some(i));
 }
 
-/// Handle starting update wizard
+/// Handle starting update wizard or directory-wide update check
+///
+/// Behavior depends on what the cursor is on:
+/// - **Project**: Opens the update wizard for that single project
+/// - **Directory**: Queues priority background checks for all projects under it (no wizard)
 pub fn handle_start_update_wizard(state: &mut AppState) {
+    use crate::tree::TreeNodeType;
+
+    // Check what type of node is selected
+    let selected_node = state.get_selected_node().cloned();
+
+    match selected_node.as_ref().map(|n| &n.node_type) {
+        Some(TreeNodeType::Project(_)) => {
+            // Single project selected - open the wizard
+            handle_start_update_wizard_for_project(state);
+        }
+        Some(TreeNodeType::Directory { name, .. }) => {
+            // Directory selected - queue all projects under it for background checking
+            // We use is_priority=false because we're NOT opening a wizard for each project
+            // The main.rs async handler will trigger processing after these are queued
+            let projects = state.get_projects_under_selected();
+            let project_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+            let count = project_names.len();
+
+            if count == 0 {
+                // No projects under this directory - nothing to do
+                return;
+            }
+
+            // Store the project names and directory info in state for async handler
+            // The async handler will queue them and start processing
+            state.updater.pending_directory_check = Some(PendingDirectoryCheck {
+                directory_name: name.clone(),
+                project_names,
+            });
+
+            // Show feedback - create a tab to show what we're doing
+            let tab_title = format!("Checking {} ({} projects)", name, count);
+            handle_create_tab(state, tab_title);
+            let tab_index = state.tabs.len().saturating_sub(1);
+            handle_add_output(
+                state,
+                tab_index,
+                format!("Queued {} projects for update check...", count),
+            );
+            handle_add_output(
+                state,
+                tab_index,
+                "Watch the tree view - projects will change color when updates are found.".into(),
+            );
+            handle_add_output(
+                state,
+                tab_index,
+                "Select a specific project and press 'u' to open the update wizard.".into(),
+            );
+
+            // Switch to output pane to show progress
+            state.focus = crate::events::Focus::Output;
+        }
+        None => {
+            // Nothing selected - do nothing
+        }
+    }
+}
+
+/// Handle starting update wizard for a single project
+fn handle_start_update_wizard_for_project(state: &mut AppState) {
     // Clear any stale updater state from previous wizard sessions
     state.updater.outdated_dependencies.clear();
     state.updater.selected_dependencies.clear();
@@ -527,15 +587,11 @@ pub fn handle_start_update_wizard(state: &mut AppState) {
         // CRITICAL: Populate wizard with CURRENT dependency data immediately
         // This ensures the wizard shows up-to-date data even if background check
         // completed BEFORE the wizard opened (race condition fix)
+        // Uses has_stable_update() to properly handle pre-release versions
         let outdated_deps: Vec<_> = project
             .dependencies
             .iter()
-            .filter(|d| {
-                d.latest_version
-                    .as_ref()
-                    .map(|latest| latest != &d.current_version)
-                    .unwrap_or(false)
-            })
+            .filter(|d| d.has_stable_update())
             .cloned()
             .collect();
 
@@ -615,14 +671,10 @@ fn update_project_dependencies(
 }
 
 fn update_wizard_dependencies(state: &mut AppState, deps: Vec<crate::project::Dependency>) {
+    // Uses has_stable_update() to properly handle pre-release versions
     state.updater.outdated_dependencies = deps
         .into_iter()
-        .filter(|d| {
-            d.latest_version
-                .as_ref()
-                .map(|latest| latest != &d.current_version)
-                .unwrap_or(false)
-        })
+        .filter(|d| d.has_stable_update())
         .collect();
 
     if !state.updater.outdated_dependencies.is_empty() {
@@ -691,15 +743,11 @@ pub fn handle_update_single_dependency(
 
         // ONLY update wizard display if this is the LOCKED project
         if is_wizard_locked_project {
+            // Uses has_stable_update() to properly handle pre-release versions
             state.updater.outdated_dependencies = proj
                 .dependencies
                 .iter()
-                .filter(|d| {
-                    d.latest_version
-                        .as_ref()
-                        .map(|latest| latest != &d.current_version)
-                        .unwrap_or(false)
-                })
+                .filter(|d| d.has_stable_update())
                 .cloned()
                 .collect();
         }
@@ -1000,37 +1048,58 @@ fn load_crates_directories_recursively(node: &mut crate::tree::TreeNode, show_al
 
 /// Handle calculating sizes for all projects
 /// This spawns async tasks to calculate sizes in the background
+/// Maximum concurrent size calculations to prevent I/O overload
+const MAX_CONCURRENT_SIZE_CALCS: usize = 3;
+
 pub async fn handle_calculate_project_sizes(
     state: &AppState,
     action_tx: tokio::sync::mpsc::Sender<Action>,
 ) {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    // Limit concurrent size calculations to prevent I/O contention and UI lag
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_SIZE_CALCS));
+
     for project in &state.all_projects {
         let project_name = project.name.clone();
         let project_path = project.path.clone();
         let tx = action_tx.clone();
+        let sem = semaphore.clone();
 
         // For workspace members, we need to check the workspace root for target/
         let workspace_root = project.workspace_root.clone();
 
-        // Spawn task to calculate sizes in background
+        // Spawn task to calculate sizes in background with concurrency limiting
         tokio::spawn(async move {
-            let total_size = crate::project::calculate_directory_size(&project_path);
+            // Acquire semaphore permit (limits concurrent calculations)
+            let _permit = sem.acquire().await.ok();
 
-            // For workspace members, look for target/ at workspace root
-            // For standalone projects, look in the project directory
-            let target_size = {
-                let target_path = if let Some(ws_root) = workspace_root {
-                    ws_root.join("target")
-                } else {
-                    project_path.join("target")
+            // Use spawn_blocking for the blocking WalkDir I/O operations
+            // This prevents blocking the async executor and causing UI lag
+            let (total_size, target_size) = tokio::task::spawn_blocking(move || {
+                let total_size = crate::project::calculate_directory_size(&project_path);
+
+                // For workspace members, look for target/ at workspace root
+                // For standalone projects, look in the project directory
+                let target_size = {
+                    let target_path = if let Some(ws_root) = workspace_root {
+                        ws_root.join("target")
+                    } else {
+                        project_path.join("target")
+                    };
+
+                    if target_path.exists() && target_path.is_dir() {
+                        crate::project::calculate_directory_size(&target_path)
+                    } else {
+                        Some(0)
+                    }
                 };
 
-                if target_path.exists() && target_path.is_dir() {
-                    crate::project::calculate_directory_size(&target_path)
-                } else {
-                    Some(0)
-                }
-            };
+                (total_size, target_size)
+            })
+            .await
+            .unwrap_or((None, None));
 
             // Send update back to main thread
             let _ = tx
@@ -1092,5 +1161,105 @@ fn update_project_size_in_tree(
 
     for child in &mut node.children {
         update_project_size_in_tree(child, project_name, total_size, target_size);
+    }
+}
+
+/// Handle initializing the tree with a shallow scan (non-blocking)
+pub fn handle_initialize_tree(state: &mut AppState, target_directory: String) {
+    // Build root node only (fast, no I/O) - returns immediately
+    let tree_root = crate::project::build_project_tree(&target_directory);
+
+    state.tree_root = Some(tree_root.clone());
+    state.flattened_tree = crate::tree::FlattenedTree::from_tree(&tree_root);
+
+    // Select first item
+    state.tree_state.select(Some(0));
+
+    // Keep in Loading mode while root children load asynchronously
+    // Mode will be set to Normal in handle_directory_loaded once root is loaded
+    state.is_scanning = true;  // Keep scanning flag for other indicators
+}
+
+/// Handle directory loaded async result
+pub fn handle_directory_loaded(
+    state: &mut AppState,
+    path: std::path::PathBuf,
+    children: Vec<crate::tree::TreeNode>,
+) {
+    if let Some(root) = &mut state.tree_root {
+        // Helper to find and update node
+        fn update_node(
+            node: &mut crate::tree::TreeNode,
+            target_path: &std::path::Path,
+            new_children: &[crate::tree::TreeNode],
+        ) -> bool {
+            if node.node_type.path() == target_path {
+                // Fix up depths of children relative to parent
+                node.children = new_children.iter().map(|c| {
+                    let mut child = c.clone();
+                    child.depth = node.depth + 1;
+                    fix_depth_recursive(&mut child, node.depth + 1);
+                    child
+                }).collect();
+                node.children_loaded = true;
+                node.loading = false;
+                node.expanded = true; // Auto expand when loaded
+                return true;
+            }
+            for child in &mut node.children {
+                if update_node(child, target_path, new_children) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        fn fix_depth_recursive(node: &mut crate::tree::TreeNode, depth: usize) {
+            node.depth = depth;
+            for child in &mut node.children {
+                fix_depth_recursive(child, depth + 1);
+            }
+        }
+
+        // Collect projects before moving children into the tree
+        let loaded_projects: Vec<crate::project::Project> = children.iter()
+            .filter_map(|node| {
+                if let crate::tree::TreeNodeType::Project(p) = &node.node_type {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if update_node(root, &path, &children) {
+            // Re-flatten
+            state.flattened_tree = crate::tree::FlattenedTree::from_tree(root);
+
+            // If this is the root directory being loaded, exit Loading mode
+            let root_path = root.node_type.path();
+            if root_path == path {
+                state.mode = Mode::Normal;
+                state.is_scanning = false;
+            }
+        }
+
+        // Process newly loaded projects
+        for project in loaded_projects {
+            // Add to all_projects if not present (avoid duplicates from deep scan)
+            if !state.all_projects.iter().any(|p| p.path == project.path) {
+                state.all_projects.push(project.clone());
+                // Also add to filtered list if it has deps
+                if !project.dependencies.is_empty() {
+                    state.projects.push(project.clone());
+                }
+            }
+
+            // Queue background update check if enabled (not priority - those are for user-initiated checks)
+            if state.settings.background_updates_enabled && !project.dependencies.is_empty() {
+                // is_priority=false: these are background checks, user-initiated checks use priority=true
+                handle_queue_background_update(state, project.name, false);
+            }
+        }
     }
 }

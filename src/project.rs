@@ -34,6 +34,15 @@ pub enum DependencyCheckStatus {
     Checked,
 }
 
+/// Status of git repository
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum GitStatus {
+    #[default]
+    Clean,
+    Dirty,
+    Unknown,
+}
+
 /// Visual status of a project's update check state
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ProjectCheckStatus {
@@ -75,6 +84,106 @@ impl From<&LockPackage> for Dependency {
     }
 }
 
+impl Dependency {
+    /// Check if a version string is a pre-release (beta, rc, alpha, etc.)
+    pub fn is_prerelease(version: &str) -> bool {
+        semver::Version::parse(version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Check if this dependency has a newer stable version available
+    /// Returns true only if:
+    /// - Latest version is available and different from current
+    /// - If current is stable, latest must also be stable (ignore pre-releases)
+    /// - If current is pre-release, any newer version counts
+    pub fn has_stable_update(&self) -> bool {
+        let Some(ref latest) = self.latest_version else {
+            return false;
+        };
+
+        // If versions are the same, no update
+        if latest == &self.current_version {
+            return false;
+        }
+
+        // Parse both versions
+        let current_semver = semver::Version::parse(&self.current_version).ok();
+        let latest_semver = semver::Version::parse(latest).ok();
+
+        match (current_semver, latest_semver) {
+            (Some(current), Some(latest_ver)) => {
+                // If current is stable but latest is pre-release, don't flag as update
+                if current.pre.is_empty() && !latest_ver.pre.is_empty() {
+                    return false;
+                }
+                // Otherwise, if latest is greater, it's an update
+                latest_ver > current
+            }
+            _ => {
+                // Fallback: simple string comparison if parsing fails
+                latest != &self.current_version
+            }
+        }
+    }
+
+    /// Get update type description for display
+    pub fn update_type(&self) -> Option<&'static str> {
+        let latest = self.latest_version.as_ref()?;
+
+        if latest == &self.current_version {
+            return None;
+        }
+
+        let current_is_pre = Self::is_prerelease(&self.current_version);
+        let latest_is_pre = Self::is_prerelease(latest);
+
+        match (current_is_pre, latest_is_pre) {
+            (false, true) => Some("pre-release"), // Stable → pre-release (usually skip)
+            (true, false) => Some("stable"),      // Pre-release → stable (upgrade!)
+            (false, false) => Some("stable"),     // Stable → stable
+            (true, true) => Some("pre-release"),  // Pre-release → pre-release
+        }
+    }
+
+    /// Check if the update requires a major version bump
+    /// Returns true if the latest version has a different major version than current
+    /// This typically means `cargo update` can't auto-update - requires Cargo.toml change
+    pub fn is_major_update(&self) -> bool {
+        let Some(ref latest) = self.latest_version else {
+            return false;
+        };
+
+        let current_semver = semver::Version::parse(&self.current_version).ok();
+        let latest_semver = semver::Version::parse(latest).ok();
+
+        match (current_semver, latest_semver) {
+            (Some(current), Some(latest_ver)) => {
+                // For 0.x versions, minor version changes are breaking
+                if current.major == 0 {
+                    current.minor != latest_ver.minor || current.major != latest_ver.major
+                } else {
+                    current.major != latest_ver.major
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Get a note about the update constraint, if any
+    pub fn update_note(&self) -> Option<&'static str> {
+        if !self.has_stable_update() {
+            return None;
+        }
+
+        if self.is_major_update() {
+            Some("requires Cargo.toml change")
+        } else {
+            None
+        }
+    }
+}
+
 /// Represents a Rust project with metadata and dependencies
 ///
 /// A project is identified by its `Cargo.toml` file and contains metadata about the project
@@ -102,6 +211,8 @@ pub struct Project {
     pub cargo_lock_hash: Option<u64>,
     /// Visual status of update checking for UI display
     pub check_status: ProjectCheckStatus,
+    /// Git status of the project
+    pub git_status: GitStatus,
     /// Total size of the project directory in bytes (calculated on demand)
     pub total_size: Option<u64>,
     /// Size of the target/ directory in bytes (potential savings from cargo clean)
@@ -109,6 +220,30 @@ pub struct Project {
 }
 
 impl Project {
+    #[allow(dead_code)]  // Kept for potential async git checking in future
+    fn check_git_status(path: &Path) -> GitStatus {
+        use std::process::Command;
+        // Run git status --porcelain to check for modifications
+        // We run it on the specific path to handle monorepos correctly
+        let output = Command::new("git")
+            .arg("status")
+            .arg("--porcelain")
+            .arg(".") // Check only this directory and subdirectories
+            .current_dir(path)
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                if output.stdout.is_empty() {
+                    GitStatus::Clean
+                } else {
+                    GitStatus::Dirty
+                }
+            }
+            _ => GitStatus::Unknown,
+        }
+    }
+
     fn from_toml(
         path: &Path,
         toml: &CargoToml,
@@ -173,6 +308,7 @@ impl Project {
             workspace_name,
             cargo_lock_hash: None, // No hash available here, will be calculated later
             check_status: ProjectCheckStatus::Unchecked, // Start as unchecked
+            git_status: GitStatus::Unknown, // Check git status asynchronously
             total_size: None,      // Calculate on demand
             target_size: None,     // Calculate on demand
         })
@@ -257,15 +393,12 @@ impl Project {
     /// Compute the project check status based on current dependencies
     ///
     /// Examines all dependencies to determine if any have available updates.
-    /// Returns `HasUpdates` if any dependency has a newer version available,
+    /// Uses `has_stable_update()` to properly handle pre-release versions -
+    /// a stable version won't be flagged for update to a pre-release.
+    /// Returns `HasUpdates` if any dependency has a newer stable version available,
     /// otherwise returns `UpToDate`.
     pub fn compute_check_status_from_deps(deps: &[Dependency]) -> ProjectCheckStatus {
-        let has_updates = deps.iter().any(|d| {
-            d.latest_version
-                .as_ref()
-                .map(|latest| latest != &d.current_version)
-                .unwrap_or(false)
-        });
+        let has_updates = deps.iter().any(|d| d.has_stable_update());
 
         if has_updates {
             ProjectCheckStatus::HasUpdates
@@ -654,25 +787,17 @@ fn directory_contains_rust_projects(path: &Path) -> bool {
     false
 }
 
-/// Load children for a directory node (lazy loading)
-/// This scans only the immediate children (1 level deep)
-///
-/// If `show_all_folders` is false, only directories containing Rust projects (Cargo.toml) are shown.
-/// If `show_all_folders` is true, all directories are shown.
-pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
-    if node.children_loaded {
-        return; // Already loaded
-    }
-
-    let dir_path = match &node.node_type {
-        crate::tree::TreeNodeType::Directory { path, .. } => path,
-        _ => return, // Not a directory
-    };
+/// Load children for a directory node (lazy loading) - Async friendly version
+/// Returns a vector of children nodes
+pub fn load_directory_children_async(
+    dir_path: &Path,
+    depth: usize,
+    show_all_folders: bool,
+) -> Vec<crate::tree::TreeNode> {
+    let mut children = Vec::new();
 
     // Scan for Rust projects directly in this directory
     if let Ok(entries) = std::fs::read_dir(dir_path) {
-        let mut children = Vec::new();
-
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
 
@@ -709,10 +834,13 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                                 // It's a workspace root - treat as expandable directory
                                 // Even if it also has a [package] section, prioritize showing members
                                 if show_all_folders || directory_contains_rust_projects(&path) {
-                                    let mut dir_node = build_tree_level_only(&path, node.depth + 1);
-                                    // Auto-expand workspace roots and load their children to show members
-                                    dir_node.expanded = true;
+                                    let mut dir_node = build_tree_level_only(&path, depth + 1);
+                                    // Load children eagerly so "crates" dirs can be auto-expanded
+                                    // NOTE: For async version, we might want to skip this eager loading or make it recursive?
+                                    // For now, let's keep it consistent but synchronous for this sublevel
                                     load_directory_children(&mut dir_node, show_all_folders);
+                                    // But keep the workspace itself collapsed - user can expand with h/l or ←/→
+                                    dir_node.expanded = false;
                                     children.push(dir_node);
                                 }
                             } else if toml.package.is_some() {
@@ -740,11 +868,12 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                                     cargo_lock_hash: None,
                                     status: ProjectStatus::Pending,
                                     check_status: ProjectCheckStatus::Unchecked,
+                                    git_status: GitStatus::Unknown, // Check asynchronously
                                     total_size: None,  // Calculate on demand
                                     target_size: None, // Calculate on demand
                                 };
                                 let project_node =
-                                    crate::tree::TreeNode::project(project, node.depth + 1);
+                                    crate::tree::TreeNode::project(project, depth + 1);
                                 children.push(project_node);
                             }
                         }
@@ -752,7 +881,7 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                 } else {
                     // No Cargo.toml - check if we should show it as a directory
                     if show_all_folders || directory_contains_rust_projects(&path) {
-                        let dir_node = build_tree_level_only(&path, node.depth + 1);
+                        let dir_node = build_tree_level_only(&path, depth + 1);
                         // Don't override expanded state - build_tree_level_only sets it correctly
                         // (e.g., "crates" directories are auto-expanded)
                         children.push(dir_node);
@@ -760,30 +889,47 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
                 }
             }
         }
-
-        // Sort children: directories first, then projects, alphabetically within each group
-        children.sort_by(|a, b| match (&a.node_type, &b.node_type) {
-            (
-                crate::tree::TreeNodeType::Directory { name: a_name, .. },
-                crate::tree::TreeNodeType::Directory { name: b_name, .. },
-            ) => a_name.cmp(b_name),
-            (
-                crate::tree::TreeNodeType::Project(a_proj),
-                crate::tree::TreeNodeType::Project(b_proj),
-            ) => a_proj.name.cmp(&b_proj.name),
-            (
-                crate::tree::TreeNodeType::Directory { .. },
-                crate::tree::TreeNodeType::Project(_),
-            ) => std::cmp::Ordering::Less,
-            (
-                crate::tree::TreeNodeType::Project(_),
-                crate::tree::TreeNodeType::Directory { .. },
-            ) => std::cmp::Ordering::Greater,
-        });
-
-        node.children = children;
     }
 
+    // Sort children
+    children.sort_by(|a, b| match (&a.node_type, &b.node_type) {
+        (
+            crate::tree::TreeNodeType::Directory { name: a_name, .. },
+            crate::tree::TreeNodeType::Directory { name: b_name, .. },
+        ) => a_name.cmp(b_name),
+        (
+            crate::tree::TreeNodeType::Project(a_proj),
+            crate::tree::TreeNodeType::Project(b_proj),
+        ) => a_proj.name.cmp(&b_proj.name),
+        (
+            crate::tree::TreeNodeType::Directory { .. },
+            crate::tree::TreeNodeType::Project(_),
+        ) => std::cmp::Ordering::Less,
+        (
+            crate::tree::TreeNodeType::Project(_),
+            crate::tree::TreeNodeType::Directory { .. },
+        ) => std::cmp::Ordering::Greater,
+    });
+
+    children
+}
+
+/// Load children for a directory node (lazy loading)
+/// This scans only the immediate children (1 level deep)
+///
+/// If `show_all_folders` is false, only directories containing Rust projects (Cargo.toml) are shown.
+/// If `show_all_folders` is true, all directories are shown.
+pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
+    if node.children_loaded {
+        return; // Already loaded
+    }
+
+    let dir_path = match &node.node_type {
+        crate::tree::TreeNodeType::Directory { path, .. } => path,
+        _ => return, // Not a directory
+    };
+
+    node.children = load_directory_children_async(dir_path, node.depth, show_all_folders);
     node.children_loaded = true;
 }
 
@@ -924,6 +1070,144 @@ serde = { workspace = true }
         assert_eq!(dep.current_version, "1.2.3");
         assert_eq!(dep.check_status, DependencyCheckStatus::NotChecked);
         assert!(dep.latest_version.is_none());
+    }
+
+    #[test]
+    fn test_is_prerelease() {
+        // Stable versions
+        assert!(!Dependency::is_prerelease("1.0.0"));
+        assert!(!Dependency::is_prerelease("2.3.4"));
+        assert!(!Dependency::is_prerelease("0.1.0"));
+
+        // Pre-release versions
+        assert!(Dependency::is_prerelease("1.0.0-beta.1"));
+        assert!(Dependency::is_prerelease("2.0.0-rc.1"));
+        assert!(Dependency::is_prerelease("1.0.0-alpha"));
+        assert!(Dependency::is_prerelease("0.5.0-pre"));
+
+        // Invalid versions (fallback to false)
+        assert!(!Dependency::is_prerelease("not-a-version"));
+    }
+
+    #[test]
+    fn test_has_stable_update_stable_to_stable() {
+        // Stable → newer stable = update
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("1.1.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert!(dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_has_stable_update_stable_to_prerelease() {
+        // Stable → pre-release = NO update (user is on stable, don't suggest beta)
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("2.0.0-beta.1".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert!(!dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_has_stable_update_prerelease_to_stable() {
+        // Pre-release → stable = update (user should upgrade to stable)
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "2.0.0-beta.1".into(),
+            latest_version: Some("2.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert!(dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_has_stable_update_prerelease_to_newer_prerelease() {
+        // Pre-release → newer pre-release = update
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "2.0.0-beta.1".into(),
+            latest_version: Some("2.0.0-beta.2".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert!(dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_has_stable_update_same_version() {
+        // Same version = no update
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("1.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert!(!dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_has_stable_update_no_latest() {
+        // No latest version = no update
+        let dep = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: None,
+            check_status: DependencyCheckStatus::NotChecked,
+            last_checked: None,
+        };
+        assert!(!dep.has_stable_update());
+    }
+
+    #[test]
+    fn test_update_type() {
+        // Stable → stable
+        let dep1 = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("2.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert_eq!(dep1.update_type(), Some("stable"));
+
+        // Stable → pre-release
+        let dep2 = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("2.0.0-beta.1".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert_eq!(dep2.update_type(), Some("pre-release"));
+
+        // Pre-release → stable
+        let dep3 = Dependency {
+            name: "test".into(),
+            current_version: "2.0.0-beta.1".into(),
+            latest_version: Some("2.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert_eq!(dep3.update_type(), Some("stable"));
+
+        // Same version = no update type
+        let dep4 = Dependency {
+            name: "test".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("1.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert_eq!(dep4.update_type(), None);
     }
 
     #[test]

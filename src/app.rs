@@ -211,6 +211,42 @@ impl AppState {
             None
         }
     }
+
+    /// Get the currently selected tree node (could be project OR directory)
+    pub fn get_selected_node(&self) -> Option<&crate::tree::TreeNode> {
+        self.tree_state
+            .selected()
+            .and_then(|idx| self.flattened_tree.items.get(idx))
+            .map(|(node, _)| node)
+    }
+
+    /// Get all projects under the currently selected node
+    /// - If cursor is on a project: returns just that project
+    /// - If cursor is on a directory: returns all projects under that directory
+    pub fn get_projects_under_selected(&self) -> Vec<&Project> {
+        if let Some(node) = self.get_selected_node() {
+            match &node.node_type {
+                crate::tree::TreeNodeType::Project(tree_project) => {
+                    // Return the actual project from all_projects (has updated dependencies)
+                    self.all_projects
+                        .iter()
+                        .filter(|p| p.name == tree_project.name)
+                        .collect()
+                }
+                crate::tree::TreeNodeType::Directory { .. } => {
+                    // Collect all projects under this directory
+                    let tree_projects = node.collect_projects();
+                    // Map to actual projects from all_projects (has updated dependencies)
+                    tree_projects
+                        .into_iter()
+                        .filter_map(|tp| self.all_projects.iter().find(|p| p.name == tp.name))
+                        .collect()
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Main reducer function that dispatches actions to appropriate handlers
@@ -302,6 +338,11 @@ pub fn reducer(state: &mut AppState, action: Action) {
             handle_update_project_size(state, project_name, total_size, target_size)
         }
         Action::FocusNext => handle_focus_next(state),
+        Action::InitializeTree(target_dir) => handle_initialize_tree(state, target_dir),
+        Action::ExpandDirectory(..) => {
+            // Handled in main loop asynchronously
+        }
+        Action::DirectoryLoaded(path, children) => handle_directory_loaded(state, path, children),
     }
 }
 
@@ -324,6 +365,7 @@ mod tests {
             workspace_name: None,
             cargo_lock_hash: None,
             check_status: crate::project::ProjectCheckStatus::Unchecked,
+            git_status: crate::project::GitStatus::Clean,
             total_size: None,
             target_size: None,
         }

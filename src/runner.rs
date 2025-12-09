@@ -196,16 +196,16 @@ async fn check_single_dependency(
                 updated_dep.last_checked = Some(SystemTime::now());
             }
         }
-    } else {
-        updated_dep.check_status = DependencyCheckStatus::Checked;
-    }
 
-    let _ = tx
-        .send(Action::UpdateSingleDependency(
-            project_name.to_string(),
-            updated_dep.clone(),
-        ))
-        .await;
+        // Only send update for deps we actually checked (avoid redundant UI updates)
+        let _ = tx
+            .send(Action::UpdateSingleDependency(
+                project_name.to_string(),
+                updated_dep.clone(),
+            ))
+            .await;
+    }
+    // Skip sending UpdateSingleDependency for cached deps - they're already up to date
 
     Some(updated_dep)
 }
@@ -298,23 +298,30 @@ async fn recalculate_project_size(project: &Project, tx: &mpsc::Sender<Action>) 
     let tx = tx.clone();
 
     tokio::spawn(async move {
-        let total_size = crate::project::calculate_directory_size(&project_path);
+        // Use spawn_blocking for blocking WalkDir I/O to prevent UI lag
+        let (total_size, target_size) = tokio::task::spawn_blocking(move || {
+            let total_size = crate::project::calculate_directory_size(&project_path);
 
-        // For workspace members, look for target/ at workspace root
-        // For standalone projects, look in the project directory
-        let target_size = {
-            let target_path = if let Some(ws_root) = workspace_root {
-                ws_root.join("target")
-            } else {
-                project_path.join("target")
+            // For workspace members, look for target/ at workspace root
+            // For standalone projects, look in the project directory
+            let target_size = {
+                let target_path = if let Some(ws_root) = workspace_root {
+                    ws_root.join("target")
+                } else {
+                    project_path.join("target")
+                };
+
+                if target_path.exists() && target_path.is_dir() {
+                    crate::project::calculate_directory_size(&target_path)
+                } else {
+                    Some(0)
+                }
             };
 
-            if target_path.exists() && target_path.is_dir() {
-                crate::project::calculate_directory_size(&target_path)
-            } else {
-                Some(0)
-            }
-        };
+            (total_size, target_size)
+        })
+        .await
+        .unwrap_or((None, None));
 
         // Send update back to main thread
         let _ = tx
@@ -460,27 +467,40 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
         for (_ws_root, group) in workspace_groups {
             let has_shared_target = group.len() > 1 && group[0].1.workspace_root.is_some();
 
-            for (i, project) in group {
+            if has_shared_target {
+                // Spawn a single background task to run workspace member cleans sequentially
+                // This prevents race conditions while keeping the UI responsive
                 let tx = tx.clone();
                 let command_str = command_str.to_string();
-                let tab_title = format!("{}: {}", command_str, project.name);
-                let tab_index = start_tab_count + i;
 
-                let _ = tx.send(Action::CreateTab(tab_title)).await;
+                tokio::spawn(async move {
+                    for (i, project) in group {
+                        let tab_title = format!("{}: {}", command_str, project.name);
+                        let tab_index = start_tab_count + i;
 
-                if has_shared_target {
-                    // Run sequentially for workspace members sharing a target
-                    if let Err(e) =
-                        spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
-                    {
-                        let _ = tx
-                            .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
-                            .await;
+                        let _ = tx.send(Action::CreateTab(tab_title)).await;
+
+                        if let Err(e) =
+                            spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
+                        {
+                            let _ = tx
+                                .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
+                                .await;
+                        }
+                        recalculate_project_size(&project, &tx).await;
+                        let _ = tx.send(Action::FinishCommand(tab_index)).await;
                     }
-                    recalculate_project_size(&project, &tx).await;
-                    let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                } else {
-                    // Run in parallel for standalone projects
+                });
+            } else {
+                // Run in parallel for standalone projects
+                for (i, project) in group {
+                    let tx = tx.clone();
+                    let command_str = command_str.to_string();
+                    let tab_title = format!("{}: {}", command_str, project.name);
+                    let tab_index = start_tab_count + i;
+
+                    let _ = tx.send(Action::CreateTab(tab_title)).await;
+
                     tokio::spawn(async move {
                         if let Err(e) =
                             spawn_and_stream_command(&command_str, &project, &tx, tab_index).await

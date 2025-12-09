@@ -24,9 +24,10 @@ impl TreeView {
     }
 
     /// Get the display name for a node with proper indentation and expand/collapse indicators
-    fn format_tree_line(state: &AppState, node_index: usize) -> String {
+    /// Returns: (text, is_loading) tuple
+    fn format_tree_line(state: &AppState, node_index: usize) -> (String, bool) {
         if node_index >= state.flattened_tree.items.len() {
-            return String::new();
+            return (String::new(), false);
         }
 
         let (node, _) = &state.flattened_tree.items[node_index];
@@ -34,11 +35,18 @@ impl TreeView {
 
         match &node.node_type {
             TreeNodeType::Directory { name, .. } => {
-                let indicator = if node.expanded { "▾" } else { "▸" };
-                format!("{}{} {}", indent, indicator, name)
+                let indicator = if node.loading {
+                    // Show spinner when loading
+                    "⠹".to_string()
+                } else if node.expanded {
+                    "▾".to_string()
+                } else {
+                    "▸".to_string()
+                };
+                (format!("{}{} {}", indent, indicator, name), node.loading)
             }
             TreeNodeType::Project(_) => {
-                format!("{}  • {}", indent, node.node_type.name())
+                (format!("{}  • {}", indent, node.node_type.name()), false)
             }
         }
     }
@@ -53,7 +61,8 @@ impl TreeView {
 
         match &node.node_type {
             TreeNodeType::Directory { .. } => {
-                if is_selected {
+                // Loading or selected directories get cyan, others get muted purple
+                if node.loading || is_selected {
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
@@ -124,7 +133,7 @@ impl Component for TreeView {
             .map(|(idx, (node, _))| {
                 let is_selected = state.tree_selection.selected_index == Some(idx);
                 let style = Self::get_node_style(state, idx, is_selected);
-                let line_text = Self::format_tree_line(state, idx);
+                let (line_text, _is_loading) = Self::format_tree_line(state, idx);
 
                 // For projects, add status indicator
                 let line = match &node.node_type {

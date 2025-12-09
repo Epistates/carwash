@@ -16,10 +16,14 @@ pub mod palette;
 pub mod progress;
 pub mod projects;
 pub mod settings;
+pub mod spinner;
 pub mod status;
 pub mod text_input;
 pub mod tree_view;
 pub mod updater;
+
+// Re-export commonly used types
+pub use updater::PendingDirectoryCheck;
 
 /// Trait for UI components in CarWash
 ///

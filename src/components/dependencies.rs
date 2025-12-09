@@ -22,8 +22,7 @@ impl DependenciesPane {
     // ... (new function remains the same)
 
     fn create_dependency_list_item<'a>(dep: &'a crate::project::Dependency) -> ListItem<'a> {
-        let is_outdated = dep.latest_version.is_some()
-            && dep.latest_version.as_ref().unwrap() != &dep.current_version;
+        let is_outdated = dep.has_stable_update();
 
         let (icon, style) = match dep.check_status {
             DependencyCheckStatus::NotChecked => ("⋯", Style::default().fg(Color::DarkGray)),
@@ -43,7 +42,7 @@ impl DependenciesPane {
         };
 
         let line = if is_outdated && dep.check_status == DependencyCheckStatus::Checked {
-            ratatui::text::Line::from(vec![
+            let mut spans = vec![
                 ratatui::text::Span::styled(icon, style),
                 ratatui::text::Span::raw(" "),
                 ratatui::text::Span::styled(&dep.name, Style::default().fg(Color::White)),
@@ -59,7 +58,19 @@ impl DependenciesPane {
                         .fg(Color::Yellow)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
-            ])
+            ];
+
+            // Add note for major version updates that require Cargo.toml change
+            if let Some(note) = dep.update_note() {
+                spans.push(ratatui::text::Span::styled(
+                    format!(" ({})", note),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(ratatui::style::Modifier::ITALIC),
+                ));
+            }
+
+            ratatui::text::Line::from(spans)
         } else {
             let status_text = match dep.check_status {
                 DependencyCheckStatus::NotChecked => " (not checked)",
@@ -141,8 +152,7 @@ impl Component for DependenciesPane {
                 .dependencies
                 .iter()
                 .map(|dep| {
-                    let is_outdated = dep.latest_version.is_some()
-                        && dep.latest_version.as_ref().unwrap() != &dep.current_version;
+                    let is_outdated = dep.has_stable_update();
 
                     if is_outdated {
                         outdated_count += 1;

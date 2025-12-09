@@ -101,6 +101,15 @@ impl ProjectList {
             ratatui::text::Span::styled(&project.name, name_style),
         ];
 
+        // Git status indicator
+        if project.git_status == crate::project::GitStatus::Dirty {
+             spans.push(ratatui::text::Span::raw(" "));
+             spans.push(ratatui::text::Span::styled(
+                 crate::ui::styles::StatusSymbols::GIT_DIRTY,
+                 Style::default().fg(colors.warning).add_modifier(Modifier::BOLD),
+             ));
+        }
+
         // Add size information if available
         if let Some(target_size) = project.target_size {
             let size_str = crate::project::Project::format_size(target_size);
@@ -263,6 +272,7 @@ impl Component for ProjectList {
             .block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(title)
                     .border_style(Style::default().fg(border_color)),
             )

@@ -63,6 +63,8 @@ pub struct TreeNode {
     pub expanded: bool,
     /// Whether children have been loaded from disk (for lazy loading)
     pub children_loaded: bool,
+    /// Whether children are currently being loaded
+    pub loading: bool,
     /// Depth in the tree (for indentation)
     pub depth: usize,
 }
@@ -75,6 +77,7 @@ impl TreeNode {
             children: Vec::new(),
             expanded: depth == 0, // Only expand root directory by default
             children_loaded: false,
+            loading: false,
             depth,
         }
     }
@@ -86,6 +89,7 @@ impl TreeNode {
             children: Vec::new(),
             expanded: false,
             children_loaded: true, // Projects don't have children
+            loading: false,
             depth,
         }
     }
