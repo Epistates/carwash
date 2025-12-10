@@ -4,6 +4,60 @@ All notable changes to CarWash will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.3] - 2025-12-09
+
+### Performance Improvements
+
+**Eliminated Double-Checking on Update Wizard**
+- Opening the update wizard with 'u' now shows cached results instantly
+- Previously, all dependencies were re-checked one by one even when cache was fresh
+- Now skips the entire check when all dependencies are within cache TTL
+- Individual dependency updates only send UI notifications for deps that actually needed checking
+
+### New Features
+
+**Pre-release Version Detection**
+- Added semver parsing to distinguish stable versions from beta/rc/alpha releases
+- `has_stable_update()` method ignores pre-release versions when checking for updates
+- Prevents suggesting downgrades from stable to pre-release versions
+
+**Major Version Update Indicators**
+- Dependencies pane shows "(requires Cargo.toml change)" for major version updates
+- Update wizard shows "(major)" tag next to dependencies that need manual Cargo.toml edits
+- Helps users understand why `cargo update` alone won't update certain dependencies
+
+**Improved Status Bar**
+- Background activity indicators now shown alongside normal status info:
+  - `⟳ Scanning` - when initial project scan is running
+  - `⟳ Checking` - when update check is in progress
+  - `N queued` - when background update tasks are pending
+- Previously, checking status completely replaced all other status information
+- Mode, focus, selection count, and help hints now always visible
+
+### Bug Fixes
+
+**Ambiguous Package Updates**
+- Fixed "ambiguous package specification" error when multiple versions of a dependency exist
+- Update command now uses `package@version` format (e.g., `ahash@0.8.11`) for precise targeting
+
+**Dependency Reload Timing**
+- Fixed dependencies not refreshing in UI after running `cargo update`
+- Added `pending_reload_project` tracking to defer reload until command completes
+- Dependencies now correctly reload from Cargo.lock after update finishes
+
+**Unnecessary Project Rescanning**
+- Fixed all adjacent projects being rescanned after updating a single project
+- `FinishCommand` action now only routes to async handler when reload is needed
+
+### Dependencies
+
+- Added `semver = "1.0"` for semantic version parsing
+
+### Code Quality
+
+- 91 tests passing
+- Clippy clean with no warnings
+
 ## [0.3.2] - 2025-11-14
 
 ### New Features
