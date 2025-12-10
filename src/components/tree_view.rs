@@ -45,9 +45,7 @@ impl TreeView {
                 };
                 (format!("{}{} {}", indent, indicator, name), node.loading)
             }
-            TreeNodeType::Project(_) => {
-                (format!("{}  • {}", indent, node.node_type.name()), false)
-            }
+            TreeNodeType::Project(_) => (format!("{}  • {}", indent, node.node_type.name()), false),
         }
     }
 

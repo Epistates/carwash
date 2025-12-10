@@ -220,7 +220,7 @@ pub struct Project {
 }
 
 impl Project {
-    #[allow(dead_code)]  // Kept for potential async git checking in future
+    #[allow(dead_code)] // Kept for potential async git checking in future
     fn check_git_status(path: &Path) -> GitStatus {
         use std::process::Command;
         // Run git status --porcelain to check for modifications
@@ -869,8 +869,8 @@ pub fn load_directory_children_async(
                                     status: ProjectStatus::Pending,
                                     check_status: ProjectCheckStatus::Unchecked,
                                     git_status: GitStatus::Unknown, // Check asynchronously
-                                    total_size: None,  // Calculate on demand
-                                    target_size: None, // Calculate on demand
+                                    total_size: None,               // Calculate on demand
+                                    target_size: None,              // Calculate on demand
                                 };
                                 let project_node =
                                     crate::tree::TreeNode::project(project, depth + 1);
@@ -901,14 +901,12 @@ pub fn load_directory_children_async(
             crate::tree::TreeNodeType::Project(a_proj),
             crate::tree::TreeNodeType::Project(b_proj),
         ) => a_proj.name.cmp(&b_proj.name),
-        (
-            crate::tree::TreeNodeType::Directory { .. },
-            crate::tree::TreeNodeType::Project(_),
-        ) => std::cmp::Ordering::Less,
-        (
-            crate::tree::TreeNodeType::Project(_),
-            crate::tree::TreeNodeType::Directory { .. },
-        ) => std::cmp::Ordering::Greater,
+        (crate::tree::TreeNodeType::Directory { .. }, crate::tree::TreeNodeType::Project(_)) => {
+            std::cmp::Ordering::Less
+        }
+        (crate::tree::TreeNodeType::Project(_), crate::tree::TreeNodeType::Directory { .. }) => {
+            std::cmp::Ordering::Greater
+        }
     });
 
     children

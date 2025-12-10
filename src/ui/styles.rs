@@ -118,14 +118,14 @@ impl Colors {
     /// Cosmic theme - Neon Cyans and Deep Purples
     pub fn cosmic() -> Self {
         Self {
-            selection: Color::Rgb(0, 255, 255),    // Neon Cyan
-            success: Color::Rgb(50, 255, 100),     // Bright Green
-            warning: Color::Rgb(255, 200, 0),      // Bright Yellow
-            error: Color::Rgb(255, 50, 80),        // Neon Red
-            muted: Color::Rgb(100, 100, 140),      // Muted Purple
-            text: Color::Rgb(240, 240, 255),       // White-ish
-            dim: Color::Rgb(30, 30, 50),           // Dark Purple
-            primary: Color::Rgb(180, 0, 255),      // Neon Purple
+            selection: Color::Rgb(0, 255, 255), // Neon Cyan
+            success: Color::Rgb(50, 255, 100),  // Bright Green
+            warning: Color::Rgb(255, 200, 0),   // Bright Yellow
+            error: Color::Rgb(255, 50, 80),     // Neon Red
+            muted: Color::Rgb(100, 100, 140),   // Muted Purple
+            text: Color::Rgb(240, 240, 255),    // White-ish
+            dim: Color::Rgb(30, 30, 50),        // Dark Purple
+            primary: Color::Rgb(180, 0, 255),   // Neon Purple
         }
     }
 }

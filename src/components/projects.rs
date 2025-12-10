@@ -103,11 +103,13 @@ impl ProjectList {
 
         // Git status indicator
         if project.git_status == crate::project::GitStatus::Dirty {
-             spans.push(ratatui::text::Span::raw(" "));
-             spans.push(ratatui::text::Span::styled(
-                 crate::ui::styles::StatusSymbols::GIT_DIRTY,
-                 Style::default().fg(colors.warning).add_modifier(Modifier::BOLD),
-             ));
+            spans.push(ratatui::text::Span::raw(" "));
+            spans.push(ratatui::text::Span::styled(
+                crate::ui::styles::StatusSymbols::GIT_DIRTY,
+                Style::default()
+                    .fg(colors.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
         }
 
         // Add size information if available

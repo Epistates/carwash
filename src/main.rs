@@ -388,10 +388,12 @@ async fn run_app<B: Backend>(
     let target_directory_clone = target_directory.clone();
     tokio::spawn(async move {
         let target_dir_for_scan = target_directory_clone.clone();
-        
+
         // This can take a while, but it won't block the UI
-        if let Ok(projects) = tokio::task::spawn_blocking(move || find_rust_projects(&target_dir_for_scan)).await {
-             let _ = action_tx_clone
+        if let Ok(projects) =
+            tokio::task::spawn_blocking(move || find_rust_projects(&target_dir_for_scan)).await
+        {
+            let _ = action_tx_clone
                 .send(Action::FinishProjectScan(projects, target_directory_clone))
                 .await;
         }

@@ -163,10 +163,7 @@ pub fn handle_select_parent(state: &mut AppState) {
                 // Only collapse if it's an expanded directory
                 if node.node_type.is_directory() && node.expanded {
                     // Find and toggle the node
-                    toggle_node_expanded(
-                        tree_root,
-                        node.node_type.path(),
-                    );
+                    toggle_node_expanded(tree_root, node.node_type.path());
 
                     // Re-flatten the tree
                     state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
@@ -192,10 +189,7 @@ pub fn handle_select_child(state: &mut AppState) {
                 // Only expand if it's a collapsed directory
                 if node.node_type.is_directory() && !node.expanded {
                     // Find and toggle the node
-                    toggle_node_expanded(
-                        tree_root,
-                        node.node_type.path(),
-                    );
+                    toggle_node_expanded(tree_root, node.node_type.path());
 
                     // Re-flatten the tree
                     state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
@@ -250,10 +244,7 @@ fn load_and_expand_node(
 
 /// Toggle the expanded state of a node by its path
 /// NOTE: This does NOT load children - async loading is handled in main.rs via ExpandDirectory action
-fn toggle_node_expanded(
-    node: &mut crate::tree::TreeNode,
-    target_path: &std::path::Path,
-) {
+fn toggle_node_expanded(node: &mut crate::tree::TreeNode, target_path: &std::path::Path) {
     if node.node_type.path() == target_path {
         node.toggle_expanded();
         return;
@@ -672,10 +663,8 @@ fn update_project_dependencies(
 
 fn update_wizard_dependencies(state: &mut AppState, deps: Vec<crate::project::Dependency>) {
     // Uses has_stable_update() to properly handle pre-release versions
-    state.updater.outdated_dependencies = deps
-        .into_iter()
-        .filter(|d| d.has_stable_update())
-        .collect();
+    state.updater.outdated_dependencies =
+        deps.into_iter().filter(|d| d.has_stable_update()).collect();
 
     if !state.updater.outdated_dependencies.is_empty() {
         state.updater.list_state.select(Some(0));
@@ -1177,7 +1166,7 @@ pub fn handle_initialize_tree(state: &mut AppState, target_directory: String) {
 
     // Keep in Loading mode while root children load asynchronously
     // Mode will be set to Normal in handle_directory_loaded once root is loaded
-    state.is_scanning = true;  // Keep scanning flag for other indicators
+    state.is_scanning = true; // Keep scanning flag for other indicators
 }
 
 /// Handle directory loaded async result
@@ -1195,12 +1184,15 @@ pub fn handle_directory_loaded(
         ) -> bool {
             if node.node_type.path() == target_path {
                 // Fix up depths of children relative to parent
-                node.children = new_children.iter().map(|c| {
-                    let mut child = c.clone();
-                    child.depth = node.depth + 1;
-                    fix_depth_recursive(&mut child, node.depth + 1);
-                    child
-                }).collect();
+                node.children = new_children
+                    .iter()
+                    .map(|c| {
+                        let mut child = c.clone();
+                        child.depth = node.depth + 1;
+                        fix_depth_recursive(&mut child, node.depth + 1);
+                        child
+                    })
+                    .collect();
                 node.children_loaded = true;
                 node.loading = false;
                 node.expanded = true; // Auto expand when loaded
@@ -1222,7 +1214,8 @@ pub fn handle_directory_loaded(
         }
 
         // Collect projects before moving children into the tree
-        let loaded_projects: Vec<crate::project::Project> = children.iter()
+        let loaded_projects: Vec<crate::project::Project> = children
+            .iter()
             .filter_map(|node| {
                 if let crate::tree::TreeNodeType::Project(p) = &node.node_type {
                     Some(p.clone())
