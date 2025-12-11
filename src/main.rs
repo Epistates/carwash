@@ -172,23 +172,19 @@ async fn handle_event(
                 // Handle normal mode keys without interfering with workspace navigation
                 match key.code {
                     KeyCode::Tab => {
-                        // If Output pane has focus, let it handle Tab for tab switching
-                        // Otherwise, cycle focus between panes
-                        if state.focus == Focus::Output {
-                            let mut output = TabbedOutputPane::new();
-                            output.handle_key_events(key.code, state)
-                        } else {
-                            Some(Action::FocusNext)
-                        }
+                        // Tab always cycles focus between panes
+                        // Output pane uses h/l or Left/Right for tab switching
+                        Some(Action::FocusNext)
                     }
                     KeyCode::BackTab => {
-                        // BackTab always handled by Output pane when it has focus
-                        if state.focus == Focus::Output {
-                            let mut output = TabbedOutputPane::new();
-                            output.handle_key_events(key.code, state)
-                        } else {
-                            None
-                        }
+                        // Shift+Tab: cycle focus backwards
+                        // Output -> Dependencies -> Projects -> Output
+                        state.focus = match state.focus {
+                            Focus::Projects => Focus::Output,
+                            Focus::Dependencies => Focus::Projects,
+                            Focus::Output => Focus::Dependencies,
+                        };
+                        None
                     }
                     KeyCode::Char('q') => Some(Action::Quit),
                     KeyCode::Char('?') => Some(Action::ShowHelp),

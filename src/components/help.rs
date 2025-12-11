@@ -102,12 +102,12 @@ impl Component for Help {
                 Span::raw("Collapse/Expand workspaces"),
             ]),
             Line::from(vec![
-                Span::styled("  Tab          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Cycle focus between panes (or switch output tabs when Output focused)"),
+                Span::styled("  Tab / S-Tab  ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cycle focus between panes"),
             ]),
             Line::from(vec![
                 Span::styled("  Ctrl+[ / ]   ", Style::default().fg(Color::Cyan)),
-                Span::raw("Switch between output tabs (works from any pane)"),
+                Span::raw("Switch output tabs (works from any pane)"),
             ]),
             Line::from(vec![
                 Span::styled("  - / +        ", Style::default().fg(Color::Cyan)),
@@ -219,10 +219,8 @@ impl Component for Help {
             ),
             Line::from("  • Use Tab to cycle focus: Projects → Dependencies → Output"),
             Line::from("  • Focus indicator shows current pane in the status bar"),
-            Line::from(
-                "  • When Output is focused: Tab/Shift+Tab switches tabs, PgUp/PgDown scrolls",
-            ),
-            Line::from("  • Use Ctrl+[ and Ctrl+] to switch tabs from any pane"),
+            Line::from("  • When Output is focused: ←→/hl switches tabs, j/k or PgUp/Dn scrolls"),
+            Line::from("  • Use Ctrl+[ and Ctrl+] to switch output tabs from any pane"),
             Line::from("  • Commands run in parallel across selected projects"),
             Line::from("  • Press 'u' on selected project to check for outdated dependencies"),
         ];

@@ -29,19 +29,16 @@ impl TabbedOutputPane {
 impl Component for TabbedOutputPane {
     fn handle_key_events(&mut self, key: KeyCode, app: &mut AppState) -> Option<Action> {
         match key {
-            KeyCode::Tab => {
-                // Tab: Move to next tab
-                if app.active_tab < app.tabs.len().saturating_sub(1) {
-                    Some(Action::SwitchToTab(app.active_tab + 1))
-                } else if !app.tabs.is_empty() {
-                    // Wrap around to first tab
-                    Some(Action::SwitchToTab(0))
-                } else {
-                    None
-                }
-            }
+            // Tab/Esc: Leave output pane, cycle focus to next pane
+            KeyCode::Tab | KeyCode::Esc => Some(Action::FocusNext),
+            // BackTab: Cycle focus backwards (to Dependencies)
             KeyCode::BackTab => {
-                // Shift+Tab: Move to previous tab
+                // Focus::Output -> Focus::Dependencies (reverse of next())
+                app.focus = Focus::Dependencies;
+                None
+            }
+            // h/Left: Previous output tab
+            KeyCode::Left | KeyCode::Char('h') => {
                 if app.active_tab > 0 {
                     Some(Action::SwitchToTab(app.active_tab - 1))
                 } else if !app.tabs.is_empty() {
@@ -51,11 +48,22 @@ impl Component for TabbedOutputPane {
                     None
                 }
             }
-            KeyCode::PageUp => {
+            // l/Right: Next output tab
+            KeyCode::Right | KeyCode::Char('l') => {
+                if app.active_tab < app.tabs.len().saturating_sub(1) {
+                    Some(Action::SwitchToTab(app.active_tab + 1))
+                } else if !app.tabs.is_empty() {
+                    // Wrap around to first tab
+                    Some(Action::SwitchToTab(0))
+                } else {
+                    None
+                }
+            }
+            KeyCode::PageUp | KeyCode::Char('k') | KeyCode::Up => {
                 self.scroll = self.scroll.saturating_sub(10);
                 None
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown | KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(tab) = app.tabs.get(app.active_tab) {
                     self.scroll = (self.scroll + 10).min(tab.buffer.len().saturating_sub(1));
                 }

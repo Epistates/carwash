@@ -4,6 +4,30 @@ All notable changes to CarWash will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.4] - 2025-12-11
+
+### Bug Fixes
+
+**Output Pane Focus Trap**
+- Fixed being unable to exit the Output pane once focused
+- Tab now consistently cycles focus between panes (Projects → Dependencies → Output)
+- Shift+Tab cycles focus backwards
+- Output tabs now switch with h/l or Left/Right arrow keys (vim-style)
+- Added j/k and Up/Down for scrolling output content
+- Esc also leaves Output pane focus
+
+### UI/UX Improvements
+
+**Consistent Keybindings**
+- Tab/Shift+Tab: Always cycle pane focus, never trapped
+- h/l or ←/→: Switch output tabs (when Output focused), collapse/expand workspaces (when Projects focused)
+- j/k or ↑/↓: Scroll output content (when Output focused), navigate projects (when Projects focused)
+- Ctrl+[ / Ctrl+]: Switch output tabs from any pane (unchanged)
+
+**Updated Help Screen**
+- Clarified keybinding descriptions for new behavior
+- Removed confusing dual-purpose Tab descriptions
+
 ## [0.3.3] - 2025-12-09
 
 ### Performance Improvements

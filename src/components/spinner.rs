@@ -33,18 +33,18 @@ impl Component for Spinner {
         let symbol = frames[idx];
 
         let text = format!(" {} Scanning for projects... ", symbol);
-        
+
         // Calculate center for a small box
         let width = (text.len() as u16) + 2;
         let height = 3;
         let x = area.x + (area.width.saturating_sub(width)) / 2;
         let y = area.y + (area.height.saturating_sub(height)) / 2;
-        
+
         // Ensure we don't draw outside the screen or weirdly
         if x >= area.width || y >= area.height {
-             return;
+            return;
         }
-        
+
         let centered_area = Rect::new(x, y, width, height);
 
         let block = Block::default()
