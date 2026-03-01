@@ -138,7 +138,7 @@ pub async fn check_for_updates(state: &AppState, tx: mpsc::Sender<Action>) {
             tx,
             true,
             Some(project_path),
-            state.settings.cache_duration(),
+            state.config.app.cache_duration(),
         )
         .await;
     }
@@ -264,24 +264,24 @@ pub async fn check_dependencies_with_cache(
         }
     }
 
-    if let Some(path) = project_path {
-        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock")) {
-            let mut cached_deps = std::collections::HashMap::new();
-            for dep in &updated_deps {
-                if dep.latest_version.is_some() {
-                    cached_deps.insert(
-                        dep.name.clone(),
-                        crate::cache::CachedDependency {
-                            latest_version: dep.latest_version.clone(),
-                            cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
-                        },
-                    );
-                }
+    if let Some(path) = project_path
+        && let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock"))
+    {
+        let mut cached_deps = std::collections::HashMap::new();
+        for dep in &updated_deps {
+            if dep.latest_version.is_some() {
+                cached_deps.insert(
+                    dep.name.clone(),
+                    crate::cache::CachedDependency {
+                        latest_version: dep.latest_version.clone(),
+                        cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
+                    },
+                );
             }
+        }
 
-            if !cached_deps.is_empty() {
-                let _ = cache.save(&path, lock_hash, cached_deps.clone());
-            }
+        if !cached_deps.is_empty() {
+            let _ = cache.save(&path, lock_hash, cached_deps.clone());
         }
     }
 
@@ -341,7 +341,9 @@ async fn spawn_and_stream_command(
     tab_index: usize,
 ) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
-    let args: Vec<&str> = command_str.split_whitespace().collect();
+    let args = shlex::split(command_str).unwrap_or_else(|| {
+        command_str.split_whitespace().map(String::from).collect()
+    });
 
     if args.is_empty() {
         anyhow::bail!("Empty command");

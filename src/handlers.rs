@@ -14,7 +14,7 @@ use std::collections::HashSet;
 /// Handle application quit
 pub fn handle_quit(state: &mut AppState) {
     state.should_quit = true;
-    let _ = state.settings.save();
+    let _ = state.config.save();
 }
 
 /// Handle entering normal mode
@@ -41,8 +41,8 @@ pub fn handle_show_settings(state: &mut AppState) {
         .settings_modal
         .cache_minutes_input
         .clone()
-        .with_value(state.settings.cache_ttl_minutes.to_string());
-    state.settings_modal.background_updates_enabled = state.settings.background_updates_enabled;
+        .with_value(state.config.app.cache_ttl_minutes.to_string());
+    state.settings_modal.background_updates_enabled = state.config.app.background_updates_enabled;
     state.settings_modal.error_message = None;
     state.mode = Mode::Settings;
 }
@@ -78,10 +78,10 @@ pub fn handle_finish_project_scan(
     let mut tree_root = crate::project::build_project_tree(&target_directory);
 
     // Load the root level children immediately (since root starts expanded)
-    crate::project::load_directory_children(&mut tree_root, state.settings.show_all_folders);
+    crate::project::load_directory_children(&mut tree_root, state.config.app.show_all_folders);
 
     // Auto-load children for any "crates" directories (they're auto-expanded)
-    load_crates_directories_recursively(&mut tree_root, state.settings.show_all_folders);
+    load_crates_directories_recursively(&mut tree_root, state.config.app.show_all_folders);
 
     state.tree_root = Some(tree_root.clone());
 
@@ -155,20 +155,19 @@ pub fn handle_select_previous(state: &mut AppState) {
 /// Handle selecting parent (collapse directory/workspace)
 pub fn handle_select_parent(state: &mut AppState) {
     // Use tree navigation if tree is available
-    if let Some(tree_root) = &mut state.tree_root {
-        if let Some(selected_idx) = state.tree_state.selected() {
-            if selected_idx < state.flattened_tree.items.len() {
-                let (node, _) = &state.flattened_tree.items[selected_idx];
+    if let Some(tree_root) = &mut state.tree_root
+        && let Some(selected_idx) = state.tree_state.selected()
+        && selected_idx < state.flattened_tree.items.len()
+    {
+        let (node, _) = &state.flattened_tree.items[selected_idx];
 
-                // Only collapse if it's an expanded directory
-                if node.node_type.is_directory() && node.expanded {
-                    // Find and toggle the node
-                    toggle_node_expanded(tree_root, node.node_type.path());
+        // Only collapse if it's an expanded directory
+        if node.node_type.is_directory() && node.expanded {
+            // Find and toggle the node
+            toggle_node_expanded(tree_root, node.node_type.path());
 
-                    // Re-flatten the tree
-                    state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
-                }
-            }
+            // Re-flatten the tree
+            state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
         }
     } else {
         // Fallback to old workspace-based collapse
@@ -181,20 +180,19 @@ pub fn handle_select_parent(state: &mut AppState) {
 /// Handle selecting child (expand directory/workspace)
 pub fn handle_select_child(state: &mut AppState) {
     // Use tree navigation if tree is available
-    if let Some(tree_root) = &mut state.tree_root {
-        if let Some(selected_idx) = state.tree_state.selected() {
-            if selected_idx < state.flattened_tree.items.len() {
-                let (node, _) = &state.flattened_tree.items[selected_idx];
+    if let Some(tree_root) = &mut state.tree_root
+        && let Some(selected_idx) = state.tree_state.selected()
+        && selected_idx < state.flattened_tree.items.len()
+    {
+        let (node, _) = &state.flattened_tree.items[selected_idx];
 
-                // Only expand if it's a collapsed directory
-                if node.node_type.is_directory() && !node.expanded {
-                    // Find and toggle the node
-                    toggle_node_expanded(tree_root, node.node_type.path());
+        // Only expand if it's a collapsed directory
+        if node.node_type.is_directory() && !node.expanded {
+            // Find and toggle the node
+            toggle_node_expanded(tree_root, node.node_type.path());
 
-                    // Re-flatten the tree
-                    state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
-                }
-            }
+            // Re-flatten the tree
+            state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
         }
     } else {
         // Fallback to old workspace-based expand
@@ -279,7 +277,7 @@ pub fn handle_toggle_selection(state: &mut AppState) {
             // so we can actually select the projects inside
             if let Some(tree_root) = &mut state.tree_root {
                 let path_clone = path.clone();
-                let show_all_folders = state.settings.show_all_folders;
+                let show_all_folders = state.config.app.show_all_folders;
 
                 // Load children if not already loaded, and expand the directory
                 load_and_expand_node(tree_root, &path_clone, show_all_folders);
@@ -364,34 +362,34 @@ pub fn handle_save_settings(state: &mut AppState) {
         }
     };
 
-    let mut new_settings = state.settings.clone();
+    let mut new_settings = state.config.app.clone();
     let was_background_enabled = new_settings.background_updates_enabled;
     new_settings.cache_ttl_minutes = minutes;
     new_settings.background_updates_enabled = state.settings_modal.background_updates_enabled;
 
-    if let Err(err) = new_settings.save() {
+    state.config.app = new_settings;
+    if let Err(err) = state.config.save() {
         state.settings_modal.error_message = Some(format!("Failed to save settings: {}", err));
         return;
     }
 
-    state.settings = new_settings;
     state.settings_modal.error_message = None;
     state.mode = Mode::Normal;
 
-    if !state.settings.background_updates_enabled {
+    if !state.config.app.background_updates_enabled {
         state.update_queue.clear();
         state.is_checking_updates = false;
         return;
     }
 
-    if !was_background_enabled && state.settings.background_updates_enabled {
+    if !was_background_enabled && state.config.app.background_updates_enabled {
         queue_background_updates_on_enable(state);
     }
 }
 
 fn queue_background_updates_on_enable(state: &mut AppState) {
     let now = std::time::SystemTime::now();
-    let cache_duration = state.settings.cache_duration();
+    let cache_duration = state.config.app.cache_duration();
 
     for project in &state.all_projects {
         if project.dependencies.is_empty() {
@@ -609,12 +607,11 @@ fn handle_start_update_wizard_for_project(state: &mut AppState) {
 
 /// Handle toggling update selection
 pub fn handle_toggle_update_selection(state: &mut AppState) {
-    if let Some(index) = state.updater.list_state.selected() {
-        if let Some(dep) = state.updater.outdated_dependencies.get(index) {
-            if !state.updater.selected_dependencies.remove(&dep.name) {
-                state.updater.selected_dependencies.insert(dep.name.clone());
-            }
-        }
+    if let Some(index) = state.updater.list_state.selected()
+        && let Some(dep) = state.updater.outdated_dependencies.get(index)
+        && !state.updater.selected_dependencies.remove(&dep.name)
+    {
+        state.updater.selected_dependencies.insert(dep.name.clone());
     }
 }
 
@@ -714,14 +711,12 @@ pub fn handle_update_single_dependency(
         .all_projects
         .iter_mut()
         .find(|p| p.name == project_name)
-    {
-        if let Some(existing_dep) = all_proj
+        && let Some(existing_dep) = all_proj
             .dependencies
             .iter_mut()
             .find(|d| d.name == dep.name)
-        {
-            *existing_dep = dep.clone();
-        }
+    {
+        *existing_dep = dep.clone();
     }
 
     // Also update in filtered projects if it exists
@@ -749,6 +744,7 @@ pub fn handle_create_tab(state: &mut AppState, title: String) {
         title,
         buffer: Vec::new(),
         is_finished: false,
+        scroll: 0,
     });
     state.active_tab = state.tabs.len() - 1;
 }
@@ -796,29 +792,26 @@ pub fn handle_update_dependency_status(
             .all_projects
             .iter_mut()
             .find(|p| p.name == project_name)
+            && let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name)
         {
-            if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
-                dep.check_status = status.clone();
-            }
+            dep.check_status = status.clone();
         }
 
-        if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
-            if let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name) {
-                dep.check_status = status.clone();
-            }
+        if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name)
+            && let Some(dep) = proj.dependencies.iter_mut().find(|d| d.name == dep_name)
+        {
+            dep.check_status = status.clone();
         }
 
         if state.mode == crate::events::Mode::UpdateWizard
             && state.updater.locked_project_name.as_ref() == Some(&project_name)
-        {
-            if let Some(dep) = state
+            && let Some(dep) = state
                 .updater
                 .outdated_dependencies
                 .iter_mut()
                 .find(|d| d.name == dep_name)
-            {
-                dep.check_status = status.clone();
-            }
+        {
+            dep.check_status = status.clone();
         }
     }
 }
@@ -947,10 +940,10 @@ pub fn handle_save_config(state: &mut AppState) {
 /// Handle toggling show_all_folders setting
 pub fn handle_toggle_show_all_folders(state: &mut AppState) {
     // Toggle the setting
-    state.settings.show_all_folders = !state.settings.show_all_folders;
+    state.config.app.show_all_folders = !state.config.app.show_all_folders;
 
     // Save the setting
-    if let Err(e) = state.settings.save() {
+    if let Err(e) = state.config.save() {
         eprintln!("Failed to save settings: {}", e);
     }
 
@@ -960,7 +953,7 @@ pub fn handle_toggle_show_all_folders(state: &mut AppState) {
         mark_all_nodes_unloaded(tree_root);
 
         // Reload root children with new setting
-        crate::project::load_directory_children(tree_root, state.settings.show_all_folders);
+        crate::project::load_directory_children(tree_root, state.config.app.show_all_folders);
 
         // Re-flatten the tree
         state.flattened_tree = crate::tree::FlattenedTree::from_tree(tree_root);
@@ -1023,10 +1016,11 @@ pub fn handle_focus_next(state: &mut AppState) {
 /// This ensures "crates" directories are automatically populated since they're auto-expanded
 fn load_crates_directories_recursively(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
     // Check if this is a "crates" directory that needs loading
-    if let crate::tree::TreeNodeType::Directory { name, .. } = &node.node_type {
-        if name == "crates" && !node.children_loaded {
-            crate::project::load_directory_children(node, show_all_folders);
-        }
+    if let crate::tree::TreeNodeType::Directory { name, .. } = &node.node_type
+        && name == "crates"
+        && !node.children_loaded
+    {
+        crate::project::load_directory_children(node, show_all_folders);
     }
 
     // Recursively check all children
@@ -1141,11 +1135,11 @@ fn update_project_size_in_tree(
     total_size: Option<u64>,
     target_size: Option<u64>,
 ) {
-    if let crate::tree::TreeNodeType::Project(ref mut project) = node.node_type {
-        if project.name == project_name {
-            project.total_size = total_size;
-            project.target_size = target_size;
-        }
+    if let crate::tree::TreeNodeType::Project(ref mut project) = node.node_type
+        && project.name == project_name
+    {
+        project.total_size = total_size;
+        project.target_size = target_size;
     }
 
     for child in &mut node.children {
@@ -1249,7 +1243,7 @@ pub fn handle_directory_loaded(
             }
 
             // Queue background update check if enabled (not priority - those are for user-initiated checks)
-            if state.settings.background_updates_enabled && !project.dependencies.is_empty() {
+            if state.config.app.background_updates_enabled && !project.dependencies.is_empty() {
                 // is_priority=false: these are background checks, user-initiated checks use priority=true
                 handle_queue_background_update(state, project.name, false);
             }

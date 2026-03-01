@@ -13,14 +13,12 @@ use ratatui::{
 };
 
 pub struct TabbedOutputPane {
-    scroll: usize,
     scroll_state: ScrollbarState,
 }
 
 impl TabbedOutputPane {
     pub fn new() -> Self {
         Self {
-            scroll: 0,
             scroll_state: ScrollbarState::default(),
         }
     }
@@ -60,12 +58,14 @@ impl Component for TabbedOutputPane {
                 }
             }
             KeyCode::PageUp | KeyCode::Char('k') | KeyCode::Up => {
-                self.scroll = self.scroll.saturating_sub(10);
+                if let Some(tab) = app.tabs.get_mut(app.active_tab) {
+                    tab.scroll = tab.scroll.saturating_sub(10);
+                }
                 None
             }
             KeyCode::PageDown | KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(tab) = app.tabs.get(app.active_tab) {
-                    self.scroll = (self.scroll + 10).min(tab.buffer.len().saturating_sub(1));
+                if let Some(tab) = app.tabs.get_mut(app.active_tab) {
+                    tab.scroll = (tab.scroll + 10).min(tab.buffer.len().saturating_sub(1));
                 }
                 None
             }
@@ -143,17 +143,19 @@ impl Component for TabbedOutputPane {
         }
 
         // Render active tab content
-        if let Some(active_tab) = app.tabs.get(app.active_tab) {
+        // We use get_mut because we may need to cap the scroll
+        if let Some(active_tab) = app.tabs.get_mut(app.active_tab) {
             let content_height = (chunks[1].height.saturating_sub(2)) as usize;
 
             // Update scroll bounds
             let max_scroll = active_tab.buffer.len().saturating_sub(content_height);
-            self.scroll = self.scroll.min(max_scroll);
+            active_tab.scroll = active_tab.scroll.min(max_scroll);
+            let current_scroll = active_tab.scroll;
 
             let visible_content: Vec<Line> = active_tab
                 .buffer
                 .iter()
-                .skip(self.scroll)
+                .skip(current_scroll)
                 .take(content_height)
                 .map(|line| {
                     // Colorize output based on content
@@ -181,13 +183,13 @@ impl Component for TabbedOutputPane {
             let status_info = if active_tab.is_finished {
                 format!(
                     " [Finished] Line {}/{} ",
-                    self.scroll + 1,
+                    current_scroll + 1,
                     active_tab.buffer.len().max(1)
                 )
             } else {
                 format!(
                     " [Running...] Line {}/{} ",
-                    self.scroll + 1,
+                    current_scroll + 1,
                     active_tab.buffer.len().max(1)
                 )
             };
@@ -217,7 +219,7 @@ impl Component for TabbedOutputPane {
                     .scroll_state
                     .content_length(active_tab.buffer.len())
                     .viewport_content_length(content_height)
-                    .position(self.scroll);
+                    .position(current_scroll);
 
                 let scrollbar_area = Rect {
                     x: chunks[1].x + chunks[1].width - 1,

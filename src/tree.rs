@@ -163,8 +163,14 @@ impl FlattenedTree {
             }
         } else {
             // Normal node - add to display with adjusted depth
-            let mut adjusted_node = node.clone();
-            adjusted_node.depth = adjusted_node.depth.saturating_sub(depth_adjustment);
+            let adjusted_node = TreeNode {
+                node_type: node.node_type.clone(),
+                children: Vec::new(), // Do not clone children to avoid O(N^2) memory cloning
+                expanded: node.expanded,
+                children_loaded: node.children_loaded,
+                loading: node.loading,
+                depth: node.depth.saturating_sub(depth_adjustment),
+            };
 
             self.items.push((adjusted_node, *index));
             self.path_to_index
@@ -206,19 +212,19 @@ impl TreeSelectionState {
 
     /// Select the next item
     pub fn select_next(&mut self, max_index: usize) {
-        if let Some(idx) = self.selected_index {
-            if idx < max_index {
-                self.selected_index = Some(idx + 1);
-            }
+        if let Some(idx) = self.selected_index
+            && idx < max_index
+        {
+            self.selected_index = Some(idx + 1);
         }
     }
 
     /// Select the previous item
     pub fn select_prev(&mut self) {
-        if let Some(idx) = self.selected_index {
-            if idx > 0 {
-                self.selected_index = Some(idx - 1);
-            }
+        if let Some(idx) = self.selected_index
+            && idx > 0
+        {
+            self.selected_index = Some(idx - 1);
         }
     }
 

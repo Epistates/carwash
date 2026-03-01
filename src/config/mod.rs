@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 pub use keybinding_config::KeybindingConfig;
 pub use theme_config::ThemeConfig;
+use crate::settings::AppSettings;
 
 /// Main configuration structure for CarWash
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -31,6 +32,10 @@ pub struct Config {
     /// Progress visualization settings
     #[serde(default)]
     pub progress: ProgressConfig,
+
+    /// App settings (cache, background updates, etc)
+    #[serde(default)]
+    pub app: AppSettings,
 }
 
 /// Layout preference configuration

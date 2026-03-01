@@ -154,7 +154,7 @@ async fn handle_event(
     event: Event,
     state: &mut AppState,
     action_tx: &mpsc::Sender<Action>,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     if let Event::Key(key) = event {
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             reducer(state, Action::Quit);
@@ -360,7 +360,7 @@ async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
     target_directory: String,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let (action_tx, mut action_rx) = mpsc::channel(100);
     let mut event_stream = crossterm::event::EventStream::new();
 
@@ -407,8 +407,8 @@ async fn run_app<B: Backend>(
             // Redraw at consistent frame rate (30 FPS)
             _ = interval.tick() => {
                 if let Err(e) = terminal.draw(|f| ui(f, state)) {
-                    tracing::error!("Draw error: {}", e);
-                    return Err(e);
+                    tracing::error!("Draw error: {:?}", e);
+                    anyhow::bail!("Draw error: {:?}", e);
                 }
             }
             Some(action) = action_rx.recv() => {
@@ -419,7 +419,7 @@ async fn run_app<B: Backend>(
 
                         // Spawn async load of root directory children (non-blocking)
                         let tx = action_tx.clone();
-                        let show_all = state.settings.show_all_folders;
+                        let show_all = state.config.app.show_all_folders;
 
                         tokio::task::spawn_blocking(move || {
                             // Load children of root directory (depth 1, since root is depth 0)
@@ -439,43 +439,43 @@ async fn run_app<B: Backend>(
                         reducer(state, action);
 
                         // After expanding, check if we need to async load children
-                        if let Some(selected_idx) = state.tree_state.selected() {
-                            if selected_idx < state.flattened_tree.items.len() {
-                                let (node, _) = &state.flattened_tree.items[selected_idx];
-                                // If node is a directory, expanded, but children not loaded, queue async load
-                                if node.node_type.is_directory() && node.expanded && !node.children_loaded {
-                                    let path = node.node_type.path().to_path_buf();
-                                    let depth = node.depth + 1;  // Children are one level deeper
-                                    let tx = action_tx.clone();
-                                    let show_all = state.settings.show_all_folders;
+                        if let Some(selected_idx) = state.tree_state.selected()
+                            && selected_idx < state.flattened_tree.items.len()
+                        {
+                            let (node, _) = &state.flattened_tree.items[selected_idx];
+                            // If node is a directory, expanded, but children not loaded, queue async load
+                            if node.node_type.is_directory() && node.expanded && !node.children_loaded {
+                                let path = node.node_type.path().to_path_buf();
+                                let depth = node.depth + 1;  // Children are one level deeper
+                                let tx = action_tx.clone();
+                                let show_all = state.config.app.show_all_folders;
 
-                                    // Mark as loading immediately
-                                    if let Some(root) = &mut state.tree_root {
-                                        fn mark_loading(node: &mut TreeNode, target: &std::path::Path) -> bool {
-                                            if node.node_type.path() == target {
-                                                node.loading = true;
+                                // Mark as loading immediately
+                                if let Some(root) = &mut state.tree_root {
+                                    fn mark_loading(node: &mut TreeNode, target: &std::path::Path) -> bool {
+                                        if node.node_type.path() == target {
+                                            node.loading = true;
+                                            return true;
+                                        }
+                                        for child in &mut node.children {
+                                            if mark_loading(child, target) {
                                                 return true;
                                             }
-                                            for child in &mut node.children {
-                                                if mark_loading(child, target) {
-                                                    return true;
-                                                }
-                                            }
-                                            false
                                         }
-                                        mark_loading(root, &path);
+                                        false
                                     }
-
-                                    // Spawn async load
-                                    tokio::task::spawn_blocking(move || {
-                                        let children = carwash::project::load_directory_children_async(
-                                            &path,
-                                            depth,
-                                            show_all
-                                        );
-                                        let _ = tx.blocking_send(Action::DirectoryLoaded(path, children));
-                                    });
+                                    mark_loading(root, &path);
                                 }
+
+                                // Spawn async load
+                                tokio::task::spawn_blocking(move || {
+                                    let children = carwash::project::load_directory_children_async(
+                                        &path,
+                                        depth,
+                                        show_all
+                                    );
+                                    let _ = tx.blocking_send(Action::DirectoryLoaded(path, children));
+                                });
                             }
                         }
                     }
@@ -500,7 +500,7 @@ async fn run_app<B: Backend>(
                         // Spawn async load
                         let path_clone = path.clone();
                         let tx = action_tx.clone();
-                        let show_all = state.settings.show_all_folders;
+                        let show_all = state.config.app.show_all_folders;
                         let depth = *depth;
 
                         tokio::task::spawn_blocking(move || {
@@ -534,7 +534,7 @@ async fn run_app<B: Backend>(
                         // Reset any "Checking" status to "Unchecked" (app was interrupted)
                         reset_checking_status(state);
 
-                        if state.settings.background_updates_enabled {
+                        if state.config.app.background_updates_enabled {
                             // NOW queue projects for background checks (after cache is loaded)
                             // Queue projects that:
                             // 1. Have expired cache (> cache TTL)
@@ -542,7 +542,7 @@ async fn run_app<B: Backend>(
                             // 3. Were interrupted (status is Unchecked)
                             // 4. Have ANY dependency that needs checking
                             let mut queue_idx = 0;
-                            let cache_duration = state.settings.cache_duration();
+                            let cache_duration = state.config.app.cache_duration();
                             for project in &state.all_projects {
                                 // Skip projects with no dependencies
                                 if project.dependencies.is_empty() {
@@ -683,7 +683,7 @@ async fn run_app<B: Backend>(
                                 // CRITICAL FIX: Only set status to "Checking" if deps actually need checking
                                 // Don't overwrite cached status if all deps are fresh
                                 let now = std::time::SystemTime::now();
-                                let cache_duration = state.settings.cache_duration();
+                                let cache_duration = state.config.app.cache_duration();
                                 let has_deps_needing_check = deps.iter().any(|dep| {
                                     if let Some(last_checked) = dep.last_checked {
                                         // Check if cache expired
@@ -716,7 +716,7 @@ async fn run_app<B: Backend>(
 
                                     let action_tx_clone_2 = action_tx_clone.clone();
                                     let is_priority_task = is_priority;
-                                    let cache_duration = state.settings.cache_duration();
+                                    let cache_duration = state.config.app.cache_duration();
 
                                     // Perform the update check asynchronously
                                     tokio::spawn(async move {
@@ -768,7 +768,7 @@ async fn run_app<B: Backend>(
                     Action::SaveSettings => {
                         reducer(state, action.clone());
 
-                        if state.settings.background_updates_enabled
+                        if state.config.app.background_updates_enabled
                             && state.update_queue.has_pending_tasks()
                         {
                             let _ = action_tx
@@ -828,47 +828,45 @@ async fn run_app<B: Backend>(
                         // This async handler only runs when there's a pending reload
 
                         // Check if we have a pending dependency reload after update
-                        if let Some(project_name) = state.updater.pending_reload_project.take() {
-                            // Find and reload the project in all_projects (source of truth)
-                            if let Some(all_proj) = state.all_projects.iter_mut().find(|p| p.name == project_name) {
-                                if let Ok(()) = all_proj.reload_dependencies() {
-                                    // Successfully reloaded! Now sync to filtered projects list
-                                    if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
-                                        proj.dependencies = all_proj.dependencies.clone();
-                                    }
-
-                                    // Clear stale wizard state
-                                    state.updater.outdated_dependencies.clear();
-
-                                    // Now re-check with the FRESH dependencies to get latest versions
-                                    let fresh_deps = all_proj.dependencies.clone();
-                                    let project_path = all_proj.path.clone();
-                                    let proj_name = all_proj.name.clone();
-                                    let cache_duration = state.settings.cache_duration();
-                                    let action_tx_clone = action_tx.clone();
-
-                                    tokio::spawn(async move {
-                                        // Re-check with fresh dependencies from disk
-                                        check_dependencies_with_cache(
-                                            proj_name,
-                                            fresh_deps,
-                                            action_tx_clone,
-                                            false,  // Don't use cache - force fresh check
-                                            Some(project_path),
-                                            cache_duration,
-                                        )
-                                        .await;
-                                    });
-
-                                    // Add notification to the tab
-                                    let _ = action_tx
-                                        .send(Action::AddOutput(
-                                            *tab_index,
-                                            "Dependencies reloaded. Re-checking for updates...".into(),
-                                        ))
-                                        .await;
-                                }
+                        if let Some(project_name) = state.updater.pending_reload_project.take()
+                            && let Some(all_proj) = state.all_projects.iter_mut().find(|p| p.name == project_name)
+                            && let Ok(()) = all_proj.reload_dependencies()
+                        {
+                            // Successfully reloaded! Now sync to filtered projects list
+                            if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
+                                proj.dependencies = all_proj.dependencies.clone();
                             }
+
+                            // Clear stale wizard state
+                            state.updater.outdated_dependencies.clear();
+
+                            // Now re-check with the FRESH dependencies to get latest versions
+                            let fresh_deps = all_proj.dependencies.clone();
+                            let project_path = all_proj.path.clone();
+                            let proj_name = all_proj.name.clone();
+                            let cache_duration = state.config.app.cache_duration();
+                            let action_tx_clone = action_tx.clone();
+
+                            tokio::spawn(async move {
+                                // Re-check with fresh dependencies from disk
+                                check_dependencies_with_cache(
+                                    proj_name,
+                                    fresh_deps,
+                                    action_tx_clone,
+                                    false,  // Don't use cache - force fresh check
+                                    Some(project_path),
+                                    cache_duration,
+                                )
+                                .await;
+                            });
+
+                            // Add notification to the tab
+                            let _ = action_tx
+                                .send(Action::AddOutput(
+                                    *tab_index,
+                                    "Dependencies reloaded. Re-checking for updates...".into(),
+                                ))
+                                .await;
                         }
                     }
                     _ => {

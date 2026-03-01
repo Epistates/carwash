@@ -578,34 +578,34 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     {
         let manifest_path = entry.path();
 
-        if let Ok(content) = fs::read_to_string(manifest_path) {
-            if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
-                // Check if this is a workspace root
-                if let Some(workspace) = &toml.workspace {
-                    let root_path = manifest_path.parent().unwrap().to_path_buf();
-                    let mut member_paths = Vec::new();
+        if let Ok(content) = fs::read_to_string(manifest_path)
+            && let Ok(toml) = toml::from_str::<CargoToml>(&content)
+        {
+            // Check if this is a workspace root
+            if let Some(workspace) = &toml.workspace {
+                let root_path = manifest_path.parent().unwrap().to_path_buf();
+                let mut member_paths = Vec::new();
 
-                    // Resolve workspace members
-                    for member in &workspace.members {
-                        let member_path = root_path.join(member).join("Cargo.toml");
-                        if member_path.exists() {
-                            member_paths.push(member_path);
-                        }
+                // Resolve workspace members
+                for member in &workspace.members {
+                    let member_path = root_path.join(member).join("Cargo.toml");
+                    if member_path.exists() {
+                        member_paths.push(member_path);
                     }
-
-                    // Get workspace name (use directory name as fallback)
-                    let workspace_name = if let Some(pkg) = &toml.package {
-                        pkg.name.clone()
-                    } else {
-                        root_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("workspace")
-                            .to_string()
-                    };
-
-                    workspaces.insert(root_path, (workspace_name, member_paths));
                 }
+
+                // Get workspace name (use directory name as fallback)
+                let workspace_name = if let Some(pkg) = &toml.package {
+                    pkg.name.clone()
+                } else {
+                    root_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("workspace")
+                        .to_string()
+                };
+
+                workspaces.insert(root_path, (workspace_name, member_paths));
             }
         }
     }
@@ -623,27 +623,27 @@ pub fn find_rust_projects(path: &str) -> Vec<Project> {
     {
         let manifest_path = entry.path();
 
-        if let Ok(content) = fs::read_to_string(manifest_path) {
-            if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
-                // Find if this project belongs to a workspace
-                let mut workspace_info: Option<(PathBuf, String)> = None;
+        if let Ok(content) = fs::read_to_string(manifest_path)
+            && let Ok(toml) = toml::from_str::<CargoToml>(&content)
+        {
+            // Find if this project belongs to a workspace
+            let mut workspace_info: Option<(PathBuf, String)> = None;
 
-                for (ws_root, (ws_name, members)) in &workspaces {
-                    if members.contains(&manifest_path.to_path_buf()) {
-                        workspace_info = Some((ws_root.clone(), ws_name.clone()));
-                        break;
-                    }
+            for (ws_root, (ws_name, members)) in &workspaces {
+                if members.contains(&manifest_path.to_path_buf()) {
+                    workspace_info = Some((ws_root.clone(), ws_name.clone()));
+                    break;
                 }
+            }
 
-                // Add the project if it has a package section
-                if let Some(project) = Project::from_toml(
-                    manifest_path,
-                    &toml,
-                    workspace_info.as_ref().map(|(root, _)| root.clone()),
-                    workspace_info.as_ref().map(|(_, name)| name.clone()),
-                ) {
-                    projects.insert(manifest_path.to_path_buf(), project);
-                }
+            // Add the project if it has a package section
+            if let Some(project) = Project::from_toml(
+                manifest_path,
+                &toml,
+                workspace_info.as_ref().map(|(root, _)| root.clone()),
+                workspace_info.as_ref().map(|(_, name)| name.clone()),
+            ) {
+                projects.insert(manifest_path.to_path_buf(), project);
             }
         }
     }
@@ -824,61 +824,47 @@ pub fn load_directory_children_async(
             if path.is_dir() {
                 // Check if this directory IS a Rust project
                 let cargo_toml_path = path.join("Cargo.toml");
-                if cargo_toml_path.exists() {
+                if cargo_toml_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&cargo_toml_path)
+                    && let Ok(toml) = toml::from_str::<CargoToml>(&content)
+                {
                     // Parse Cargo.toml to check if it's a workspace-only or a real project
-                    if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
-                        if let Ok(toml) = toml::from_str::<CargoToml>(&content) {
-                            // Check if this has a workspace section (with or without package)
-                            // Workspaces should be expandable directories to show their members
-                            if toml.workspace.is_some() {
-                                // It's a workspace root - treat as expandable directory
-                                // Even if it also has a [package] section, prioritize showing members
-                                if show_all_folders || directory_contains_rust_projects(&path) {
-                                    let mut dir_node = build_tree_level_only(&path, depth + 1);
-                                    // Load children eagerly so "crates" dirs can be auto-expanded
-                                    // NOTE: For async version, we might want to skip this eager loading or make it recursive?
-                                    // For now, let's keep it consistent but synchronous for this sublevel
-                                    load_directory_children(&mut dir_node, show_all_folders);
-                                    // But keep the workspace itself collapsed - user can expand with h/l or ←/→
-                                    dir_node.expanded = false;
-                                    children.push(dir_node);
-                                }
-                            } else if toml.package.is_some() {
-                                // It's a standalone project (no workspace) - add as project node
-                                let project = Project {
-                                    name: toml
-                                        .package
-                                        .as_ref()
-                                        .map(|p| p.name.clone())
-                                        .unwrap_or_else(|| file_name.to_string()),
-                                    path: path.clone(),
-                                    version: toml
-                                        .package
-                                        .as_ref()
-                                        .map(|p| p.version_string())
-                                        .unwrap_or_default(),
-                                    authors: toml
-                                        .package
-                                        .as_ref()
-                                        .map(|p| p.authors_vec())
-                                        .unwrap_or_default(),
-                                    dependencies: Vec::new(), // Will be loaded on-demand when needed
-                                    workspace_root: None,
-                                    workspace_name: None,
-                                    cargo_lock_hash: None,
-                                    status: ProjectStatus::Pending,
-                                    check_status: ProjectCheckStatus::Unchecked,
-                                    git_status: GitStatus::Unknown, // Check asynchronously
-                                    total_size: None,               // Calculate on demand
-                                    target_size: None,              // Calculate on demand
-                                };
-                                let project_node =
-                                    crate::tree::TreeNode::project(project, depth + 1);
-                                children.push(project_node);
-                            }
+                    // Check if this has a workspace section (with or without package)
+                    // Workspaces should be expandable directories to show their members
+                    if toml.workspace.is_some() {
+                        // It's a workspace root - treat as expandable directory
+                        // Even if it also has a [package] section, prioritize showing members
+                        if show_all_folders || directory_contains_rust_projects(&path) {
+                            let mut dir_node = build_tree_level_only(&path, depth + 1);
+                            // Load children eagerly so "crates" dirs can be auto-expanded
+                            // NOTE: For async version, we might want to skip this eager loading or make it recursive?
+                            // For now, let's keep it consistent but synchronous for this sublevel
+                            load_directory_children(&mut dir_node, show_all_folders);
+                            // But keep the workspace itself collapsed - user can expand with h/l or ←/→
+                            dir_node.expanded = false;
+                            children.push(dir_node);
                         }
+                    } else if let Some(package) = &toml.package {
+                        // It's a standalone project (no workspace) - add as project node
+                        let project = Project {
+                            name: package.name.clone(),
+                            path: path.clone(),
+                            version: package.version_string(),
+                            authors: package.authors_vec(),
+                            dependencies: Vec::new(), // Will be loaded on-demand when needed
+                            workspace_root: None,
+                            workspace_name: None,
+                            cargo_lock_hash: None,
+                            status: ProjectStatus::Pending,
+                            check_status: ProjectCheckStatus::Unchecked,
+                            git_status: GitStatus::Unknown, // Check asynchronously
+                            total_size: None,               // Calculate on demand
+                            target_size: None,              // Calculate on demand
+                        };
+                        let project_node = crate::tree::TreeNode::project(project, depth + 1);
+                        children.push(project_node);
                     }
-                } else {
+                } else if path.is_dir() {
                     // No Cargo.toml - check if we should show it as a directory
                     if show_all_folders || directory_contains_rust_projects(&path) {
                         let dir_node = build_tree_level_only(&path, depth + 1);

@@ -11,7 +11,6 @@ use crate::config::Config;
 use crate::events::{Action, Focus, Mode};
 use crate::project::Project;
 use crate::runner::UpdateQueue;
-use crate::settings::AppSettings;
 use crate::tree::{FlattenedTree, TreeNode, TreeSelectionState};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
@@ -60,13 +59,11 @@ pub struct AppState {
     pub text_input: TextInputState,
     /// Queue of pending update checks
     pub update_queue: UpdateQueue,
-    /// Persistent user settings
-    pub settings: AppSettings,
     /// Modal state for editing settings
     pub settings_modal: SettingsModalState,
     /// Filter/search state
     pub filter: FilterState,
-    /// Application configuration (themes, layout, keybindings, etc.)
+    /// Application configuration (themes, layout, keybindings, settings, etc.)
     pub config: Config,
     /// Progress tracking for command execution
     pub progress: Option<ProgressState>,
@@ -83,6 +80,8 @@ pub struct Tab {
     pub buffer: Vec<String>,
     /// Whether the command execution has finished
     pub is_finished: bool,
+    /// Scroll position for this specific tab
+    pub scroll: usize,
 }
 
 impl Default for AppState {
@@ -127,7 +126,6 @@ impl Default for AppState {
             updater: UpdateWizardState::new(),
             text_input: TextInputState::new(),
             update_queue: UpdateQueue::new(),
-            settings: AppSettings::load(),
             settings_modal: SettingsModalState::new(),
             filter: FilterState::new(),
             config: Config::load(),
@@ -542,6 +540,7 @@ mod tests {
             title: "Test".to_string(),
             buffer: vec!["line1".to_string()],
             is_finished: false,
+            scroll: 0,
         };
 
         let cloned = tab.clone();
