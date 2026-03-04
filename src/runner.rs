@@ -341,9 +341,8 @@ async fn spawn_and_stream_command(
     tab_index: usize,
 ) -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
-    let args = shlex::split(command_str).unwrap_or_else(|| {
-        command_str.split_whitespace().map(String::from).collect()
-    });
+    let args = shlex::split(command_str)
+        .unwrap_or_else(|| command_str.split_whitespace().map(String::from).collect());
 
     if args.is_empty() {
         anyhow::bail!("Empty command");

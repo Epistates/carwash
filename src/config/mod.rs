@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::settings::AppSettings;
 pub use keybinding_config::KeybindingConfig;
 pub use theme_config::ThemeConfig;
-use crate::settings::AppSettings;
 
 /// Main configuration structure for CarWash
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
