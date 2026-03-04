@@ -1,4 +1,4 @@
-# 🚀 CarWash - Rust Project Manager
+# CarWash - Rust Project Manager
 
 A TUI (Terminal User Interface) for managing multiple Rust projects with ease. CarWash provides an intuitive interface for running cargo commands across multiple projects simultaneously, managing dependencies, and monitoring build outputs.
 
@@ -7,9 +7,9 @@ A TUI (Terminal User Interface) for managing multiple Rust projects with ease. C
 
 <img src="assets/carwash.png" alt="Carwash" style="width: 100%; max-width: 100%; margin: 20px 0;"/>
 
-## ✨ Features
+## Features
 
-### 🎯 Core Features
+### Core Features
 - **Multi-Project Management**: Automatically discover and manage all Rust projects in a directory tree
 - **Parallel Command Execution**: Run cargo commands across multiple projects simultaneously
 - **Interactive Command Palette**: Fuzzy search through cargo commands with vim-style navigation
@@ -17,7 +17,7 @@ A TUI (Terminal User Interface) for managing multiple Rust projects with ease. C
 - **Dependency Management**: Check for outdated dependencies and update them interactively
 - **Workspace Support**: Intelligently handles Cargo workspaces and member projects
 
-### 🎨 Enterprise-Grade UX
+### Enterprise-Grade UX
 - **Beautiful UI**: Modern, colorful interface with intuitive layouts
 - **Status Indicators**: Real-time status updates with progress indicators
 - **Smart Color Coding**: Errors (red), warnings (yellow), success (green)
@@ -25,14 +25,17 @@ A TUI (Terminal User Interface) for managing multiple Rust projects with ease. C
 - **Multiple Tabs**: Switch between running commands with arrow keys
 - **Project Selection**: Select single or multiple projects with visual checkboxes
 
-### ⌨️ Keyboard-Driven Workflow
+### Keyboard-Driven Workflow
 - **Vim-style Navigation**: `j/k` for up/down, `h/l` for left/right
 - **Quick Commands**: Press `:` to open command palette instantly
 - **Space to Select**: Toggle project selection with spacebar
 - **Esc to Cancel**: Consistent escape behavior throughout
 - **Tab to Toggle**: Switch command scope between selected and all projects
 
-## 📦 Installation
+## Installation
+
+### Prerequisites
+- **Rust 1.93.0+** (Rust Edition 2024)
 
 ### From crates.io (Recommended)
 
@@ -56,16 +59,7 @@ cargo install --path .
 cargo run -- /path/to/your/rust/projects
 ```
 
-### Using a package manager
-
-`carwash` is available as a native package on NetBSD.
-To install it, simply run:
-
-```bash
-pkgin install carwash
-```
-
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Run in current directory
@@ -78,7 +72,7 @@ carwash ~/my-rust-projects
 carwash --help
 ```
 
-## 📖 Usage Guide
+## Usage Guide
 
 ### Navigation
 
@@ -108,57 +102,7 @@ carwash --help
 5. Press `Enter` to execute the command
 6. Press `Esc` to cancel
 
-### Available Commands
-
-- **test** - Run tests
-- **check** - Check for compilation errors
-- **build** - Build projects
-- **build --release** - Build with optimizations
-- **clean** - Remove build artifacts
-- **clippy** - Run Clippy lints
-- **fmt** - Format code
-- **doc** - Generate documentation
-- **update** - Update dependencies
-- **bench** - Run benchmarks
-- **run** - Run the project
-
-### Dependency Updates
-
-1. Select a project
-2. Press `u` to check for outdated dependencies
-3. Use `Space` to select dependencies to update
-4. Press `a` to select all, `n` to select none
-5. Press `Enter` to update selected dependencies
-6. Press `Esc` to cancel
-
-## 🎯 Workflow Examples
-
-### Running Tests Across Multiple Projects
-
-1. Use `↑`/`↓` to navigate through projects
-2. Press `Space` to select projects you want to test
-3. Press `:` to open command palette
-4. Type "test" or select from list
-5. Ensure scope is "Selected Projects"
-6. Press `Enter` to run tests in parallel
-7. Switch between output tabs with `←`/`→`
-
-### Checking for Updates
-
-1. Select a project (or multiple)
-2. Press `u` to check for outdated dependencies
-3. Review the list of outdated packages
-4. Select packages to update with `Space`
-5. Press `Enter` to update
-
-### Building All Projects
-
-1. Press `:` to open command palette
-2. Type "build"
-3. Press `Tab` to change scope to "All Projects"
-4. Press `Enter` to build all projects in parallel
-
-## 🏗️ Architecture
+## Architecture
 
 CarWash is built with:
 
@@ -174,22 +118,27 @@ CarWash is built with:
 src/
 ├── main.rs              # Entry point and main event loop
 ├── app.rs               # Application state and reducer
-├── events.rs            # Action and event definitions
+├── handlers.rs          # State transition logic
 ├── project.rs           # Project discovery and parsing
-├── runner.rs            # Command execution logic
-├── ui.rs                # Main UI layout
-└── components/
-    ├── dependencies.rs  # Dependency viewer
-    ├── help.rs          # Help screen
-    ├── output.rs        # Output tabs with scrolling
-    ├── palette.rs       # Command palette
-    ├── projects.rs      # Project list
-    ├── status.rs        # Status bar
-    ├── text_input.rs    # Text input component
-    └── updater.rs       # Update wizard
+├── runner.rs            # Command execution and updates
+├── tree.rs              # Hierarchical navigation system
+├── cache.rs             # Dependency check caching
+├── settings.rs          # User preferences
+├── config/              # Unified configuration system
+│   ├── keybinding_config.rs
+│   └── theme_config.rs
+├── components/          # UI Components
+│   ├── dependencies.rs
+│   ├── output.rs
+│   ├── projects.rs
+│   └── ...
+└── ui/                  # Visual orchestration
+    ├── layout.rs
+    ├── modal.rs
+    └── theme.rs
 ```
 
-## 🎨 Customization
+## Customization
 
 CarWash uses a carefully chosen color scheme optimized for terminal visibility:
 
@@ -200,16 +149,14 @@ CarWash uses a carefully chosen color scheme optimized for terminal visibility:
 - **Magenta**: Special modes like update wizard
 - **Dark Gray**: Secondary information and help text
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Areas for improvement:
 
-- [ ] Configuration file support (`.carwashrc`)
 - [ ] Custom command templates
 - [ ] Project favorites/bookmarks
 - [ ] Command history persistence
 - [ ] Export/save command outputs
-- [ ] Custom color themes
 - [ ] Plugin system
 - [ ] Remote project support
 
@@ -217,7 +164,7 @@ Contributions are welcome! Areas for improvement:
 
 [MIT](./LICENSE)
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 Built with:
 - [Ratatui](https://github.com/ratatui-org/ratatui) - Amazing TUI framework
@@ -227,10 +174,3 @@ Built with:
 ---
 
 **Made with ❤️ for the Rust community**
-
-For bugs, feature requests, or questions, please open an issue on GitHub.
-
-
-
-
-

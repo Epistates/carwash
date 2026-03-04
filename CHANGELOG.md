@@ -2,7 +2,30 @@
 
 All notable changes to CarWash will be documented in this file.
 
-## [Unreleased]
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.5] - 2026-03-03
+
+### Added
+- Modernized project to **Rust Edition 2024** and Rust 1.93.1 toolchain.
+- Added `shlex` crate for POSIX-compliant cargo command argument parsing.
+- Implemented persistent scroll state for output tabs within `AppState`.
+
+### Changed
+- Unified configuration system: Merged `AppSettings` (JSON) into a single TOML-based `Config`.
+- Optimized tree flattening logic: Resolved $O(N^2)$ memory duplication by avoiding recursive child cloning.
+- Refactored UI logic to use modern **Let Chains** (stabilized in Rust 1.83.0).
+- Updated core dependencies to latest versions:
+  - `ratatui` v0.30.0
+  - `crossterm` v0.29.0
+  - `toml` v1.0.3
+  - `tui-tree-widget` v0.24.0
+
+### Fixed
+- Fixed bug where output tab scroll position was lost on every frame redraw.
+- Fixed fragmented configuration save/load paths.
+- Improved error handling in main event loop for generic backend errors.
 
 ## [0.3.4] - 2025-12-11
 
@@ -209,6 +232,7 @@ None. Fully backward compatible with 0.3.0.
 - Better handling of workspace visibility logic
 
 **Handler Function Improvements**
+- Refactored AppState to use derived Clone trait
 - Extracted `toggle_workspace_selection()` for workspace selection
 - Extracted `toggle_single_project_selection()` for project selection
 - Extracted `queue_background_updates_on_enable()` for settings updates
@@ -547,8 +571,3 @@ None. Fully backward compatible.
 - [ ] Git integration
 - [ ] Test coverage reporting
 - [ ] Performance profiling view
-
-
-
-
-
