@@ -1,0 +1,510 @@
+# Built-in ecosystem rules.
+#
+# Users can add or override ecosystems in ~/.config/carwash/ecosystems.toml
+# using the same schema; an entry with an existing `id` replaces the built-in.
+#
+# Ecosystem fields:
+#   id, name, badge     identity; `badge` is a short label for narrow/ASCII UIs
+#   markers             entry names (globs allowed, `a/b` paths allowed) that make a directory a project
+#   weak_markers        like markers, but ignored inside an existing project of the same ecosystem
+#                       (e.g. nested CMakeLists.txt or requirements.txt do not start new projects)
+#   lockfiles           names of lockfiles, used for activity and dependency tooling
+#   adapter             optional built-in content hook (names, workspaces, custom target dirs)
+#
+# Artifact fields:
+#   path                relative to the project root; `/` separates segments; segments may be globs
+#   kind                build | dependencies | cache | environment | other
+#   anywhere            match at any depth below the project, not only at the root
+#   global              also match outside any project (only for unmistakable names)
+#   ambiguous           generic name (build, dist, bin, vendor...) that some repos commit; only
+#                       deleted without review when git reports it ignored and untracked
+#   confirm             globs; if any child entry matches, the directory is confirmed as an artifact
+#   require_confirm     without a confirming child the directory is not treated as an artifact
+#   regenerate          hint shown to the user about how the artifact comes back
+
+schema = 1
+
+[[ecosystem]]
+id = "rust"
+name = "Rust"
+badge = "rs"
+markers = ["Cargo.toml"]
+lockfiles = ["Cargo.lock"]
+adapter = "cargo"
+artifacts = [
+  { path = "target", kind = "build", confirm = ["CACHEDIR.TAG", ".rustc_info.json", "debug", "release"], regenerate = "cargo build" },
+]
+
+[[ecosystem]]
+id = "node"
+name = "JavaScript/TypeScript"
+badge = "js"
+markers = ["package.json"]
+lockfiles = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"]
+adapter = "node"
+artifacts = [
+  { path = "node_modules", kind = "dependencies", global = true, regenerate = "reinstall with your package manager" },
+  { path = ".next", kind = "build", regenerate = "next build / next dev" },
+  { path = ".nuxt", kind = "build", regenerate = "nuxt build" },
+  { path = ".output", kind = "build", confirm = ["nitro.json", "server", "public"], require_confirm = true, regenerate = "nuxt/nitro build" },
+  { path = ".svelte-kit", kind = "build", regenerate = "vite build" },
+  { path = ".turbo", kind = "cache", regenerate = "turbo run" },
+  { path = ".nx/cache", kind = "cache", regenerate = "nx run" },
+  { path = ".nx/workspace-data", kind = "cache", regenerate = "nx run" },
+  { path = ".parcel-cache", kind = "cache", regenerate = "parcel build" },
+  { path = ".angular/cache", kind = "cache", regenerate = "ng build" },
+  { path = ".expo", kind = "cache", regenerate = "expo start" },
+  { path = ".docusaurus", kind = "build", regenerate = "docusaurus build" },
+  { path = ".astro", kind = "cache", regenerate = "astro build" },
+  { path = ".vercel/output", kind = "build", regenerate = "vercel build" },
+  { path = ".pnpm-store", kind = "cache", regenerate = "pnpm install" },
+  { path = ".yarn/cache", kind = "cache", ambiguous = true, regenerate = "yarn install" },
+  { path = ".yarn/unplugged", kind = "dependencies", ambiguous = true, regenerate = "yarn install" },
+  { path = ".cache", kind = "cache", ambiguous = true },
+  { path = "storybook-static", kind = "build", regenerate = "build-storybook" },
+  { path = "dist", kind = "build", ambiguous = true, regenerate = "your build script" },
+  { path = "build", kind = "build", ambiguous = true, regenerate = "your build script" },
+  { path = "out", kind = "build", ambiguous = true, regenerate = "your build script" },
+  { path = "coverage", kind = "other", ambiguous = true, regenerate = "your test script" },
+]
+
+[[ecosystem]]
+id = "deno"
+name = "Deno"
+badge = "dn"
+markers = ["deno.json", "deno.jsonc"]
+lockfiles = ["deno.lock"]
+artifacts = [
+  { path = "node_modules", kind = "dependencies", regenerate = "deno install" },
+]
+
+[[ecosystem]]
+id = "python"
+name = "Python"
+badge = "py"
+markers = ["pyproject.toml", "setup.py", "Pipfile", "uv.lock", "poetry.lock", "pdm.lock", "pixi.toml", "hatch.toml"]
+weak_markers = ["requirements*.txt", "setup.cfg", "tox.ini", "noxfile.py", "environment.yml"]
+lockfiles = ["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock", "pixi.lock"]
+adapter = "python"
+artifacts = [
+  { path = ".venv", kind = "environment", confirm = ["pyvenv.cfg", "conda-meta"], require_confirm = true, regenerate = "uv sync / poetry install / python -m venv" },
+  { path = "__pycache__", kind = "cache", anywhere = true, global = true, regenerate = "automatic" },
+  { path = ".pytest_cache", kind = "cache", anywhere = true, global = true, regenerate = "automatic" },
+  { path = ".mypy_cache", kind = "cache", anywhere = true, global = true, regenerate = "mypy" },
+  { path = ".ruff_cache", kind = "cache", anywhere = true, global = true, regenerate = "ruff" },
+  { path = ".pytype", kind = "cache", regenerate = "pytype" },
+  { path = ".pyre", kind = "cache", regenerate = "pyre" },
+  { path = ".hypothesis", kind = "cache", anywhere = true, regenerate = "hypothesis" },
+  { path = ".tox", kind = "environment", regenerate = "tox" },
+  { path = ".nox", kind = "environment", regenerate = "nox" },
+  { path = ".pixi", kind = "environment", regenerate = "pixi install" },
+  { path = "__pypackages__", kind = "dependencies", regenerate = "pdm install" },
+  { path = ".eggs", kind = "build", regenerate = "setuptools" },
+  { path = "*.egg-info", kind = "build", anywhere = true, regenerate = "pip install -e ." },
+  { path = "htmlcov", kind = "other", regenerate = "coverage html" },
+  { path = ".ipynb_checkpoints", kind = "cache", anywhere = true, ambiguous = true, regenerate = "jupyter autosave" },
+  { path = "build", kind = "build", ambiguous = true, confirm = ["lib", "lib.*", "bdist.*", "temp.*"], regenerate = "python -m build" },
+  { path = "dist", kind = "build", ambiguous = true, confirm = ["*.whl", "*.tar.gz"], regenerate = "python -m build" },
+]
+
+[[ecosystem]]
+id = "go"
+name = "Go"
+badge = "go"
+markers = ["go.mod", "go.work"]
+lockfiles = ["go.sum", "go.work.sum"]
+adapter = "go"
+artifacts = [
+  { path = "vendor", kind = "dependencies", ambiguous = true, confirm = ["modules.txt"], regenerate = "go mod vendor" },
+]
+
+[[ecosystem]]
+id = "maven"
+name = "Java (Maven)"
+badge = "mv"
+markers = ["pom.xml"]
+artifacts = [
+  { path = "target", kind = "build", ambiguous = true, confirm = ["classes", "maven-status", "maven-archiver", "surefire-reports", "generated-sources", "*.jar"], regenerate = "mvn package" },
+]
+
+[[ecosystem]]
+id = "gradle"
+name = "JVM (Gradle)"
+badge = "gr"
+markers = ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+lockfiles = ["gradle.lockfile"]
+adapter = "gradle"
+artifacts = [
+  { path = "build", kind = "build", ambiguous = true, confirm = ["tmp", "intermediates", "classes", "libs", "kotlin", "generated", "reports", "outputs"], regenerate = "gradle build" },
+  { path = ".gradle", kind = "cache", regenerate = "gradle build" },
+  { path = ".kotlin", kind = "cache", regenerate = "gradle build" },
+  { path = ".cxx", kind = "build", regenerate = "gradle build" },
+  { path = ".externalNativeBuild", kind = "build", regenerate = "gradle build" },
+  { path = "out", kind = "build", ambiguous = true, confirm = ["production", "test"], regenerate = "IntelliJ build" },
+]
+
+[[ecosystem]]
+id = "scala"
+name = "Scala"
+badge = "sc"
+markers = ["build.sbt", "build.mill", "build.sc"]
+artifacts = [
+  { path = "target", kind = "build", ambiguous = true, confirm = ["scala-*", "streams", "global-logging", "task-temp-directory"], regenerate = "sbt compile" },
+  { path = "project/target", kind = "build", regenerate = "sbt compile" },
+  { path = "project/project", kind = "build", regenerate = "sbt compile" },
+  { path = ".bloop", kind = "cache", regenerate = "bloop" },
+  { path = ".metals", kind = "cache", regenerate = "metals" },
+  { path = ".bsp", kind = "cache", regenerate = "sbt bspConfig" },
+  { path = ".scala-build", kind = "build", regenerate = "scala-cli" },
+  { path = "out", kind = "build", ambiguous = true, confirm = ["mill-*"], regenerate = "mill" },
+]
+
+[[ecosystem]]
+id = "bazel"
+name = "Bazel"
+badge = "bz"
+markers = ["MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"]
+artifacts = []
+
+[[ecosystem]]
+id = "dotnet"
+name = ".NET"
+badge = "cs"
+markers = ["*.csproj", "*.fsproj", "*.vbproj", "*.sln", "*.slnx"]
+lockfiles = ["packages.lock.json"]
+adapter = "dotnet"
+artifacts = [
+  { path = "bin", kind = "build", ambiguous = true, confirm = ["Debug", "Release"], regenerate = "dotnet build" },
+  { path = "obj", kind = "build", ambiguous = true, confirm = ["project.assets.json", "*.nuget.*", "Debug", "Release"], regenerate = "dotnet restore" },
+  { path = "TestResults", kind = "other", regenerate = "dotnet test" },
+  { path = ".vs", kind = "cache", ambiguous = true, regenerate = "Visual Studio" },
+]
+
+[[ecosystem]]
+id = "swift"
+name = "Swift Package"
+badge = "sw"
+markers = ["Package.swift"]
+lockfiles = ["Package.resolved"]
+artifacts = [
+  { path = ".build", kind = "build", regenerate = "swift build" },
+  { path = ".swiftpm", kind = "cache", ambiguous = true, regenerate = "swift package" },
+]
+
+[[ecosystem]]
+id = "xcode"
+name = "Xcode"
+badge = "xc"
+markers = ["*.xcodeproj", "*.xcworkspace"]
+artifacts = [
+  { path = "DerivedData", kind = "build", regenerate = "xcodebuild" },
+  { path = "build", kind = "build", ambiguous = true, confirm = ["*.build", "Release*", "Debug*", "XCBuildData"], regenerate = "xcodebuild" },
+]
+
+[[ecosystem]]
+id = "cocoapods"
+name = "CocoaPods"
+badge = "po"
+markers = ["Podfile"]
+lockfiles = ["Podfile.lock"]
+artifacts = [
+  { path = "Pods", kind = "dependencies", ambiguous = true, confirm = ["Manifest.lock"], regenerate = "pod install" },
+]
+
+[[ecosystem]]
+id = "carthage"
+name = "Carthage"
+badge = "ct"
+markers = ["Cartfile"]
+lockfiles = ["Cartfile.resolved"]
+artifacts = [
+  { path = "Carthage/Build", kind = "build", regenerate = "carthage build" },
+  { path = "Carthage/Checkouts", kind = "dependencies", ambiguous = true, regenerate = "carthage bootstrap" },
+]
+
+[[ecosystem]]
+id = "dart"
+name = "Dart/Flutter"
+badge = "dt"
+markers = ["pubspec.yaml"]
+lockfiles = ["pubspec.lock"]
+adapter = "dart"
+artifacts = [
+  { path = ".dart_tool", kind = "cache", regenerate = "dart pub get" },
+  { path = "build", kind = "build", ambiguous = true, confirm = ["flutter_assets", "app", "ios", "web", "native_assets", "*.cache", "test_cache"], regenerate = "flutter build" },
+  { path = "ios/.symlinks", kind = "dependencies", regenerate = "flutter pub get" },
+  { path = "ios/Flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
+  { path = "macos/Flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
+  { path = "linux/flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
+  { path = "windows/flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
+]
+
+[[ecosystem]]
+id = "elixir"
+name = "Elixir"
+badge = "ex"
+markers = ["mix.exs"]
+lockfiles = ["mix.lock"]
+artifacts = [
+  { path = "_build", kind = "build", regenerate = "mix compile" },
+  { path = "deps", kind = "dependencies", regenerate = "mix deps.get" },
+  { path = ".elixir_ls", kind = "cache", regenerate = "ElixirLS" },
+  { path = ".elixir-tools", kind = "cache", regenerate = "Next LS" },
+  { path = ".lexical", kind = "cache", regenerate = "Lexical" },
+  { path = "cover", kind = "other", ambiguous = true, regenerate = "mix test --cover" },
+]
+
+[[ecosystem]]
+id = "erlang"
+name = "Erlang"
+badge = "er"
+markers = ["rebar.config"]
+lockfiles = ["rebar.lock"]
+artifacts = [
+  { path = "_build", kind = "build", regenerate = "rebar3 compile" },
+]
+
+[[ecosystem]]
+id = "gleam"
+name = "Gleam"
+badge = "gl"
+markers = ["gleam.toml"]
+lockfiles = ["manifest.toml"]
+artifacts = [
+  { path = "build", kind = "build", ambiguous = true, confirm = ["packages", "dev", "prod", "lsp"], regenerate = "gleam build" },
+]
+
+[[ecosystem]]
+id = "haskell"
+name = "Haskell"
+badge = "hs"
+markers = ["*.cabal", "cabal.project", "stack.yaml", "package.yaml"]
+lockfiles = ["cabal.project.freeze", "stack.yaml.lock"]
+artifacts = [
+  { path = "dist-newstyle", kind = "build", regenerate = "cabal build" },
+  { path = ".stack-work", kind = "build", regenerate = "stack build" },
+  { path = "dist", kind = "build", ambiguous = true, confirm = ["setup-config", "build"], regenerate = "cabal build" },
+]
+
+[[ecosystem]]
+id = "ocaml"
+name = "OCaml"
+badge = "ml"
+markers = ["dune-project", "*.opam"]
+artifacts = [
+  { path = "_build", kind = "build", regenerate = "dune build" },
+  { path = "_opam", kind = "environment", regenerate = "opam switch create ." },
+]
+
+[[ecosystem]]
+id = "zig"
+name = "Zig"
+badge = "zg"
+markers = ["build.zig", "build.zig.zon"]
+artifacts = [
+  { path = ".zig-cache", kind = "cache", regenerate = "zig build" },
+  { path = "zig-cache", kind = "cache", regenerate = "zig build" },
+  { path = "zig-out", kind = "build", regenerate = "zig build" },
+]
+
+[[ecosystem]]
+id = "cmake"
+name = "C/C++ (CMake)"
+badge = "c+"
+weak_markers = ["CMakeLists.txt", "CMakePresets.json"]
+artifacts = [
+  { path = "cmake-build-*", kind = "build", regenerate = "cmake --build" },
+  { path = "build", kind = "build", ambiguous = true, confirm = ["CMakeCache.txt", "CMakeFiles", "build.ninja"], regenerate = "cmake --build" },
+  { path = "out", kind = "build", ambiguous = true, confirm = ["build", "CMakeCache.txt"], regenerate = "cmake --build" },
+  { path = ".cache/clangd", kind = "cache", regenerate = "clangd" },
+  { path = "vcpkg_installed", kind = "dependencies", regenerate = "vcpkg install" },
+]
+
+[[ecosystem]]
+id = "meson"
+name = "C/C++ (Meson)"
+badge = "me"
+weak_markers = ["meson.build"]
+artifacts = [
+  { path = "builddir", kind = "build", confirm = ["meson-private", "build.ninja"], require_confirm = true, regenerate = "meson setup" },
+  { path = "build", kind = "build", ambiguous = true, confirm = ["meson-private", "build.ninja"], require_confirm = true, regenerate = "meson setup" },
+]
+
+[[ecosystem]]
+id = "xmake"
+name = "C/C++ (xmake)"
+badge = "xm"
+markers = ["xmake.lua"]
+artifacts = [
+  { path = ".xmake", kind = "cache", regenerate = "xmake" },
+  { path = "build", kind = "build", ambiguous = true, regenerate = "xmake" },
+]
+
+[[ecosystem]]
+id = "php"
+name = "PHP"
+badge = "ph"
+markers = ["composer.json"]
+lockfiles = ["composer.lock"]
+artifacts = [
+  { path = "vendor", kind = "dependencies", ambiguous = true, confirm = ["autoload.php", "composer"], regenerate = "composer install" },
+]
+
+[[ecosystem]]
+id = "ruby"
+name = "Ruby"
+badge = "rb"
+markers = ["Gemfile", "*.gemspec"]
+lockfiles = ["Gemfile.lock"]
+artifacts = [
+  { path = "vendor/bundle", kind = "dependencies", regenerate = "bundle install" },
+  { path = ".yardoc", kind = "cache", regenerate = "yard" },
+  { path = "tmp", kind = "cache", ambiguous = true, confirm = ["cache", "pids", "sockets"], regenerate = "rails tmp:create" },
+  { path = "coverage", kind = "other", ambiguous = true, regenerate = "your test suite" },
+]
+
+[[ecosystem]]
+id = "terraform"
+name = "Terraform/OpenTofu"
+badge = "tf"
+weak_markers = ["*.tf", "*.tofu"]
+lockfiles = [".terraform.lock.hcl"]
+artifacts = [
+  { path = ".terraform", kind = "dependencies", regenerate = "terraform init" },
+  { path = ".terragrunt-cache", kind = "cache", regenerate = "terragrunt init" },
+]
+
+[[ecosystem]]
+id = "unity"
+name = "Unity"
+badge = "un"
+markers = ["ProjectSettings/ProjectVersion.txt"]
+artifacts = [
+  { path = "Library", kind = "cache", regenerate = "reopen in Unity (slow reimport)" },
+  { path = "Temp", kind = "cache", regenerate = "Unity" },
+  { path = "Obj", kind = "build", regenerate = "Unity" },
+  { path = "Logs", kind = "other", regenerate = "Unity" },
+  { path = "MemoryCaptures", kind = "other", ambiguous = true },
+]
+
+[[ecosystem]]
+id = "unreal"
+name = "Unreal Engine"
+badge = "ue"
+markers = ["*.uproject"]
+artifacts = [
+  { path = "Binaries", kind = "build", regenerate = "rebuild in Unreal" },
+  { path = "Intermediate", kind = "build", regenerate = "rebuild in Unreal" },
+  { path = "DerivedDataCache", kind = "cache", regenerate = "Unreal (shader recompile)" },
+  { path = "Plugins/*/Binaries", kind = "build", regenerate = "rebuild in Unreal" },
+  { path = "Plugins/*/Intermediate", kind = "build", regenerate = "rebuild in Unreal" },
+  { path = "Saved", kind = "other", ambiguous = true, confirm = ["Logs", "Crashes"], regenerate = "autosaves and config live here" },
+]
+
+[[ecosystem]]
+id = "godot"
+name = "Godot"
+badge = "gd"
+markers = ["project.godot"]
+artifacts = [
+  { path = ".godot", kind = "cache", regenerate = "reopen in Godot" },
+  { path = ".import", kind = "cache", regenerate = "reopen in Godot" },
+  { path = ".mono", kind = "build", regenerate = "Godot build" },
+]
+
+[[ecosystem]]
+id = "r"
+name = "R"
+badge = "r"
+markers = ["DESCRIPTION", "*.Rproj", "renv.lock"]
+lockfiles = ["renv.lock"]
+artifacts = [
+  { path = "renv/library", kind = "dependencies", regenerate = "renv::restore()" },
+  { path = "renv/staging", kind = "cache", regenerate = "renv" },
+  { path = "packrat/lib", kind = "dependencies", regenerate = "packrat::restore()" },
+  { path = ".Rproj.user", kind = "cache", regenerate = "RStudio" },
+]
+
+[[ecosystem]]
+id = "julia"
+name = "Julia"
+badge = "jl"
+markers = ["Project.toml", "JuliaProject.toml"]
+lockfiles = ["Manifest.toml"]
+artifacts = []
+
+[[ecosystem]]
+id = "nix"
+name = "Nix"
+badge = "nx"
+markers = ["flake.nix", "shell.nix", "default.nix", "devenv.nix"]
+lockfiles = ["flake.lock", "devenv.lock"]
+artifacts = [
+  { path = ".devenv", kind = "environment", regenerate = "devenv shell" },
+]
+
+[[ecosystem]]
+id = "direnv"
+name = "direnv"
+badge = "de"
+weak_markers = [".envrc"]
+artifacts = [
+  { path = ".direnv", kind = "environment", regenerate = "direnv allow" },
+]
+
+[[ecosystem]]
+id = "jekyll"
+name = "Jekyll"
+badge = "jk"
+markers = ["_config.yml"]
+artifacts = [
+  { path = "_site", kind = "build", regenerate = "jekyll build" },
+  { path = ".jekyll-cache", kind = "cache", regenerate = "jekyll build" },
+  { path = ".sass-cache", kind = "cache", regenerate = "jekyll build" },
+]
+
+[[ecosystem]]
+id = "hugo"
+name = "Hugo"
+badge = "hu"
+markers = ["hugo.toml", "hugo.yaml", "hugo.json"]
+artifacts = [
+  { path = "public", kind = "build", ambiguous = true, confirm = ["index.html", "sitemap.xml"], regenerate = "hugo" },
+  { path = "resources/_gen", kind = "cache", regenerate = "hugo" },
+]
+
+[[ecosystem]]
+id = "mkdocs"
+name = "MkDocs"
+badge = "md"
+markers = ["mkdocs.yml", "mkdocs.yaml"]
+artifacts = [
+  { path = "site", kind = "build", ambiguous = true, confirm = ["sitemap.xml", "search"], regenerate = "mkdocs build" },
+]
+
+[[ecosystem]]
+id = "aws-cdk"
+name = "AWS CDK"
+badge = "cd"
+markers = ["cdk.json"]
+artifacts = [
+  { path = "cdk.out", kind = "build", regenerate = "cdk synth" },
+]
+
+[[ecosystem]]
+id = "serverless"
+name = "Serverless Framework"
+badge = "sl"
+markers = ["serverless.yml", "serverless.yaml", "serverless.ts"]
+artifacts = [
+  { path = ".serverless", kind = "build", regenerate = "serverless package" },
+]
+
+[[ecosystem]]
+id = "aws-sam"
+name = "AWS SAM"
+badge = "sa"
+markers = ["samconfig.toml"]
+artifacts = [
+  { path = ".aws-sam", kind = "build", regenerate = "sam build" },
+]

@@ -1,0 +1,35 @@
+[package]
+name = "carwash-core"
+description = "Engine for carwash: polyglot project discovery, artifact sizing, safe cleaning, dependency and task inspection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords = ["cleanup", "disk-usage", "monorepo", "node-modules", "cargo"]
+categories = ["development-tools", "filesystem"]
+
+[dependencies]
+rayon.workspace = true
+crossbeam-channel.workspace = true
+dashmap.workspace = true
+globset.workspace = true
+remove_dir_all.workspace = true
+trash.workspace = true
+fs4.workspace = true
+etcetera.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+yaml_serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+filetime.workspace = true
+
+[lints]
+workspace = true

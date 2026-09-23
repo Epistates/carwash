@@ -1,68 +1,93 @@
-[package]
-name = "carwash"
-version = "0.3.5"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/carwash"]
+
+[workspace.package]
+version = "0.4.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["Nicholas Paterno <nick@epistates.com>"]
-description = "A beautiful TUI for managing multiple Rust projects with workspace support, dependency management, and parallel command execution"
-readme = "README.md"
+license = "MIT"
 homepage = "https://github.com/epistates/carwash"
 repository = "https://github.com/epistates/carwash"
-documentation = "https://docs.rs/carwash"
-license = "MIT"
-keywords = ["cargo", "tui", "workspace", "dependencies", "rust"]
-categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.93.0"
 
-[lib]
-name = "carwash"
-path = "src/lib.rs"
+[workspace.dependencies]
+carwash-core = { version = "0.4.0", path = "crates/carwash-core" }
 
-[[bin]]
-name = "carwash"
-path = "src/main.rs"
+# Engine
+rayon = "1.12"
+crossbeam-channel = "0.5"
+dashmap = "6.1"
+globset = "0.4"
+remove_dir_all = { version = "1.0", features = ["parallel"] }
+trash = "5.2"
+fs4 = "1.1"
+etcetera = "0.11"
+filetime = "0.2"
+
+# Formats
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+toml_edit = "0.25"
+yaml_serde = "0.10"
+semver = { version = "1.0", features = ["serde"] }
+cargo-lock = "11.1"
+jiff = { version = "0.2", features = ["serde"] }
+
+# Errors, logging
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# CLI / TUI
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tui-input = "0.15"
+nucleo-matcher = "0.3"
+unicode-width = "0.2"
+humantime = "2.2"
+indicatif = "0.18"
+anstream = "1.0"
+anstyle = "1.0"
+
+# Async, processes, network
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = "0.7"
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
+portable-pty = "0.9"
+vt100 = "0.16"
+tui-term = "0.3"
+process-wrap = { version = "10.0", features = ["std"] }
+shlex = "2.0"
+
+# Testing
+tempfile = "3.27"
+insta = "1.48"
+assert_cmd = "2.2"
+predicates = "3.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+too_many_arguments = "allow"
 
 [profile.release]
-opt-level = 3              # Maximum optimization
-lto = "fat"                # Full link-time optimization
-codegen-units = 1          # Better optimization, slower compile
-strip = true               # Strip symbols for smaller binary
-panic = "abort"            # Smaller binary, no stack unwinding
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
 
-[profile.dev]
-opt-level = 0              # Fast compilation
-debug = true               # Full debug info
-
-[lints.clippy]
-# Allow some pedantic lints that don't affect functionality
-new_without_default = "allow"
-useless_format = "allow"
-too_many_arguments = "allow"
-module_name_repetitions = "allow"
-
-[dependencies]
-cargo-lock = "11.0.1"
-clap = { version = "4.6.1", features = ["derive"] }
-crates_io_api = "0.12.0"
-crossterm = { version = "0.29.0", features = ["event-stream"] }
-futures = "0.3.32"
-fuzzy-matcher = "0.3.7"
-glob = "0.3.3"
-ratatui = "0.30.0"
-rayon = "1.12.0"
-serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.52.3", features = ["full"] }
-toml = "1.1.2"
-once_cell = "1.21.4"
-tui-input = "0.15.3"
-tui-tree-widget = "0.24.0"
-walkdir = "2.5.0"
-chrono = "0.4.44"
-anyhow = "1.0.102"
-semver = "1.0.28"
-directories = "6.0.0"
-serde_json = "1.0.149"
-ignore = "0.4.25"
-tracing-subscriber = "0.3.23"
-tracing-appender = "0.2.5"
-tracing = "0.1.44"
-shlex = "2.0.1"
+[profile.dev.package."*"]
+opt-level = 2
