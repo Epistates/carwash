@@ -80,8 +80,9 @@ impl Default for CleanConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
+    /// `gestalt`, `latte`, `nord`, `dracula` or `ansi` (16 colors).
     pub theme: String,
-    /// `unicode`, `nerd` (Nerd Font glyphs) or `ascii`.
+    /// `unicode` or `ascii`.
     pub icons: String,
 }
 
@@ -106,9 +107,17 @@ const HOME_EXCLUDES: &[&str] = &[
 ];
 
 impl Config {
-    /// Loads `path`; a missing file yields defaults, a malformed one is an error.
+    /// Loads `path`; a missing file yields defaults, a malformed one is an error. A file
+    /// written by carwash 0.3 (same path on Linux) is ignored with a warning.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
+            Ok(text) if is_legacy(&text) => {
+                anstream::eprintln!(
+                    "warning: ignoring {}: it was written by carwash 0.3. Delete it, or see the README for the new format.",
+                    path.display()
+                );
+                Ok(Self::default())
+            }
             Ok(text) => toml::from_str(&text)
                 .with_context(|| format!("invalid configuration in {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -118,7 +127,7 @@ impl Config {
 
     /// Absolute exclusion paths: configured ones plus, if enabled, the home defaults.
     pub fn excludes(&self) -> Vec<PathBuf> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = carwash_core::paths::home();
         let mut out: Vec<PathBuf> = self
             .scan
             .exclude
@@ -132,6 +141,17 @@ impl Config {
         }
         out
     }
+}
+
+/// A 0.3 configuration: only 0.3 tables (`[layout]`, `[keybindings]`...), none of ours.
+fn is_legacy(text: &str) -> bool {
+    const LEGACY: &[&str] = &["theme", "layout", "keybindings", "progress", "app"];
+    const CURRENT: &[&str] = &["scan", "clean", "updates", "ui"];
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    table.keys().any(|k| LEGACY.contains(&k.as_str()))
+        && !table.keys().any(|k| CURRENT.contains(&k.as_str()))
 }
 
 pub fn expand_home(raw: &str, home: Option<&Path>) -> PathBuf {
@@ -156,6 +176,18 @@ mod tests {
     #[test]
     fn unknown_keys_are_errors() {
         assert!(toml::from_str::<Config>("[scan]\nexclud = []\n").is_err());
+    }
+
+    #[test]
+    fn version_0_3_files_are_recognised() {
+        let legacy = "[theme]\ncurrent = \"dark\"\n[layout]\nleft_pane_percent = 30\n[app]\ncache_ttl_minutes = 5\n";
+        assert!(is_legacy(legacy));
+        assert!(!is_legacy("[ui]\ntheme = \"nord\"\n"));
+        assert!(!is_legacy("[layout]\nx = 1\n[scan]\nexclude = []\n"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, legacy).unwrap();
+        assert_eq!(Config::load(&path).unwrap().clean.recent_days, 7);
     }
 
     #[test]

@@ -47,6 +47,10 @@ impl Dirs {
         self.config.join("ecosystems.toml")
     }
 
+    pub fn caches_file(&self) -> PathBuf {
+        self.config.join("caches.toml")
+    }
+
     pub fn size_cache_file(&self) -> PathBuf {
         self.cache.join("sizes.json")
     }

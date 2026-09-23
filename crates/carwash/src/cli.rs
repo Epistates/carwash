@@ -315,6 +315,7 @@ pub struct CachesArgs {
 pub enum CachesAction {
     /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children.
     Clean {
+        /// Cache ids, e.g. `npm` or `rustup-toolchains/nightly-aarch64-apple-darwin`.
         #[arg(required = true, value_name = "ID")]
         ids: Vec<String>,
 

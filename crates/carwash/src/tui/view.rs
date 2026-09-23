@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn home_relative(path: &std::path::Path) -> String {
-    if let Some(home) = std::env::var_os("HOME")
+    if let Some(home) = carwash_core::paths::home()
         && let Ok(rest) = path.strip_prefix(&home)
     {
         return if rest.as_os_str().is_empty() {

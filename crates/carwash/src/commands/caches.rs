@@ -19,7 +19,7 @@ use std::time::Duration;
 
 /// Caches present on this machine, with user overrides from `caches.toml`.
 pub fn present(ctx: &Context) -> Result<Vec<GlobalCache>> {
-    let specs = match ctx.dirs.as_ref().map(|d| d.config.join("caches.toml")) {
+    let specs = match ctx.dirs.as_ref().map(|d| d.caches_file()) {
         Some(path) if path.exists() => {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("cannot read {}", path.display()))?;
