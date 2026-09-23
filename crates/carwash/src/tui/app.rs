@@ -5,8 +5,10 @@ use super::query::{Fuzzy, Query};
 use super::store::{self, EntryStatus, Grouping, RowKey, Rows, SortKey, Store, View};
 use super::tasks::{JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
+use super::updates::UpdatesState;
 use carwash_core::cache::SizeCache;
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
+use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
 use carwash_core::history::Record;
 use carwash_core::select::{Hold, Policy};
 use carwash_core::tasks::Task;
@@ -33,11 +35,24 @@ pub enum Msg {
     Scan(ScanEvent),
     Clean(CleanEvent),
     CleanFinished(CleanReport),
-    Disk { free: u64, total: u64 },
+    Disk {
+        free: u64,
+        total: u64,
+    },
     TasksDiscovered(PathBuf, Vec<Task>),
-    JobStarted { id: u64, label: String, task: Task },
+    JobStarted {
+        id: u64,
+        label: String,
+        task: Task,
+        /// Project whose dependencies to check again when the job ends.
+        recheck: Option<PathBuf>,
+    },
     JobOutput(u64, Vec<u8>),
     JobExited(u64, Result<i32, String>),
+    DepsProgress(Arc<CheckProgress>),
+    DepsChecked(Vec<ProjectDeps>),
+    /// Applying updates to the project at the path could not start.
+    UpdateFailed(PathBuf, String),
 }
 
 #[derive(Debug)]
@@ -64,6 +79,18 @@ pub enum Effect {
         size: (u16, u16),
     },
     KillJob(u64),
+    CheckDeps {
+        specs: Vec<ProjectSpec>,
+        refresh: bool,
+    },
+    /// Updates `deps` of the project at `dir` (to latest when `latest`), as jobs.
+    ApplyUpdates {
+        dir: PathBuf,
+        label: String,
+        deps: Vec<Dependency>,
+        latest: bool,
+        size: (u16, u16),
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +190,7 @@ pub struct App {
     pub spinner: usize,
     pub tab: Tab,
     pub tasks: TasksState,
+    pub updates: UpdatesState,
     /// Quit was pressed once while jobs were running.
     quit_armed: bool,
     pub quit: bool,
@@ -222,6 +250,7 @@ impl App {
             spinner: 0,
             tab: Tab::Reclaim,
             tasks: TasksState::default(),
+            updates: UpdatesState::default(),
             quit_armed: false,
             quit: false,
             dirty: true,
@@ -234,6 +263,7 @@ impl App {
             || matches!(&self.mode, Mode::Review(r) if matches!(r.phase, ReviewPhase::Running { .. }))
             || self.toast.is_some()
             || self.tasks.running() > 0
+            || !self.updates.checking.is_empty()
     }
 
     pub(crate) fn toast(&mut self, text: impl Into<String>, level: Level) {
@@ -334,8 +364,26 @@ impl App {
                 self.tasks.tasks.insert(path, Some(tasks));
                 Vec::new()
             }
-            Msg::JobStarted { id, label, task } => {
-                self.tasks.add_job(id, label, task);
+            Msg::JobStarted {
+                id,
+                label,
+                task,
+                recheck,
+            } => {
+                self.tasks.add_job(id, label, task, recheck);
+                Vec::new()
+            }
+            Msg::DepsProgress(progress) => {
+                self.updates.progress = Some(progress);
+                Vec::new()
+            }
+            Msg::DepsChecked(results) => {
+                self.updates.finish_check(results);
+                Vec::new()
+            }
+            Msg::UpdateFailed(path, error) => {
+                self.updates.updating.remove(&path);
+                self.toast(error, Level::Warn);
                 Vec::new()
             }
             Msg::JobOutput(id, bytes) => {
@@ -365,6 +413,20 @@ impl App {
                     if !text.is_empty() {
                         self.toast(text, level);
                     }
+                }
+                let recheck = self
+                    .tasks
+                    .jobs
+                    .iter()
+                    .find(|j| j.id == id)
+                    .and_then(|j| j.recheck.clone());
+                // Once every job for the project has finished, look at its dependencies again.
+                if let Some(path) = recheck
+                    && !self.tasks.jobs.iter().any(|j| {
+                        j.status == JobStatus::Running && j.recheck.as_ref() == Some(&path)
+                    })
+                {
+                    return self.recheck(&path);
                 }
                 Vec::new()
             }
@@ -424,10 +486,15 @@ impl App {
                 self.toast(format!("Theme: {}", self.theme.name), Level::Info);
             }
             Action::Help => self.mode = Mode::Help,
+            Action::ShowUpdates => {
+                self.tab = Tab::Updates;
+                return self.updates_effects();
+            }
             Action::Search => {
                 let current = match self.tab {
                     Tab::Reclaim => self.query.raw.clone(),
                     Tab::Tasks => self.tasks.filter.clone(),
+                    Tab::Updates => self.updates.filter.clone(),
                 };
                 self.input = Input::new(current);
                 self.mode = Mode::Search;
@@ -445,14 +512,17 @@ impl App {
                     return vec![Effect::CancelScan];
                 }
             }
-            action => {
-                return match self.tab {
-                    Tab::Reclaim => self.on_action(action),
-                    Tab::Tasks => self.on_tasks_action(action),
-                };
-            }
+            action => return self.on_tab_action(action),
         }
         Vec::new()
+    }
+
+    fn on_tab_action(&mut self, action: Action) -> Vec<Effect> {
+        match self.tab {
+            Tab::Reclaim => self.on_action(action),
+            Tab::Tasks => self.on_tasks_action(action),
+            Tab::Updates => self.on_updates_action(action),
+        }
     }
 
     fn on_search_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -469,10 +539,7 @@ impl App {
                 } else {
                     Action::Down
                 };
-                return match self.tab {
-                    Tab::Reclaim => self.on_action(action),
-                    Tab::Tasks => self.on_tasks_action(action),
-                };
+                return self.on_tab_action(action);
             }
             _ => {
                 if self.input.handle_event(&Event::Key(key)).is_some() {
@@ -481,16 +548,18 @@ impl App {
                 }
             }
         }
-        if self.tab == Tab::Tasks {
-            return self.tasks_effects();
+        match self.tab {
+            Tab::Reclaim => Vec::new(),
+            Tab::Tasks => self.tasks_effects(),
+            Tab::Updates => self.updates_effects(),
         }
-        Vec::new()
     }
 
     fn apply_search(&mut self, value: String) {
         match self.tab {
             Tab::Reclaim => self.set_query(value),
             Tab::Tasks => self.tasks.set_filter(value),
+            Tab::Updates => self.updates.set_filter(value),
         }
     }
 

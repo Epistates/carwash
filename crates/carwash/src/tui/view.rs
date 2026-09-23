@@ -34,6 +34,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let details = app.show_details && body.width >= MIN_WIDTH_FOR_DETAILS;
     if app.tab == Tab::Tasks {
         super::tasks::render(frame, app, body);
+    } else if app.tab == Tab::Updates {
+        super::updates::render(frame, app, body);
     } else if details {
         let [table, side] =
             Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAILS_WIDTH)])
@@ -65,9 +67,7 @@ fn home_relative(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-fn spinner(app: &App) -> &'static str {
-    app.glyphs.spinner[app.spinner % app.glyphs.spinner.len()]
-}
+use super::widgets::spinner;
 
 /// Renders `left` and right-aligned `right` on one line; `right` wins when space runs out.
 fn split_line(frame: &mut Frame, area: Rect, left: Line<'_>, right: Line<'_>) {
@@ -144,6 +144,28 @@ fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             right.push(Span::raw(" "));
         }
+        split_line(frame, area, Line::from(left), Line::from(right));
+        return;
+    }
+    if app.tab == Tab::Updates {
+        let (outdated, vulnerable) = app.updates.totals();
+        let mut right = vec![Span::styled(
+            format!("{} checked", app.updates.results.len()),
+            t.muted(),
+        )];
+        if outdated > 0 {
+            right.push(Span::styled(
+                format!(" · {outdated} outdated"),
+                t.fg(t.warning),
+            ));
+        }
+        if vulnerable > 0 {
+            right.push(Span::styled(
+                format!(" · {vulnerable} vulnerable"),
+                t.bold(t.error),
+            ));
+        }
+        right.push(Span::raw(" "));
         split_line(frame, area, Line::from(left), Line::from(right));
         return;
     }
@@ -715,6 +737,17 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
             ("q", "quit"),
         ],
+        Tab::Updates => &[
+            ("enter", "check"),
+            ("C", "check all"),
+            ("space", "mark"),
+            ("u", "update"),
+            ("U", "upgrade"),
+            ("tab", "pane"),
+            ("/", "filter"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
     };
     let mut spans = vec![Span::raw(" ")];
     for (i, (key, label)) in hints.iter().enumerate() {
@@ -966,7 +999,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         }
         lines.push(Line::default());
     }
-    if app.tab == Tab::Tasks {
+    if app.tab != Tab::Reclaim {
         lines.push(Line::from(Span::styled(
             "Press any key to close",
             t.muted(),

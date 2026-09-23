@@ -3,7 +3,7 @@
 use super::app::{App, Effect, Level};
 use super::keymap::Action;
 use super::query::Fuzzy;
-use super::theme::Theme;
+use super::widgets::{pane, spinner};
 use carwash_core::tasks::Task;
 use carwash_core::{EcoId, ProjectId};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -42,6 +42,8 @@ pub struct Job {
     pub status: JobStatus,
     started: Instant,
     pub elapsed: Option<Duration>,
+    /// Project whose dependencies are checked again when this job ends.
+    pub recheck: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Job {
@@ -120,7 +122,7 @@ impl TasksState {
         self.jobs.iter_mut().find(|j| j.id == id)
     }
 
-    pub fn add_job(&mut self, id: u64, label: String, task: Task) {
+    pub fn add_job(&mut self, id: u64, label: String, task: Task, recheck: Option<PathBuf>) {
         let (rows, cols) = self.pty_size;
         self.jobs.push(Job {
             id,
@@ -130,6 +132,7 @@ impl TasksState {
             status: JobStatus::Running,
             started: Instant::now(),
             elapsed: None,
+            recheck,
         });
         self.active = self.jobs.len() - 1;
     }
@@ -390,26 +393,6 @@ impl App {
     }
 }
 
-fn pane_block<'a>(theme: &Theme, title: String, focused: bool) -> Block<'a> {
-    let color = if focused { theme.accent } else { theme.border };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme.fg(color))
-        .title(Span::styled(
-            format!(" {title} "),
-            if focused {
-                theme.bold(theme.accent)
-            } else {
-                theme.muted()
-            },
-        ))
-}
-
-fn spinner(app: &App) -> &'static str {
-    app.glyphs.spinner[app.spinner % app.glyphs.spinner.len()]
-}
-
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_task_projects();
     let t = app.theme;
@@ -462,7 +445,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut state = ListState::default().with_selected(Some(app.tasks.project_cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(pane_block(
+            .block(pane(
                 &t,
                 title,
                 app.tasks.focus == super::tasks::Pane::Projects,
@@ -511,11 +494,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 ListState::default().with_selected(focus_tasks.then_some(app.tasks.task_cursor));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(pane_block(
-                        &t,
-                        format!("Tasks {}", tasks.len()),
-                        focus_tasks,
-                    ))
+                    .block(pane(&t, format!("Tasks {}", tasks.len()), focus_tasks))
                     .highlight_style(t.selected_row()),
                 tasks_area,
                 &mut state,
@@ -523,7 +502,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         Some(_) => frame.render_widget(
             Paragraph::new(Span::styled("No tasks found for this project.", t.subtle()))
-                .block(pane_block(&t, "Tasks".into(), focus_tasks)),
+                .block(pane(&t, "Tasks".into(), focus_tasks)),
             tasks_area,
         ),
         None => frame.render_widget(
@@ -535,7 +514,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 },
                 t.subtle(),
             ))
-            .block(pane_block(&t, "Tasks".into(), focus_tasks)),
+            .block(pane(&t, "Tasks".into(), focus_tasks)),
             tasks_area,
         ),
     }
@@ -552,7 +531,7 @@ fn render_output(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         format!("Output · {} jobs, {running} running", app.tasks.jobs.len())
     };
-    let block = pane_block(&t, title, focused);
+    let block = pane(&t, title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if app.tasks.jobs.is_empty() {
@@ -705,6 +684,7 @@ mod tests {
             id: 7,
             label: "a".into(),
             task: task("test", "/w/a"),
+            recheck: None,
         });
         assert_eq!(app.tasks.running(), 1);
         assert!(app.animating());
@@ -727,6 +707,7 @@ mod tests {
             id: 8,
             label: "b".into(),
             task: task("x", "/w/b"),
+            recheck: None,
         });
         app.update(Msg::JobExited(8, Err("`just` not found".into())));
         assert!(
@@ -748,6 +729,7 @@ mod tests {
             id: 1,
             label: "a".into(),
             task: task("dev", "/w/a"),
+            recheck: None,
         });
         press(&mut app, KeyCode::Char('q'));
         assert!(!app.quit);

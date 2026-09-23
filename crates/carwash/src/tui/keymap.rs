@@ -32,8 +32,13 @@ pub enum Action {
     NextJob,
     PreviousJob,
     ClearJobs,
+    Check,
+    CheckAll,
+    Update,
+    Upgrade,
     ShowReclaim,
     ShowTasks,
+    ShowUpdates,
     Theme,
     Help,
     Quit,
@@ -44,15 +49,17 @@ pub enum Action {
 pub enum Tab {
     Reclaim,
     Tasks,
+    Updates,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Reclaim, Tab::Tasks];
+    pub const ALL: [Tab; 3] = [Tab::Reclaim, Tab::Tasks, Tab::Updates];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Reclaim => "Reclaim",
             Tab::Tasks => "Tasks",
+            Tab::Updates => "Updates",
         }
     }
 
@@ -60,6 +67,7 @@ impl Tab {
         match self {
             Tab::Reclaim => RECLAIM,
             Tab::Tasks => TASKS,
+            Tab::Updates => UPDATES,
         }
     }
 }
@@ -71,6 +79,7 @@ pub enum Section {
     Select,
     View,
     Jobs,
+    Updates,
     General,
 }
 
@@ -81,6 +90,7 @@ impl Section {
             Self::Select => "Select & clean",
             Self::View => "View",
             Self::Jobs => "Tasks & jobs",
+            Self::Updates => "Dependencies",
             Self::General => "General",
         }
     }
@@ -172,6 +182,13 @@ pub const GLOBAL: &[Binding] = &[
         "reclaim space",
     ),
     bind(&[(Char('2'), NONE)], "2", A::ShowTasks, S::General, "tasks"),
+    bind(
+        &[(Char('3'), NONE)],
+        "3",
+        A::ShowUpdates,
+        S::General,
+        "dependency updates",
+    ),
     bind(
         &[(Char('t'), NONE)],
         "t",
@@ -388,6 +405,100 @@ pub const TASKS: &[Binding] = &[
         "o",
         A::Open,
         S::Jobs,
+        "reveal project in file manager",
+    ),
+];
+
+pub const UPDATES: &[Binding] = &[
+    MOVE[0],
+    MOVE[1],
+    MOVE[2],
+    MOVE[3],
+    MOVE[4],
+    MOVE[5],
+    bind(
+        &[
+            (TabKey, NONE),
+            (KeyCode::BackTab, KeyModifiers::SHIFT),
+            (KeyCode::BackTab, NONE),
+            (Right, NONE),
+            (Left, NONE),
+            (Char('l'), NONE),
+            (Char('h'), NONE),
+        ],
+        "Tab ← →",
+        A::NextPane,
+        S::Navigate,
+        "switch pane",
+    ),
+    bind(
+        &[(Char('/'), NONE)],
+        "/",
+        A::Search,
+        S::Navigate,
+        "filter projects",
+    ),
+    bind(
+        &[(Enter, NONE)],
+        "Enter",
+        A::Run,
+        S::Updates,
+        "check the project (or marked projects)",
+    ),
+    bind(
+        &[(Char('c'), NONE)],
+        "c",
+        A::Check,
+        S::Updates,
+        "check again, bypassing the cache",
+    ),
+    bind(
+        &[(Char('C'), NONE)],
+        "C",
+        A::CheckAll,
+        S::Updates,
+        "check every project listed",
+    ),
+    bind(
+        &[(Char(' '), NONE)],
+        "Space",
+        A::Mark,
+        S::Updates,
+        "mark project / outdated dependency",
+    ),
+    bind(
+        &[(Char('a'), NONE)],
+        "a",
+        A::MarkAll,
+        S::Updates,
+        "mark all (projects or outdated dependencies)",
+    ),
+    bind(
+        &[(Char('A'), NONE)],
+        "A",
+        A::Unmark,
+        S::Updates,
+        "unmark everything",
+    ),
+    bind(
+        &[(Char('u'), NONE)],
+        "u",
+        A::Update,
+        S::Updates,
+        "update marked within their requirements",
+    ),
+    bind(
+        &[(Char('U'), NONE)],
+        "U",
+        A::Upgrade,
+        S::Updates,
+        "upgrade marked to latest (edits manifests; press twice)",
+    ),
+    bind(
+        &[(Char('o'), NONE)],
+        "o",
+        A::Open,
+        S::Updates,
         "reveal project in file manager",
     ),
 ];

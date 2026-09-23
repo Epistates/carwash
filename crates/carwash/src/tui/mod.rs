@@ -10,12 +10,16 @@ mod query;
 mod store;
 mod tasks;
 mod theme;
+mod updates;
 mod view;
+mod widgets;
 
 use crate::context::Context;
 use anyhow::Result;
 use app::{App, Effect, Msg};
 use carwash_core::clean::CleanOptions;
+use carwash_core::deps::Checker;
+use carwash_core::tasks::Task;
 use carwash_core::{Cancel, Counters, ScanOptions, history};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
@@ -68,6 +72,7 @@ pub fn run(ctx: &Context, root: PathBuf, options: ScanOptions) -> Result<()> {
         jobs: HashMap::new(),
         next_job: 0,
         pty_size: (24, 80),
+        checker: Arc::new(crate::commands::outdated::checker(ctx)),
     };
     runtime.execute(Effect::Scan);
     runtime.execute(Effect::RefreshDisk);
@@ -159,6 +164,7 @@ struct Runtime<'a> {
     jobs: HashMap<u64, pty::PtyJob>,
     next_job: u64,
     pty_size: (u16, u16),
+    checker: Arc<Checker>,
 }
 
 impl Runtime<'_> {
@@ -171,6 +177,26 @@ impl Runtime<'_> {
         }
         for (_, job) in self.jobs.drain() {
             job.kill();
+        }
+    }
+
+    /// Runs `task` on a new terminal; its output streams into the Tasks tab.
+    fn start_job(&mut self, label: String, task: Task, size: (u16, u16), recheck: Option<PathBuf>) {
+        let id = self.next_job;
+        self.next_job += 1;
+        let _ = self.tx.send(Msg::JobStarted {
+            id,
+            label,
+            task: task.clone(),
+            recheck,
+        });
+        match pty::spawn(id, &task, size, self.tx.clone()) {
+            Ok(job) => {
+                self.jobs.insert(id, job);
+            }
+            Err(error) => {
+                let _ = self.tx.send(Msg::JobExited(id, Err(error)));
+            }
         }
     }
 
@@ -263,20 +289,46 @@ impl Runtime<'_> {
                     else {
                         continue;
                     };
-                    let id = self.next_job;
-                    self.next_job += 1;
-                    let _ = self.tx.send(Msg::JobStarted {
-                        id,
-                        label: target.label,
-                        task: task.clone(),
-                    });
-                    match pty::spawn(id, &task, size, self.tx.clone()) {
-                        Ok(job) => {
-                            self.jobs.insert(id, job);
+                    self.start_job(target.label, task, size, None);
+                }
+            }
+            Effect::CheckDeps { specs, refresh } => {
+                let (checker, registry, tx) = (
+                    self.checker.clone(),
+                    self.ctx.engine.registry().clone(),
+                    self.tx.clone(),
+                );
+                let vulnerabilities = self.ctx.config.updates.vulnerabilities;
+                std::thread::spawn(move || {
+                    let progress = Arc::new(carwash_core::deps::CheckProgress::default());
+                    let _ = tx.send(Msg::DepsProgress(progress.clone()));
+                    let results =
+                        checker.check(&specs, &registry, vulnerabilities, refresh, &progress);
+                    if let Err(error) = checker.save() {
+                        tracing::warn!(%error, "cannot save dependency cache");
+                    }
+                    let _ = tx.send(Msg::DepsChecked(results));
+                });
+            }
+            Effect::ApplyUpdates {
+                dir,
+                label,
+                deps,
+                latest,
+                size,
+            } => {
+                let refs: Vec<&carwash_core::deps::Dependency> = deps.iter().collect();
+                match carwash_core::deps::update_tasks(&dir, &refs, latest) {
+                    Ok(tasks) => {
+                        for task in tasks {
+                            self.start_job(label.clone(), task, size, Some(dir.clone()));
                         }
-                        Err(error) => {
-                            let _ = self.tx.send(Msg::JobExited(id, Err(error)));
-                        }
+                    }
+                    Err(error) => {
+                        let _ = self.tx.send(Msg::UpdateFailed(
+                            dir,
+                            format!("Cannot update {label}: {error}"),
+                        ));
                     }
                 }
             }
