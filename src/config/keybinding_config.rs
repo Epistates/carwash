@@ -36,7 +36,6 @@ pub enum KeyAction {
     ShowSettings,
     ShowHelp,
     StartUpdateWizard,
-    CheckForUpdates,
 
     // Application
     Quit,
@@ -66,7 +65,6 @@ impl KeyAction {
             KeyAction::ShowSettings => "Show settings",
             KeyAction::ShowHelp => "Show help",
             KeyAction::StartUpdateWizard => "Start update wizard",
-            KeyAction::CheckForUpdates => "Check for updates",
             KeyAction::Quit => "Quit application",
         }
     }
@@ -161,7 +159,6 @@ impl KeybindingConfig {
             ),
             ("ShowHelp".to_string(), vec!["?".to_string()]),
             ("StartUpdateWizard".to_string(), vec!["u".to_string()]),
-            ("CheckForUpdates".to_string(), vec!["u".to_string()]),
             ("Quit".to_string(), vec!["q".to_string()]),
         ]
         .into_iter()
@@ -186,7 +183,6 @@ impl KeybindingConfig {
             ("ShowSettings".to_string(), vec![";".to_string()]),
             ("ShowHelp".to_string(), vec!["?".to_string()]),
             ("StartUpdateWizard".to_string(), vec!["u".to_string()]),
-            ("CheckForUpdates".to_string(), vec!["U".to_string()]),
             ("Quit".to_string(), vec!["q".to_string()]),
         ]
         .into_iter()

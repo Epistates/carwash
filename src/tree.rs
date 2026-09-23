@@ -198,7 +198,7 @@ pub struct TreeSelectionState {
     /// Index of the currently selected item in the flattened tree
     pub selected_index: Option<usize>,
     /// Set of selected project paths (for multi-select)
-    pub selected_projects: HashSet<String>,
+    pub selected_projects: HashSet<PathBuf>,
 }
 
 impl TreeSelectionState {
@@ -229,17 +229,17 @@ impl TreeSelectionState {
     }
 
     /// Toggle selection of a project
-    pub fn toggle_project(&mut self, name: String) {
-        if self.selected_projects.contains(&name) {
-            self.selected_projects.remove(&name);
+    pub fn toggle_project(&mut self, path: PathBuf) {
+        if self.selected_projects.contains(&path) {
+            self.selected_projects.remove(&path);
         } else {
-            self.selected_projects.insert(name);
+            self.selected_projects.insert(path);
         }
     }
 
     /// Check if a project is selected
-    pub fn is_project_selected(&self, name: &str) -> bool {
-        self.selected_projects.contains(name)
+    pub fn is_project_selected(&self, path: &Path) -> bool {
+        self.selected_projects.contains(path)
     }
 }
 
@@ -281,10 +281,10 @@ mod tests {
         state.select_prev();
         assert_eq!(state.selected_index, Some(0));
 
-        state.toggle_project("proj1".to_string());
-        assert!(state.is_project_selected("proj1"));
+        state.toggle_project(PathBuf::from("proj1"));
+        assert!(state.is_project_selected(Path::new("proj1")));
 
-        state.toggle_project("proj1".to_string());
-        assert!(!state.is_project_selected("proj1"));
+        state.toggle_project(PathBuf::from("proj1"));
+        assert!(!state.is_project_selected(Path::new("proj1")));
     }
 }

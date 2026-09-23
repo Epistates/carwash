@@ -65,6 +65,7 @@ impl ThemeConfig {
             "nord" => ColorScheme::Nord,
             "dracula" => ColorScheme::Dracula,
             "cosmic" => ColorScheme::Cosmic,
+            "gestalt" => ColorScheme::Gestalt,
             _ => ColorScheme::Dark,
         }
     }
@@ -77,7 +78,8 @@ impl ThemeConfig {
             ColorScheme::Light => ColorScheme::Nord,
             ColorScheme::Nord => ColorScheme::Dracula,
             ColorScheme::Dracula => ColorScheme::Cosmic,
-            ColorScheme::Cosmic => ColorScheme::Dark,
+            ColorScheme::Cosmic => ColorScheme::Gestalt,
+            ColorScheme::Gestalt => ColorScheme::Dark,
         }
     }
 
@@ -89,13 +91,14 @@ impl ThemeConfig {
             "nord" => "Nord".to_string(),
             "dracula" => "Dracula".to_string(),
             "cosmic" => "Cosmic".to_string(),
+            "gestalt" => "Gestalt".to_string(),
             name => format!("Custom: {}", name),
         }
     }
 
     /// List all available theme names
     pub fn available_themes() -> Vec<&'static str> {
-        vec!["dark", "light", "nord", "dracula", "cosmic"]
+        vec!["dark", "light", "nord", "dracula", "cosmic", "gestalt"]
     }
 
     /// Set the active theme by name
@@ -114,6 +117,7 @@ impl ThemeConfig {
             ColorScheme::Nord => "nord",
             ColorScheme::Dracula => "dracula",
             ColorScheme::Cosmic => "cosmic",
+            ColorScheme::Gestalt => "gestalt",
         }
         .to_string();
     }
@@ -126,6 +130,7 @@ impl ThemeConfig {
             "Nord".to_string(),
             "Dracula".to_string(),
             "Cosmic".to_string(),
+            "Gestalt".to_string(),
         ]
     }
 }
@@ -166,6 +171,9 @@ mod tests {
 
         let config = ThemeConfig::new("cosmic");
         assert_eq!(config.current_scheme(), ColorScheme::Cosmic);
+
+        let config = ThemeConfig::new("gestalt");
+        assert_eq!(config.current_scheme(), ColorScheme::Gestalt);
     }
 
     #[test]
@@ -177,6 +185,9 @@ mod tests {
         assert_eq!(config.next_scheme(), ColorScheme::Cosmic);
 
         let config = ThemeConfig::new("cosmic");
+        assert_eq!(config.next_scheme(), ColorScheme::Gestalt);
+
+        let config = ThemeConfig::new("gestalt");
         assert_eq!(config.next_scheme(), ColorScheme::Dark);
     }
 
@@ -192,6 +203,8 @@ mod tests {
         config.cycle_next();
         assert_eq!(config.current, "cosmic");
         config.cycle_next();
+        assert_eq!(config.current, "gestalt");
+        config.cycle_next();
         assert_eq!(config.current, "dark");
     }
 
@@ -199,6 +212,9 @@ mod tests {
     fn test_display_name() {
         let config = ThemeConfig::new("dark");
         assert_eq!(config.display_name(), "Dark");
+
+        let config = ThemeConfig::new("gestalt");
+        assert_eq!(config.display_name(), "Gestalt");
 
         let mut config = ThemeConfig::new("custom");
         config.custom = Some(CustomTheme {
@@ -217,10 +233,11 @@ mod tests {
     #[test]
     fn test_available_themes() {
         let themes = ThemeConfig::available_themes();
-        assert_eq!(themes.len(), 5);
+        assert_eq!(themes.len(), 6);
         assert!(themes.contains(&"dark"));
         assert!(themes.contains(&"light"));
         assert!(themes.contains(&"cosmic"));
+        assert!(themes.contains(&"gestalt"));
     }
 
     #[test]

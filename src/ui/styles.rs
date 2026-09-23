@@ -128,11 +128,26 @@ impl Colors {
             primary: Color::Rgb(180, 0, 255),   // Neon Purple
         }
     }
+
+    /// Gestalt theme - Inspired by Catppuccin Mocha
+    pub fn gestalt() -> Self {
+        Self {
+            selection: Color::Rgb(203, 166, 247), // Mauve
+            success: Color::Rgb(166, 227, 161),   // Green
+            warning: Color::Rgb(249, 226, 175),   // Yellow
+            error: Color::Rgb(243, 139, 168),     // Red
+            muted: Color::Rgb(108, 112, 134),     // Overlay0
+            text: Color::Rgb(205, 214, 244),      // Text
+            dim: Color::Rgb(69, 71, 90),          // Surface1
+            primary: Color::Rgb(180, 190, 254),   // Lavender
+        }
+    }
 }
 
 /// Named color scheme presets
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorScheme {
+    Gestalt,
     Dark,
     Light,
     Nord,
@@ -143,6 +158,7 @@ pub enum ColorScheme {
 impl ColorScheme {
     pub fn colors(self) -> Colors {
         match self {
+            ColorScheme::Gestalt => Colors::gestalt(),
             ColorScheme::Dark => Colors::dark(),
             ColorScheme::Light => Colors::light(),
             ColorScheme::Nord => Colors::nord(),
@@ -153,6 +169,7 @@ impl ColorScheme {
 
     pub fn all() -> &'static [ColorScheme] {
         &[
+            ColorScheme::Gestalt,
             ColorScheme::Dark,
             ColorScheme::Light,
             ColorScheme::Nord,
@@ -329,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_color_scheme_all() {
-        assert_eq!(ColorScheme::all().len(), 5);
+        assert_eq!(ColorScheme::all().len(), 6);
     }
 
     #[test]

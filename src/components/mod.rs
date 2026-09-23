@@ -23,8 +23,6 @@ pub mod tree_view;
 pub mod updater;
 
 // Re-export commonly used types
-pub use updater::PendingDirectoryCheck;
-
 /// Trait for UI components in CarWash
 ///
 /// All UI components implement this trait to provide a consistent interface for

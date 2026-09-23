@@ -51,14 +51,20 @@ impl DependenciesPane {
                     &dep.current_version,
                     Style::default().fg(Color::DarkGray),
                 ),
-                ratatui::text::Span::styled(" → ", Style::default().fg(Color::Yellow)),
-                ratatui::text::Span::styled(
-                    dep.latest_version.as_ref().unwrap(),
+            ];
+
+            if let Some(ref latest) = dep.latest_version {
+                spans.push(ratatui::text::Span::styled(
+                    " → ",
+                    Style::default().fg(Color::Yellow),
+                ));
+                spans.push(ratatui::text::Span::styled(
+                    latest,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-            ];
+                ));
+            }
 
             // Add note for major version updates that require Cargo.toml change
             if let Some(note) = dep.update_note() {
@@ -143,6 +149,7 @@ impl Component for DependenciesPane {
     }
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
+        let colors = app.current_colors();
         if let Some(p) = app.get_selected_project() {
             let mut outdated_count = 0;
             let mut not_checked_count = 0;
@@ -168,7 +175,7 @@ impl Component for DependenciesPane {
                 })
                 .collect();
 
-            let (title, title_style) = Self::get_title(
+            let (title, _) = Self::get_title(
                 &p.dependencies,
                 outdated_count,
                 not_checked_count,
@@ -176,17 +183,18 @@ impl Component for DependenciesPane {
             );
 
             // Highlight border when focused
-            let border_style = if app.focus == Focus::Dependencies {
-                Style::default().fg(Color::Cyan)
+            let border_color = if app.focus == Focus::Dependencies {
+                colors.selection
             } else {
-                title_style
+                colors.primary
             };
 
             let dependency_list = List::new(dependency_items).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(title)
-                    .border_style(border_style),
+                    .border_style(Style::default().fg(border_color)),
             );
 
             f.render_widget(dependency_list, area);
@@ -196,9 +204,10 @@ impl Component for DependenciesPane {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(ratatui::widgets::BorderType::Rounded)
                             .title(" Dependencies "),
                     )
-                    .style(Style::default().fg(Color::DarkGray));
+                    .style(Style::default().fg(colors.muted));
             f.render_widget(empty, area);
         }
     }

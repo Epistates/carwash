@@ -196,7 +196,8 @@ impl ProgressComponent {
             .block(
                 Block::default()
                     .title(format!(" {} ({}/{}) ", state.title, completed, state.total))
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded),
             )
             .gauge_style(Style::default().fg(colors.success))
             .percent(overall)

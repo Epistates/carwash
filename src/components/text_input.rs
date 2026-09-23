@@ -5,7 +5,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
 
@@ -58,7 +58,8 @@ impl Component for TextInput {
         f.render_widget(Clear, area);
         let block = Block::default()
             .title(app.text_input.title.as_str())
-            .borders(Borders::ALL);
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
         let para = Paragraph::new(app.text_input.input.value()).block(block);
         f.render_widget(para, area);
     }

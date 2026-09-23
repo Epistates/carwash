@@ -5,8 +5,6 @@ const DEFAULT_CACHE_TTL_MINUTES: u64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
-    #[serde(default)]
-    pub background_updates_enabled: bool,
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_minutes: u64,
     #[serde(default)]
@@ -20,7 +18,6 @@ fn default_cache_ttl() -> u64 {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            background_updates_enabled: false,
             cache_ttl_minutes: DEFAULT_CACHE_TTL_MINUTES,
             show_all_folders: false,
         }

@@ -4,6 +4,7 @@
 //! commands that can be executed by the application.
 
 use crate::project::{Dependency, Project};
+use std::path::PathBuf;
 
 /// Represents a command that can be executed in CarWash
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,26 +58,18 @@ pub enum Action {
     ToggleUpdateSelection,
     /// Update cache duration text in settings modal
     SettingsUpdateCacheInput(String),
-    /// Toggle background update preference in settings modal
-    SettingsToggleBackground,
     /// Persist settings changes
     SaveSettings,
     /// Run selected updates
     RunUpdate,
-    /// Check for dependency updates
-    CheckForUpdates,
-    /// Update dependency information with project name
-    UpdateDependencies(String, Vec<Dependency>),
-    /// Start background update checking
-    StartBackgroundUpdateCheck,
-    /// Update status of a specific dependency
-    UpdateDependencyStatus(String, crate::project::DependencyCheckStatus),
+    /// Update dependency information for a project path
+    UpdateDependencies(PathBuf, Vec<Dependency>),
     /// Stream start - beginning of update checks
-    UpdateDependenciesStreamStart(String),
+    UpdateDependenciesStreamStart(PathBuf),
     /// Update a single dependency with latest info
-    UpdateSingleDependency(String, Dependency),
+    UpdateSingleDependency(PathBuf, Dependency),
     /// Update check status for a specific dependency (for UI streaming)
-    UpdateDependencyCheckStatus(String, String, crate::project::DependencyCheckStatus),
+    UpdateDependencyCheckStatus(PathBuf, String, crate::project::DependencyCheckStatus),
     /// Create a new output tab
     CreateTab(String),
     /// Add output line to a tab
@@ -85,12 +78,8 @@ pub enum Action {
     FinishCommand(usize),
     /// Switch to a specific tab
     SwitchToTab(usize),
-    /// Process pending background update tasks
-    ProcessBackgroundUpdateQueue,
-    /// Queue a project for update checking (background or priority)
-    QueueBackgroundUpdate(String, bool),
     /// Update the visual check status of a project
-    UpdateProjectCheckStatus(String, crate::project::ProjectCheckStatus),
+    UpdateProjectCheckStatus(PathBuf, crate::project::ProjectCheckStatus),
     /// Enter filter/search mode
     EnterFilterMode,
     /// Exit filter/search mode
@@ -120,7 +109,7 @@ pub enum Action {
     /// Calculate sizes for all projects (total + target directory)
     CalculateProjectSizes,
     /// Update a single project's size information
-    UpdateProjectSize(String, Option<u64>, Option<u64>),
+    UpdateProjectSize(PathBuf, Option<u64>, Option<u64>),
     /// Change focus to next pane
     FocusNext,
     /// Quit the application

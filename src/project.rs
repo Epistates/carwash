@@ -244,7 +244,7 @@ impl Project {
         }
     }
 
-    fn from_toml(
+    pub fn from_toml(
         path: &Path,
         toml: &CargoToml,
         workspace_root: Option<PathBuf>,
@@ -253,23 +253,7 @@ impl Project {
         let package = toml.package.as_ref()?;
         let project_path = path.parent()?.to_path_buf();
 
-        // Collect dependency names from this crate's Cargo.toml
-        let mut declared_deps: HashSet<String> = HashSet::new();
-
-        // Add regular dependencies
-        for dep_name in toml.dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
-
-        // Add dev-dependencies
-        for dep_name in toml.dev_dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
-
-        // Add build-dependencies
-        for dep_name in toml.build_dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
+        let declared_deps = collect_declared_dependency_names(toml);
 
         // For workspace members, try to load Cargo.lock from workspace root first
         let lockfile_path = if let Some(ref ws_root) = workspace_root {
@@ -288,7 +272,9 @@ impl Project {
                 .packages
                 .iter()
                 // Filter to only dependencies declared in this crate's Cargo.toml
-                .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
+                .filter(|pkg| {
+                    declared_deps.contains(pkg.name.as_str()) && is_crates_io_package(pkg)
+                })
                 .map(Dependency::from)
                 .collect()
         } else {
@@ -296,6 +282,8 @@ impl Project {
         };
 
         let authors = package.authors_vec();
+
+        let check_status = Project::compute_check_status_from_deps(&dependencies);
 
         Some(Self {
             name: package.name.clone(),
@@ -307,10 +295,10 @@ impl Project {
             workspace_root,
             workspace_name,
             cargo_lock_hash: None, // No hash available here, will be calculated later
-            check_status: ProjectCheckStatus::Unchecked, // Start as unchecked
+            check_status,
             git_status: GitStatus::Unknown, // Check git status asynchronously
-            total_size: None,      // Calculate on demand
-            target_size: None,     // Calculate on demand
+            total_size: None,               // Calculate on demand
+            target_size: None,              // Calculate on demand
         })
     }
 
@@ -330,17 +318,7 @@ impl Project {
         let toml: CargoToml = toml::from_str(&toml_content)
             .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
 
-        // Collect declared dependency names
-        let mut declared_deps: HashSet<String> = HashSet::new();
-        for dep_name in toml.dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
-        for dep_name in toml.dev_dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
-        for dep_name in toml.build_dependencies.keys() {
-            declared_deps.insert(dep_name.clone());
-        }
+        let declared_deps = collect_declared_dependency_names(&toml);
 
         // Determine which Cargo.lock to use (workspace or project)
         let lockfile_path = if let Some(ref ws_root) = self.workspace_root {
@@ -362,7 +340,7 @@ impl Project {
         let mut new_deps: Vec<Dependency> = lockfile
             .packages
             .iter()
-            .filter(|pkg| declared_deps.contains(pkg.name.as_str()))
+            .filter(|pkg| declared_deps.contains(pkg.name.as_str()) && is_crates_io_package(pkg))
             .map(|pkg| {
                 // Try to preserve latest_version, check_status, and last_checked from existing deps
                 let existing = self
@@ -398,6 +376,24 @@ impl Project {
     /// Returns `HasUpdates` if any dependency has a newer stable version available,
     /// otherwise returns `UpToDate`.
     pub fn compute_check_status_from_deps(deps: &[Dependency]) -> ProjectCheckStatus {
+        if deps.is_empty() {
+            return ProjectCheckStatus::UpToDate;
+        }
+
+        if deps
+            .iter()
+            .any(|d| d.check_status == DependencyCheckStatus::Checking)
+        {
+            return ProjectCheckStatus::Checking;
+        }
+
+        if deps
+            .iter()
+            .any(|d| d.check_status != DependencyCheckStatus::Checked || d.latest_version.is_none())
+        {
+            return ProjectCheckStatus::Unchecked;
+        }
+
         let has_updates = deps.iter().any(|d| d.has_stable_update());
 
         if has_updates {
@@ -447,14 +443,20 @@ impl Project {
 pub fn calculate_directory_size(path: &Path) -> Option<u64> {
     use walkdir::WalkDir;
 
-    WalkDir::new(path)
-        .follow_links(false) // Don't follow symlinks to avoid infinite loops
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .reduce(|acc, size| acc + size)
+    if !path.exists() {
+        return None;
+    }
+
+    Some(
+        WalkDir::new(path)
+            .follow_links(false) // Don't follow symlinks to avoid infinite loops
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.metadata().ok())
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+            .sum(),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -518,6 +520,34 @@ pub struct Workspace {
     // This ensures we can parse ANY workspace Cargo.toml without failures
     #[serde(flatten)]
     pub other: std::collections::HashMap<String, toml::Value>,
+}
+
+fn collect_declared_dependency_names(toml: &CargoToml) -> HashSet<String> {
+    let mut declared_deps = HashSet::new();
+    insert_dependency_names(&toml.dependencies, &mut declared_deps);
+    insert_dependency_names(&toml.dev_dependencies, &mut declared_deps);
+    insert_dependency_names(&toml.build_dependencies, &mut declared_deps);
+    declared_deps
+}
+
+fn insert_dependency_names(
+    dependencies: &HashMap<String, toml::Value>,
+    declared_deps: &mut HashSet<String>,
+) {
+    for (dep_name, dep_value) in dependencies {
+        let package_name = dep_value
+            .as_table()
+            .and_then(|table| table.get("package"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or(dep_name);
+        declared_deps.insert(package_name.to_string());
+    }
+}
+
+fn is_crates_io_package(pkg: &LockPackage) -> bool {
+    pkg.source
+        .as_ref()
+        .is_some_and(|source| source.is_default_registry())
 }
 
 /// Recursively finds all Rust projects in the given directory path.
@@ -693,9 +723,25 @@ pub fn build_project_tree(path: &str) -> crate::tree::TreeNode {
             .unwrap_or_else(|| PathBuf::from(path))
     };
 
+    if let Some(project) = standalone_project_at(&base_path) {
+        return crate::tree::TreeNode::project(project, 0);
+    }
+
     // Build ONLY the root level - no recursive scanning!
     // Children will be loaded lazily when directories are expanded
     build_tree_level_only(&base_path, 0)
+}
+
+fn standalone_project_at(path: &Path) -> Option<Project> {
+    let cargo_toml_path = path.join("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml_path).ok()?;
+    let toml = toml::from_str::<CargoToml>(&content).ok()?;
+
+    if toml.workspace.is_some() || toml.package.is_none() {
+        return None;
+    }
+
+    Project::from_toml(&cargo_toml_path, &toml, None, None)
 }
 
 /// Build a single level of the tree (non-recursive)
@@ -833,43 +879,46 @@ pub fn load_directory_children_async(
                     // Workspaces should be expandable directories to show their members
                     if toml.workspace.is_some() {
                         // It's a workspace root - treat as expandable directory
-                        // Even if it also has a [package] section, prioritize showing members
                         if show_all_folders || directory_contains_rust_projects(&path) {
                             let mut dir_node = build_tree_level_only(&path, depth + 1);
                             // Load children eagerly so "crates" dirs can be auto-expanded
-                            // NOTE: For async version, we might want to skip this eager loading or make it recursive?
-                            // For now, let's keep it consistent but synchronous for this sublevel
                             load_directory_children(&mut dir_node, show_all_folders);
-                            // But keep the workspace itself collapsed - user can expand with h/l or ←/→
+                            load_auto_expanded_descendants(&mut dir_node, show_all_folders);
+
+                            // Patch workspace info on child project nodes so they
+                            // resolve deps from the workspace-level Cargo.lock
+                            let ws_name = toml
+                                .package
+                                .as_ref()
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| {
+                                    path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("workspace")
+                                        .to_string()
+                                });
+                            patch_workspace_info(&mut dir_node, &path, &ws_name);
+
+                            // Keep the workspace itself collapsed
                             dir_node.expanded = false;
                             children.push(dir_node);
                         }
-                    } else if let Some(package) = &toml.package {
-                        // It's a standalone project (no workspace) - add as project node
-                        let project = Project {
-                            name: package.name.clone(),
-                            path: path.clone(),
-                            version: package.version_string(),
-                            authors: package.authors_vec(),
-                            dependencies: Vec::new(), // Will be loaded on-demand when needed
-                            workspace_root: None,
-                            workspace_name: None,
-                            cargo_lock_hash: None,
-                            status: ProjectStatus::Pending,
-                            check_status: ProjectCheckStatus::Unchecked,
-                            git_status: GitStatus::Unknown, // Check asynchronously
-                            total_size: None,               // Calculate on demand
-                            target_size: None,              // Calculate on demand
-                        };
-                        let project_node = crate::tree::TreeNode::project(project, depth + 1);
-                        children.push(project_node);
+                    } else if toml.package.is_some() {
+                        // It's a standalone project — use from_toml to get deps from Cargo.lock
+                        if let Some(project) =
+                            Project::from_toml(&cargo_toml_path, &toml, None, None)
+                        {
+                            let project_node = crate::tree::TreeNode::project(project, depth + 1);
+                            children.push(project_node);
+                        }
                     }
                 } else if path.is_dir() {
                     // No Cargo.toml - check if we should show it as a directory
                     if show_all_folders || directory_contains_rust_projects(&path) {
-                        let dir_node = build_tree_level_only(&path, depth + 1);
+                        let mut dir_node = build_tree_level_only(&path, depth + 1);
                         // Don't override expanded state - build_tree_level_only sets it correctly
                         // (e.g., "crates" directories are auto-expanded)
+                        load_auto_expanded_descendants(&mut dir_node, show_all_folders);
                         children.push(dir_node);
                     }
                 }
@@ -898,6 +947,37 @@ pub fn load_directory_children_async(
     children
 }
 
+/// Recursively patch workspace_root and workspace_name on child project nodes,
+/// then reload their dependencies from the workspace-level Cargo.lock.
+fn patch_workspace_info(
+    node: &mut crate::tree::TreeNode,
+    workspace_root: &Path,
+    workspace_name: &str,
+) {
+    for child in &mut node.children {
+        if let crate::tree::TreeNodeType::Project(ref mut project) = child.node_type {
+            project.workspace_root = Some(workspace_root.to_path_buf());
+            project.workspace_name = Some(workspace_name.to_string());
+            // Re-load deps now that workspace_root is set (correct Cargo.lock resolution)
+            let _ = project.reload_dependencies();
+        }
+        // Recurse into subdirectories (e.g., crates/)
+        patch_workspace_info(child, workspace_root, workspace_name);
+    }
+}
+
+/// Populate descendants that are expanded by convention, such as workspace
+/// `crates/` directories, before the tree is flattened.
+fn load_auto_expanded_descendants(node: &mut crate::tree::TreeNode, show_all_folders: bool) {
+    if node.node_type.is_directory() && node.expanded && !node.children_loaded {
+        load_directory_children(node, show_all_folders);
+    }
+
+    for child in &mut node.children {
+        load_auto_expanded_descendants(child, show_all_folders);
+    }
+}
+
 /// Load children for a directory node (lazy loading)
 /// This scans only the immediate children (1 level deep)
 ///
@@ -920,6 +1000,14 @@ pub fn load_directory_children(node: &mut crate::tree::TreeNode, show_all_folder
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}-{}", prefix, unique))
+    }
 
     #[test]
     fn test_project_discovery() {
@@ -1019,6 +1107,25 @@ serde = { workspace = true }
     }
 
     #[test]
+    fn test_renamed_dependency_uses_package_name() {
+        let toml_content = r#"
+[package]
+name = "test-crate"
+version = "0.1.0"
+
+[dependencies]
+serde_renamed = { package = "serde", version = "1" }
+tokio = "1"
+"#;
+        let cargo_toml: CargoToml = toml::from_str(toml_content).unwrap();
+        let names = collect_declared_dependency_names(&cargo_toml);
+
+        assert!(names.contains("serde"));
+        assert!(names.contains("tokio"));
+        assert!(!names.contains("serde_renamed"));
+    }
+
+    #[test]
     fn test_project_status_default() {
         let status = ProjectStatus::Pending;
         assert_eq!(status, ProjectStatus::Pending);
@@ -1054,6 +1161,30 @@ serde = { workspace = true }
         assert_eq!(dep.current_version, "1.2.3");
         assert_eq!(dep.check_status, DependencyCheckStatus::NotChecked);
         assert!(dep.latest_version.is_none());
+    }
+
+    #[test]
+    fn test_crates_io_package_filter() {
+        use cargo_lock::{Package as LockPackage, SourceId, Version};
+
+        let crates_io_pkg = LockPackage {
+            name: "serde".parse().unwrap(),
+            version: Version::parse("1.0.0").unwrap(),
+            source: Some(
+                SourceId::from_url("registry+https://github.com/rust-lang/crates.io-index")
+                    .unwrap(),
+            ),
+            checksum: None,
+            dependencies: Vec::new(),
+            replace: None,
+        };
+        assert!(is_crates_io_package(&crates_io_pkg));
+
+        let path_pkg = LockPackage {
+            source: None,
+            ..crates_io_pkg
+        };
+        assert!(!is_crates_io_package(&path_pkg));
     }
 
     #[test]
@@ -1152,6 +1283,33 @@ serde = { workspace = true }
     }
 
     #[test]
+    fn test_compute_check_status_requires_complete_checked_data() {
+        let unchecked_dep = Dependency {
+            name: "unchecked".into(),
+            current_version: "1.0.0".into(),
+            latest_version: None,
+            check_status: DependencyCheckStatus::NotChecked,
+            last_checked: None,
+        };
+        assert_eq!(
+            Project::compute_check_status_from_deps(&[unchecked_dep]),
+            ProjectCheckStatus::Unchecked
+        );
+
+        let checked_dep = Dependency {
+            name: "checked".into(),
+            current_version: "1.0.0".into(),
+            latest_version: Some("1.0.0".into()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        assert_eq!(
+            Project::compute_check_status_from_deps(&[checked_dep]),
+            ProjectCheckStatus::UpToDate
+        );
+    }
+
+    #[test]
     fn test_update_type() {
         // Stable → stable
         let dep1 = Dependency {
@@ -1227,11 +1385,16 @@ serde = { workspace = true }
 
     #[test]
     fn test_build_project_tree() {
-        // Test that tree building doesn't panic
-        let tree = build_project_tree(".");
+        let root = unique_temp_dir("carwash-tree-test");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let tree = build_project_tree(root.to_string_lossy().as_ref());
 
         // Tree should have a root node
-        assert_eq!(tree.node_type.name(), "carwash");
+        assert_eq!(
+            tree.node_type.name(),
+            root.file_name().unwrap().to_string_lossy()
+        );
 
         // Root should be a directory
         assert!(tree.node_type.is_directory());
@@ -1241,6 +1404,34 @@ serde = { workspace = true }
 
         // Tree structure should be created successfully
         let _ = tree;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_build_project_tree_root_standalone_project() {
+        let root = unique_temp_dir("carwash-root-project-test");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"
+[package]
+name = "root-project"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let tree = build_project_tree(root.to_string_lossy().as_ref());
+        assert!(tree.node_type.is_project());
+        assert!(tree.children_loaded);
+
+        let crate::tree::TreeNodeType::Project(project) = tree.node_type else {
+            panic!("expected root project node");
+        };
+        assert_eq!(project.name, "root-project");
+        assert_eq!(project.path, root);
+
+        let _ = std::fs::remove_dir_all(project.path);
     }
 
     #[test]
@@ -1251,5 +1442,34 @@ serde = { workspace = true }
 
         // Flattened tree should have at least the root node
         assert!(!flattened.items.is_empty());
+    }
+
+    #[test]
+    fn test_auto_expanded_crates_directory_loads_projects() {
+        let root = unique_temp_dir("carwash-crates-test");
+        let member = root.join("crates").join("member");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            member.join("Cargo.toml"),
+            r#"
+[package]
+name = "member"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let mut tree = build_project_tree(root.to_string_lossy().as_ref());
+        load_directory_children(&mut tree, false);
+        let flattened = crate::tree::FlattenedTree::from_tree(&tree);
+
+        assert!(flattened.items.iter().any(|(node, _)| {
+            matches!(
+                &node.node_type,
+                crate::tree::TreeNodeType::Project(project) if project.name == "member"
+            )
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

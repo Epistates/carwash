@@ -50,7 +50,7 @@ impl Component for StatusBar {
             Mode::Settings => (
                 "SETTINGS",
                 Color::Magenta,
-                "Digits set cache | Space toggles background | Enter save | Esc cancel",
+                "Digits set cache | Enter save | Esc cancel",
             ),
             Mode::TextInput => ("INPUT", Color::Blue, "Enter confirm | Esc cancel"),
             Mode::Help => ("HELP", Color::Yellow, "Esc or 'q' to close"),
@@ -89,15 +89,6 @@ impl Component for StatusBar {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        // Pending background tasks indicator
-        let pending_count = app.update_queue.queue.len();
-        if pending_count > 0 {
-            bg_spans.push(Span::styled(
-                format!(" {} queued ", pending_count),
-                Style::default().fg(Color::DarkGray),
             ));
         }
 

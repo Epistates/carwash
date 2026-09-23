@@ -5,7 +5,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
@@ -74,6 +74,7 @@ impl Component for TabbedOutputPane {
     }
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
+        let colors = app.current_colors();
         if area.height < 4 {
             return;
         }
@@ -95,12 +96,12 @@ impl Component for TabbedOutputPane {
                 .map(|(i, t)| {
                     let style = if i == app.active_tab {
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(colors.warning)
                             .add_modifier(Modifier::BOLD)
                     } else if t.is_finished {
-                        Style::default().fg(Color::Green)
+                        Style::default().fg(colors.success)
                     } else {
-                        Style::default().fg(Color::Cyan)
+                        Style::default().fg(colors.selection)
                     };
 
                     let prefix = if t.is_finished { "✓ " } else { "⚙ " };
@@ -109,10 +110,10 @@ impl Component for TabbedOutputPane {
                 .collect();
 
             // Highlight border when focused
-            let border_style = if app.focus == Focus::Output {
-                Style::default().fg(Color::Cyan)
+            let border_color = if app.focus == Focus::Output {
+                colors.selection
             } else {
-                Style::default()
+                colors.primary
             };
 
             // Add tab indicator showing current/total tabs
@@ -126,19 +127,24 @@ impl Component for TabbedOutputPane {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(ratatui::widgets::BorderType::Rounded)
                         .title(tab_indicator)
-                        .border_style(border_style),
+                        .border_style(Style::default().fg(border_color)),
                 )
                 .select(app.active_tab)
                 .style(Style::default())
                 .highlight_style(
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(colors.warning)
                         .add_modifier(Modifier::BOLD),
                 );
             f.render_widget(tabs, chunks[0]);
         } else {
-            let empty_block = Block::default().borders(Borders::ALL).title(" Output ");
+            let empty_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .title(" Output ")
+                .border_style(Style::default().fg(colors.primary));
             f.render_widget(empty_block, chunks[0]);
         }
 
@@ -163,16 +169,16 @@ impl Component for TabbedOutputPane {
                         || line.contains("Error")
                         || line.contains("ERROR")
                     {
-                        Style::default().fg(Color::Red)
+                        Style::default().fg(colors.error)
                     } else if line.contains("warning")
                         || line.contains("Warning")
                         || line.contains("WARN")
                     {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(colors.warning)
                     } else if line.contains("Finished") || line.contains("success") {
-                        Style::default().fg(Color::Green)
+                        Style::default().fg(colors.success)
                     } else if line.starts_with("   Compiling") || line.starts_with("    Checking") {
-                        Style::default().fg(Color::Cyan)
+                        Style::default().fg(colors.selection)
                     } else {
                         Style::default()
                     };
@@ -198,12 +204,13 @@ impl Component for TabbedOutputPane {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(ratatui::widgets::BorderType::Rounded)
                         .title(status_info)
-                        .border_style(if active_tab.is_finished {
-                            Style::default().fg(Color::Green)
+                        .border_style(Style::default().fg(if active_tab.is_finished {
+                            colors.success
                         } else {
-                            Style::default().fg(Color::Cyan)
-                        }),
+                            colors.selection
+                        })),
                 )
                 .wrap(Wrap { trim: false });
 
@@ -234,8 +241,13 @@ impl Component for TabbedOutputPane {
             let empty_para = Paragraph::new(
                 "No commands running.\n\nPress ':' to open command palette and run cargo commands.",
             )
-            .block(Block::default().borders(Borders::ALL))
-            .style(Style::default().fg(Color::DarkGray));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(colors.primary)),
+            )
+            .style(Style::default().fg(colors.muted));
             f.render_widget(empty_para, chunks[1]);
         }
     }

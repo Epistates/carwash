@@ -1,13 +1,13 @@
 use carwash::Args;
 use carwash::app::{AppState, reducer};
-use carwash::cache::UpdateCache;
+use carwash::cache::DependencyVersionCache;
 use carwash::components::{
     Component, dependencies::DependenciesPane, help::Help, output::TabbedOutputPane,
     palette::CommandPalette, projects::ProjectList, settings::SettingsModal, text_input::TextInput,
     updater::UpdateWizard,
 };
 use carwash::events::{Action, Command, Focus, Mode};
-use carwash::project::{ProjectCheckStatus, find_rust_projects};
+use carwash::project::ProjectCheckStatus;
 use carwash::runner::{check_dependencies_with_cache, check_for_updates, run_command};
 use carwash::tree::TreeNode;
 use carwash::ui::ui;
@@ -84,70 +84,57 @@ fn restore_terminal() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Save current dependency check progress to persistent cache
-fn save_cache_progress(state: &AppState) {
-    use std::collections::HashMap;
+/// Apply the global dep version cache to a slice of projects.
+/// Sets latest_version, check_status, and last_checked on each dependency that has a cached entry.
+fn apply_dep_version_cache(
+    projects: &mut [carwash::project::Project],
+    cache: &DependencyVersionCache,
+    cache_duration: std::time::Duration,
+) {
+    use carwash::project::{DependencyCheckStatus, Project};
 
-    let cache = UpdateCache::new();
-
-    // Use all_projects, not filtered state.projects, so we cache ALL projects including those without dependencies
-    for project in &state.all_projects {
-        // Compute Cargo.lock hash if it exists
-        let lock_path = project.path.join("Cargo.lock");
-        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
-            // Build cache data from current dependencies
-            let mut cached_deps = HashMap::new();
-            for dep in &project.dependencies {
-                // CRITICAL: Only save dependencies that have been CHECKED
-                // If latest_version is None, the dep was never checked, so don't cache it
-                if dep.latest_version.is_some() {
-                    cached_deps.insert(
-                        dep.name.clone(),
-                        carwash::cache::CachedDependency {
-                            latest_version: dep.latest_version.clone(),
-                            cached_at: dep.last_checked.unwrap_or_else(std::time::SystemTime::now),
-                        },
-                    );
-                }
-            }
-
-            // Save to cache (skip if no checked dependencies)
-            if !cached_deps.is_empty() {
-                let _ = cache.save(&project.path, lock_hash, cached_deps.clone());
+    for project in projects.iter_mut() {
+        for dep in &mut project.dependencies {
+            if let Some(entry) = cache.lookup(&dep.name, &dep.current_version, cache_duration) {
+                dep.latest_version = Some(entry.latest.clone());
+                dep.check_status = DependencyCheckStatus::Checked;
+                dep.last_checked = Some(
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(entry.checked_at),
+                );
             }
         }
+        project.check_status = Project::compute_check_status_from_deps(&project.dependencies);
     }
 }
 
-/// Load dependency check progress from persistent cache
-fn load_cache_progress(projects: &mut [carwash::project::Project]) {
-    use carwash::project::{DependencyCheckStatus, Project};
-
-    let cache = UpdateCache::new();
-
-    for project in projects.iter_mut() {
-        // Compute Cargo.lock hash
-        let lock_path = project.path.join("Cargo.lock");
-        if let Some(lock_hash) = UpdateCache::hash_cargo_lock(&lock_path) {
-            // Try to load cached data
-            if let Some(cached_deps) = cache.load(&project.path, lock_hash) {
-                // Apply cached data to dependencies
-                for dep in &mut project.dependencies {
-                    if let Some(cached_dep) = cached_deps.get(&dep.name) {
-                        // Update with cached version info AND set the timestamp
-                        dep.latest_version = cached_dep.latest_version.clone();
-                        dep.check_status = DependencyCheckStatus::Checked;
-                        // Set last_checked to the cache timestamp so checks respect cache duration
-                        dep.last_checked = Some(cached_dep.cached_at);
-                    }
-                }
-
-                // Calculate project check status from cached data
-                project.check_status =
-                    Project::compute_check_status_from_deps(&project.dependencies);
-            }
-        }
+fn apply_dep_version_cache_to_tree(
+    node: &mut TreeNode,
+    cache: &DependencyVersionCache,
+    cache_duration: std::time::Duration,
+) {
+    if let carwash::tree::TreeNodeType::Project(project) = &mut node.node_type {
+        apply_dep_version_cache(std::slice::from_mut(project), cache, cache_duration);
     }
+
+    for child in &mut node.children {
+        apply_dep_version_cache_to_tree(child, cache, cache_duration);
+    }
+}
+
+fn normalize_target_directory(target_directory: &str) -> String {
+    let path = std::path::Path::new(target_directory);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
+        .to_string_lossy()
+        .to_string()
 }
 
 async fn handle_event(
@@ -222,24 +209,25 @@ async fn handle_event(
                     KeyCode::Char('}') | KeyCode::Char(']') => Some(Action::IncreaseLeftPane),
                     KeyCode::Char('(') | KeyCode::Char('-') => Some(Action::IncreaseTopRight),
                     KeyCode::Char(')') | KeyCode::Char('+') => Some(Action::DecreaseTopRight),
+                    KeyCode::Char('r') | KeyCode::Char('R')
+                        if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                    {
+                        Some(Action::ResetLayout)
+                    }
                     KeyCode::Char('r') | KeyCode::Char('R') => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            Some(Action::ResetLayout)
-                        } else {
-                            // Dispatch to focused component
-                            match state.focus {
-                                Focus::Projects => {
-                                    let mut project_list = ProjectList::new();
-                                    project_list.handle_key_events(key.code, state)
-                                }
-                                Focus::Dependencies => {
-                                    let mut deps = DependenciesPane::new();
-                                    deps.handle_key_events(key.code, state)
-                                }
-                                Focus::Output => {
-                                    let mut output = TabbedOutputPane::new();
-                                    output.handle_key_events(key.code, state)
-                                }
+                        // Dispatch to focused component
+                        match state.focus {
+                            Focus::Projects => {
+                                let mut project_list = ProjectList::new();
+                                project_list.handle_key_events(key.code, state)
+                            }
+                            Focus::Dependencies => {
+                                let mut deps = DependenciesPane::new();
+                                deps.handle_key_events(key.code, state)
+                            }
+                            Focus::Output => {
+                                let mut output = TabbedOutputPane::new();
+                                output.handle_key_events(key.code, state)
                             }
                         }
                     }
@@ -314,7 +302,6 @@ async fn handle_event(
                 Action::ExecuteCommand(_)
                 | Action::StartUpdateWizard
                 | Action::RunUpdate
-                | Action::ProcessBackgroundUpdateQueue
                 | Action::UpdateDependencies(..)
                 | Action::UpdateSingleDependency(..)
                 | Action::UpdateDependenciesStreamStart(_) => {
@@ -332,10 +319,6 @@ async fn handle_event(
                 _ => {
                     // Handle synchronously through reducer
                     reducer(state, action.clone());
-                    // Save progress if quitting
-                    if matches!(action, Action::Quit) {
-                        save_cache_progress(state);
-                    }
                 }
             }
         }
@@ -361,6 +344,15 @@ async fn run_app<B: Backend>(
     state: &mut AppState,
     target_directory: String,
 ) -> anyhow::Result<()> {
+    let target_directory = normalize_target_directory(&target_directory);
+    let target_path = std::path::Path::new(&target_directory);
+    if !target_path.is_dir() {
+        anyhow::bail!(
+            "Target directory does not exist or is not a directory: {}",
+            target_path.display()
+        );
+    }
+
     let (action_tx, mut action_rx) = mpsc::channel(100);
     let mut event_stream = crossterm::event::EventStream::new();
 
@@ -379,21 +371,15 @@ async fn run_app<B: Backend>(
         let _ = init_tx.send(Action::InitializeTree(init_target)).await;
     });
 
-    // Spawn deep scan in background for search index (fire and forget)
-    let action_tx_clone = action_tx.clone();
-    let target_directory_clone = target_directory.clone();
-    tokio::spawn(async move {
-        let target_dir_for_scan = target_directory_clone.clone();
-
-        // This can take a while, but it won't block the UI
-        if let Ok(projects) =
-            tokio::task::spawn_blocking(move || find_rust_projects(&target_dir_for_scan)).await
-        {
-            let _ = action_tx_clone
-                .send(Action::FinishProjectScan(projects, target_directory_clone))
-                .await;
+    // Load global per-dependency version cache (shared across all projects)
+    let dep_cache = std::sync::Arc::new(tokio::sync::RwLock::new({
+        let mut cache = DependencyVersionCache::load();
+        // One-time migration from old per-project cache files
+        if cache.is_empty() {
+            cache = DependencyVersionCache::migrate_from_project_caches();
         }
-    });
+        cache
+    }));
 
     loop {
         tokio::select! {
@@ -417,23 +403,101 @@ async fn run_app<B: Backend>(
                         let target_dir = target_dir.clone();
                         reducer(state, action);
 
-                        // Spawn async load of root directory children (non-blocking)
-                        let tx = action_tx.clone();
-                        let show_all = state.config.app.show_all_folders;
+                        let root_is_project = state
+                            .tree_root
+                            .as_ref()
+                            .is_some_and(|root| root.node_type.is_project());
 
-                        tokio::task::spawn_blocking(move || {
-                            // Load children of root directory (depth 1, since root is depth 0)
-                            let children = carwash::project::load_directory_children_async(
-                                std::path::Path::new(&target_dir),
-                                1,  // Root children are at depth 1
-                                show_all
-                            );
-                            let root_path = std::path::PathBuf::from(&target_dir);
-                            let _ = tx.blocking_send(Action::DirectoryLoaded(root_path, children));
-                        });
+                        if root_is_project {
+                            {
+                                let cache = dep_cache.read().await;
+                                let cache_duration = state.config.app.cache_duration();
+                                apply_dep_version_cache(
+                                    &mut state.all_projects,
+                                    &cache,
+                                    cache_duration,
+                                );
+                                apply_dep_version_cache(&mut state.projects, &cache, cache_duration);
+                                if let Some(root) = &mut state.tree_root {
+                                    apply_dep_version_cache_to_tree(root, &cache, cache_duration);
+                                    state.flattened_tree =
+                                        carwash::tree::FlattenedTree::from_tree(root);
+                                }
+                            }
+
+                            reset_checking_status(state);
+
+                            let _ = action_tx.send(Action::CalculateProjectSizes).await;
+                        } else {
+                            // Spawn async load of root directory children (non-blocking)
+                            let tx = action_tx.clone();
+                            let show_all = state.config.app.show_all_folders;
+
+                            tokio::task::spawn_blocking(move || {
+                                // Load children of root directory (depth 1, since root is depth 0)
+                                let children = carwash::project::load_directory_children_async(
+                                    std::path::Path::new(&target_dir),
+                                    1,  // Root children are at depth 1
+                                    show_all
+                                );
+                                let root_path = std::path::PathBuf::from(&target_dir);
+                                let _ = tx.blocking_send(Action::DirectoryLoaded(root_path, children));
+                            });
+                        }
                     }
-                    Action::DirectoryLoaded(..) => {
-                        reducer(state, action);
+                    Action::DirectoryLoaded(path, children) => {
+                        let path = path.clone();
+                        let mut children = children.clone();
+                        {
+                            let cache = dep_cache.read().await;
+                            let cache_duration = state.config.app.cache_duration();
+                            for child in &mut children {
+                                apply_dep_version_cache_to_tree(child, &cache, cache_duration);
+                            }
+                        }
+
+                        let prev_all_count = state.all_projects.len();
+                        reducer(state, Action::DirectoryLoaded(path, children));
+
+                        if state.all_projects.len() > prev_all_count {
+                            // Size calculations with concurrency limit (reuse existing pattern)
+                            let size_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(3));
+                            for project in &state.all_projects[prev_all_count..] {
+                                let project_id = project.path.clone();
+                                let path = project.path.clone();
+                                let ws_root = project.workspace_root.clone();
+                                let tx = action_tx.clone();
+                                let sem = size_semaphore.clone();
+                                tokio::spawn(async move {
+                                    let _permit = sem.acquire().await.ok();
+                                    let total = tokio::task::spawn_blocking({
+                                        let path = path.clone();
+                                        move || carwash::project::calculate_directory_size(&path)
+                                    })
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    let target_path =
+                                        ws_root.unwrap_or_else(|| path.clone()).join("target");
+                                    let target = if target_path.exists() {
+                                        tokio::task::spawn_blocking(move || {
+                                            carwash::project::calculate_directory_size(&target_path)
+                                        })
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                    } else {
+                                        Some(0)
+                                    };
+
+                                    let _ = tx
+                                        .send(Action::UpdateProjectSize(project_id, total, target))
+                                        .await;
+                                });
+                            }
+                        }
+
                     }
                     Action::SelectChild => {
                         reducer(state, action);
@@ -465,6 +529,7 @@ async fn run_app<B: Backend>(
                                         false
                                     }
                                     mark_loading(root, &path);
+                                    state.flattened_tree = carwash::tree::FlattenedTree::from_tree(root);
                                 }
 
                                 // Spawn async load
@@ -495,6 +560,7 @@ async fn run_app<B: Backend>(
                                 false
                             }
                             mark_loading(root, path);
+                            state.flattened_tree = carwash::tree::FlattenedTree::from_tree(root);
                         }
 
                         // Spawn async load
@@ -525,68 +591,15 @@ async fn run_app<B: Backend>(
                         // Process the scan result FIRST (copies projects to state)
                         reducer(state, action);
 
-                        // THEN load cached dependency data (updates state with cache)
-                        load_cache_progress(&mut state.all_projects);
-
-                        // Also update the filtered projects list with the cache data
-                        load_cache_progress(&mut state.projects);
+                        {
+                            let cache = dep_cache.read().await;
+                            let cache_duration = state.config.app.cache_duration();
+                            apply_dep_version_cache(&mut state.all_projects, &cache, cache_duration);
+                            apply_dep_version_cache(&mut state.projects, &cache, cache_duration);
+                        }
 
                         // Reset any "Checking" status to "Unchecked" (app was interrupted)
                         reset_checking_status(state);
-
-                        if state.config.app.background_updates_enabled {
-                            // NOW queue projects for background checks (after cache is loaded)
-                            // Queue projects that:
-                            // 1. Have expired cache (> cache TTL)
-                            // 2. Have no cache (never checked)
-                            // 3. Were interrupted (status is Unchecked)
-                            // 4. Have ANY dependency that needs checking
-                            let mut queue_idx = 0;
-                            let cache_duration = state.config.app.cache_duration();
-                            for project in &state.all_projects {
-                                // Skip projects with no dependencies
-                                if project.dependencies.is_empty() {
-                                    continue;
-                                }
-
-                                let needs_check = project.dependencies.iter().any(|dep| {
-                                    if let Some(last_checked) = dep.last_checked {
-                                        if let Ok(elapsed) =
-                                            std::time::SystemTime::now().duration_since(last_checked)
-                                        {
-                                            elapsed > cache_duration
-                                        } else {
-                                            true // Invalid timestamp, needs check
-                                        }
-                                    } else {
-                                        true // Never checked - needs check!
-                                    }
-                                });
-
-                                // Also queue if status is Unchecked (was interrupted or never checked)
-                                let needs_check =
-                                    needs_check || project.check_status == ProjectCheckStatus::Unchecked;
-
-                                if needs_check {
-                                    let tx = action_tx.clone();
-                                    let project_name = project.name.clone();
-
-                                    // Stagger the queue operations to keep UI responsive
-                                    let delay = std::time::Duration::from_millis(100 * queue_idx);
-                                    queue_idx += 1;
-
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(delay).await;
-                                        let _ = tx
-                                            .send(Action::QueueBackgroundUpdate(
-                                                project_name,
-                                                false,
-                                            ))
-                                            .await;
-                                    });
-                                }
-                            }
-                        }
 
                         // Trigger size calculation in background (non-blocking)
                         let tx = action_tx.clone();
@@ -601,161 +614,47 @@ async fn run_app<B: Backend>(
                         carwash::handlers::handle_calculate_project_sizes(state, action_tx.clone()).await;
                     }
                     Action::StartUpdateWizard => {
-                        let selected_project_name = state
+                        let selected_project_id = state
                             .get_selected_project()
-                            .map(|p| p.name.clone());
-                        let is_currently_checking_same_project = selected_project_name
+                            .map(|p| p.path.clone());
+                        let is_currently_checking_same_project = selected_project_id
                             .as_ref()
-                            .map(|name| {
+                            .map(|project_id| {
                                 state.is_checking_updates
                                     && state
                                         .updater
-                                        .locked_project_name
-                                        .as_ref()
-                                        == Some(name)
+                                        .locked_project_id
+                                        .as_deref()
+                                        == Some(project_id.as_path())
                             })
                             .unwrap_or(false);
+                        let is_checking_different_project =
+                            state.is_checking_updates && !is_currently_checking_same_project;
 
-                        // Process the action (may set pending_directory_check or open wizard)
+                        if is_checking_different_project {
+                            continue;
+                        }
+
+                        // Process the action. Directory selections intentionally do nothing:
+                        // update checks are manual and scoped to one selected project.
                         reducer(state, action.clone());
 
-                        // Check if this is a directory check (multiple projects)
-                        if let Some(pending) = state.updater.pending_directory_check.take() {
-                            // Queue all projects for background checking (not priority - no wizard)
-                            for project_name in pending.project_names {
-                                let _ = action_tx
-                                    .send(Action::QueueBackgroundUpdate(project_name, false))
-                                    .await;
-                            }
-                        } else if let Some(project_name) = state.updater.locked_project_name.clone() {
-                            // Single project - open wizard and queue priority check
-                            if is_currently_checking_same_project {
-                                // Already processing this project; just keep displaying the wizard
-                                continue;
-                            }
-                            let _ = action_tx
-                                .send(Action::QueueBackgroundUpdate(project_name, true))
-                                .await;
+                        if is_currently_checking_same_project {
+                            // Already processing this project; just keep displaying the wizard.
+                            continue;
                         }
-                    }
-                    Action::StartBackgroundUpdateCheck => {
-                        let action_tx_clone = action_tx.clone();
-                        check_for_updates(state, action_tx_clone).await; // Use new non-blocking check
-                        reducer(state, action);
-                    }
-                    Action::ProcessBackgroundUpdateQueue => {
-                        // Check if there are tasks to process in the queue
-                        if let Some(task) = state.update_queue.get_next_task() {
+
+                        if state.updater.locked_project_id.is_some() {
                             let action_tx_clone = action_tx.clone();
-                            let project_name = task.project_name.clone();
-                            let is_priority = task.is_priority;
-
-                            // Find the project by name in all_projects (not filtered list) so background checks work for all projects
-                            if let Some(project) = state.all_projects.iter().find(|p| p.name == project_name) {
-                                let deps = project.dependencies.clone();
-                                let project_path = project.path.clone();
-                                let proj_name = project.name.clone();
-
-                                // For priority tasks (user pressed 'u'), enter wizard mode IMMEDIATELY
-                                if is_priority {
-                                    // Enter wizard mode right away
-                                    state.mode = Mode::UpdateWizard;
-                                    state.is_checking_updates = true;
-
-                                    // Show cached data immediately if available
-                                    // Uses has_stable_update() to properly handle pre-release versions
-                                    state.updater.outdated_dependencies = deps
-                                        .iter()
-                                        .filter(|d| d.has_stable_update())
-                                        .cloned()
-                                        .collect();
-
-                                    state.updater.selected_dependencies.clear();
-
-                                    // Select first item if there are outdated dependencies
-                                    if !state.updater.outdated_dependencies.is_empty() {
-                                        state.updater.list_state.select(Some(0));
-                                    } else {
-                                        state.updater.list_state.select(None);
-                                    }
-                                }
-
-                                // CRITICAL FIX: Only set status to "Checking" if deps actually need checking
-                                // Don't overwrite cached status if all deps are fresh
-                                let now = std::time::SystemTime::now();
-                                let cache_duration = state.config.app.cache_duration();
-                                let has_deps_needing_check = deps.iter().any(|dep| {
-                                    if let Some(last_checked) = dep.last_checked {
-                                        // Check if cache expired
-                                        if let Ok(elapsed) = now.duration_since(last_checked) {
-                                            elapsed > cache_duration
-                                        } else {
-                                            true // Invalid timestamp
-                                        }
-                                    } else {
-                                        true // Never checked
-                                    }
-                                });
-
-                                // If all deps are fresh in cache, skip the async check entirely
-                                if !has_deps_needing_check {
-                                    // All deps are fresh - no need to re-check
-                                    state.is_checking_updates = false;
-                                    state.update_queue.task_completed();
-
-                                    // Continue queue for background tasks
-                                    if !is_priority {
-                                        let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
-                                    }
-                                } else {
-                                    // Some deps need checking - set status and spawn async check
-                                    reducer(state, Action::UpdateProjectCheckStatus(
-                                        proj_name.clone(),
-                                        ProjectCheckStatus::Checking
-                                    ));
-
-                                    let action_tx_clone_2 = action_tx_clone.clone();
-                                    let is_priority_task = is_priority;
-                                    let cache_duration = state.config.app.cache_duration();
-
-                                    // Perform the update check asynchronously
-                                    tokio::spawn(async move {
-                                        check_dependencies_with_cache(
-                                            proj_name,
-                                            deps,
-                                            action_tx_clone,
-                                            true,  // use_cache=true to respect TTL
-                                            Some(project_path),
-                                            cache_duration,
-                                        )
-                                        .await;
-
-                                        // Only continue queue for background tasks, not priority
-                                        if !is_priority_task {
-                                            let _ = action_tx_clone_2.send(Action::ProcessBackgroundUpdateQueue).await;
-                                        }
-                                    });
-                                }
-                            } else {
-                                // Project not found, mark as complete so queue can continue
-                                state.update_queue.task_completed();
-                                // Try to process the next task immediately
-                                let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
-                            }
+                            let state_snapshot = state.clone();
+                            let dep_cache_clone = dep_cache.clone();
+                            tokio::spawn(async move {
+                                check_for_updates(&state_snapshot, action_tx_clone, dep_cache_clone).await;
+                            });
                         }
-                    }
-                    Action::QueueBackgroundUpdate(_, _) => {
-                        // Add to queue and start processing
-                        reducer(state, action);
-                        let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
                     }
                     Action::UpdateDependencies(..) => {
-                        // Mark the background update task as complete
-                        state.update_queue.task_completed();
-                        // Process the update results
                         reducer(state, action);
-                        // Continue processing the queue
-                        let _ = action_tx.send(Action::ProcessBackgroundUpdateQueue).await;
                     }
                     Action::UpdateSingleDependency(..) => {
                         // Update individual dependency and continue
@@ -767,17 +666,9 @@ async fn run_app<B: Backend>(
                     }
                     Action::SaveSettings => {
                         reducer(state, action.clone());
-
-                        if state.config.app.background_updates_enabled
-                            && state.update_queue.has_pending_tasks()
-                        {
-                            let _ = action_tx
-                                .send(Action::ProcessBackgroundUpdateQueue)
-                                .await;
-                        }
                     }
                     Action::RunUpdate => {
-                        // Build the cargo update command for selected dependencies
+                        // Construct the cargo update command for selected dependencies
                         // Use name@version format to avoid ambiguity when multiple versions exist
                         let selected_deps: Vec<String> = state
                             .updater
@@ -798,16 +689,14 @@ async fn run_app<B: Backend>(
 
                             // Run update only on the currently highlighted project
                             // (the one whose dependencies are shown in the update wizard)
-                            if let Some(project) = state.get_selected_project() {
-                                let project_name = project.name.clone();
-
+                            if let Some(project_id) = state.updater.locked_project_id.clone() {
                                 // Temporarily clear selected projects and set only the current one
                                 let previous_selection = state.selected_projects.clone();
                                 state.selected_projects.clear();
-                                state.selected_projects.insert(project_name.clone());
+                                state.selected_projects.insert(project_id.clone());
 
                                 // Set pending reload - will be processed when FinishCommand is received
-                                state.updater.pending_reload_project = Some(project_name);
+                                state.updater.pending_reload_project = Some(project_id);
 
                                 // Clear wizard selections (but keep wizard open until command finishes)
                                 state.updater.selected_dependencies.clear();
@@ -824,16 +713,15 @@ async fn run_app<B: Backend>(
                         }
                     }
                     Action::FinishCommand(tab_index) => {
-                        // NOTE: reducer was already called in sync path (handle_component_events)
-                        // This async handler only runs when there's a pending reload
+                        reducer(state, Action::FinishCommand(*tab_index));
 
                         // Check if we have a pending dependency reload after update
-                        if let Some(project_name) = state.updater.pending_reload_project.take()
-                            && let Some(all_proj) = state.all_projects.iter_mut().find(|p| p.name == project_name)
+                        if let Some(project_id) = state.updater.pending_reload_project.take()
+                            && let Some(all_proj) = state.all_projects.iter_mut().find(|p| p.path == project_id)
                             && let Ok(()) = all_proj.reload_dependencies()
                         {
                             // Successfully reloaded! Now sync to filtered projects list
-                            if let Some(proj) = state.projects.iter_mut().find(|p| p.name == project_name) {
+                            if let Some(proj) = state.projects.iter_mut().find(|p| p.path == project_id) {
                                 proj.dependencies = all_proj.dependencies.clone();
                             }
 
@@ -842,20 +730,20 @@ async fn run_app<B: Backend>(
 
                             // Now re-check with the FRESH dependencies to get latest versions
                             let fresh_deps = all_proj.dependencies.clone();
-                            let project_path = all_proj.path.clone();
-                            let proj_name = all_proj.name.clone();
+                            let proj_id = all_proj.path.clone();
                             let cache_duration = state.config.app.cache_duration();
                             let action_tx_clone = action_tx.clone();
+                            let dep_cache_clone = dep_cache.clone();
 
                             tokio::spawn(async move {
                                 // Re-check with fresh dependencies from disk
                                 check_dependencies_with_cache(
-                                    proj_name,
+                                    proj_id,
                                     fresh_deps,
                                     action_tx_clone,
                                     false,  // Don't use cache - force fresh check
-                                    Some(project_path),
                                     cache_duration,
+                                    dep_cache_clone,
                                 )
                                 .await;
                             });
@@ -877,7 +765,8 @@ async fn run_app<B: Backend>(
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
                 // Periodic cache persistence (every 30 seconds)
                 if last_cache_save.elapsed() > std::time::Duration::from_secs(30) {
-                    save_cache_progress(state);
+                    let mut cache = dep_cache.write().await;
+                    let _ = cache.save();
                     last_cache_save = std::time::Instant::now();
                 }
                 continue;
@@ -885,6 +774,8 @@ async fn run_app<B: Backend>(
         };
 
         if state.should_quit {
+            let mut cache = dep_cache.write().await;
+            let _ = cache.save();
             return Ok(());
         }
     }

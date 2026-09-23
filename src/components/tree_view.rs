@@ -35,6 +35,7 @@ impl TreeView {
 
         match &node.node_type {
             TreeNodeType::Directory { name, .. } => {
+                let icon = if node.expanded { "📂" } else { "📁" };
                 let indicator = if node.loading {
                     // Show spinner when loading
                     "⠹".to_string()
@@ -43,9 +44,14 @@ impl TreeView {
                 } else {
                     "▸".to_string()
                 };
-                (format!("{}{} {}", indent, indicator, name), node.loading)
+                (
+                    format!("{}{} {} {}", indent, indicator, icon, name),
+                    node.loading,
+                )
             }
-            TreeNodeType::Project(_) => (format!("{}  • {}", indent, node.node_type.name()), false),
+            TreeNodeType::Project(_) => {
+                (format!("{}  🦀 {}", indent, node.node_type.name()), false)
+            }
         }
     }
 
@@ -56,42 +62,51 @@ impl TreeView {
         }
 
         let (node, _) = &state.flattened_tree.items[node_index];
+        let colors = state.current_colors();
 
         match &node.node_type {
             TreeNodeType::Directory { .. } => {
-                // Loading or selected directories get cyan, others get muted purple
-                if node.loading || is_selected {
+                if is_selected {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(colors.text)
+                        .bg(colors.selection)
+                        .add_modifier(Modifier::BOLD)
+                } else if node.loading {
+                    Style::default()
+                        .fg(colors.selection)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
-                        .fg(Color::Rgb(150, 150, 200))
+                        .fg(colors.primary)
                         .add_modifier(Modifier::BOLD)
                 }
             }
             TreeNodeType::Project(project) => {
                 use crate::project::ProjectCheckStatus;
 
-                let base_style = if is_selected {
+                let mut style = if is_selected {
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(colors.text)
+                        .bg(colors.selection)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(colors.text)
                 };
 
-                // Add status color based on project check status
-                match project.check_status {
-                    ProjectCheckStatus::Unchecked => base_style.fg(Color::DarkGray),
-                    ProjectCheckStatus::Checking => {
-                        base_style.fg(Color::Blue).add_modifier(Modifier::BOLD)
+                if !is_selected {
+                    // Add status color based on project check status
+                    match project.check_status {
+                        ProjectCheckStatus::Unchecked => style = style.fg(colors.muted),
+                        ProjectCheckStatus::Checking => {
+                            style = style.fg(Color::Blue).add_modifier(Modifier::BOLD)
+                        }
+                        ProjectCheckStatus::HasUpdates => {
+                            style = style.fg(colors.warning).add_modifier(Modifier::BOLD)
+                        }
+                        ProjectCheckStatus::UpToDate => style = style.fg(colors.success),
                     }
-                    ProjectCheckStatus::HasUpdates => {
-                        base_style.fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                    }
-                    ProjectCheckStatus::UpToDate => base_style.fg(Color::Green),
                 }
+                style
             }
         }
     }
@@ -122,6 +137,7 @@ impl Component for TreeView {
     }
 
     fn draw(&mut self, f: &mut Frame, state: &mut AppState, area: Rect) {
+        let colors = state.current_colors();
         // Create the list of items
         let items: Vec<ListItem> = state
             .flattened_tree
@@ -137,18 +153,17 @@ impl Component for TreeView {
                 let line = match &node.node_type {
                     TreeNodeType::Project(project) => {
                         let status_indicator = Self::get_project_status_indicator(project);
-                        let indicator_span =
-                            Span::styled(status_indicator, style.add_modifier(Modifier::BOLD));
-
-                        // Extract just the project name part (skip indent and dots)
-                        let project_part = format!("{}", project.name);
-                        let text_span = Span::styled(project_part, style);
+                        let indicator_style = if is_selected {
+                            style
+                        } else {
+                            style.add_modifier(Modifier::BOLD)
+                        };
+                        let indicator_span = Span::styled(status_indicator, indicator_style);
 
                         let mut line_spans = vec![
-                            Span::raw("  ".to_string()),
+                            Span::styled(line_text, style),
+                            Span::styled(" ", style),
                             indicator_span,
-                            Span::raw(" ".to_string()),
-                            text_span,
                         ];
 
                         // Add selection indicator
@@ -180,9 +195,10 @@ impl Component for TreeView {
                 Block::default()
                     .title(" Projects ")
                     .borders(Borders::ALL)
+                    .border_style(Style::default().fg(colors.primary))
                     .border_type(ratatui::widgets::BorderType::Rounded),
             )
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(colors.text));
 
         // Render the list
         f.render_widget(list, area);

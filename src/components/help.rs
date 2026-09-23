@@ -234,7 +234,11 @@ impl Component for Help {
         self.scroll = self.scroll.min(max_scroll);
 
         let help_para = Paragraph::new(help_lines)
-            .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+            .block(
+                Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT)
+                    .border_type(ratatui::widgets::BorderType::Rounded),
+            )
             .wrap(Wrap { trim: false })
             .scroll((self.scroll as u16, 0));
 

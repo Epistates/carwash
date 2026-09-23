@@ -5,7 +5,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
@@ -14,7 +14,6 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 #[derive(Debug, Clone)]
 pub struct SettingsModalState {
     pub cache_minutes_input: Input,
-    pub background_updates_enabled: bool,
     pub error_message: Option<String>,
 }
 
@@ -22,7 +21,6 @@ impl SettingsModalState {
     pub fn new() -> Self {
         Self {
             cache_minutes_input: Input::default(),
-            background_updates_enabled: false,
             error_message: None,
         }
     }
@@ -61,9 +59,6 @@ impl Component for SettingsModal {
         match key {
             KeyCode::Esc => Some(Action::CloseSettings),
             KeyCode::Enter => Some(Action::SaveSettings),
-            KeyCode::Char(' ') | KeyCode::Char('b') | KeyCode::Char('B') => {
-                Some(Action::SettingsToggleBackground)
-            }
             _ => {
                 let mut input = app.settings_modal.cache_minutes_input.clone();
                 if input
@@ -79,6 +74,7 @@ impl Component for SettingsModal {
     }
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
+        let colors = app.current_colors();
         let popup_area = Self::centered_rect(60, 50, area);
 
         f.render_widget(Clear, popup_area);
@@ -88,7 +84,6 @@ impl Component for SettingsModal {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Length(3),
-                Constraint::Length(3),
                 Constraint::Min(3),
                 Constraint::Length(3),
             ])
@@ -96,58 +91,41 @@ impl Component for SettingsModal {
 
         let title = Block::default()
             .title(" Settings ")
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(
                 Style::default()
-                    .fg(Color::Magenta)
+                    .fg(colors.selection)
                     .add_modifier(Modifier::BOLD),
             );
         f.render_widget(title, chunks[0]);
 
-        let background_status = if app.settings_modal.background_updates_enabled {
-            Span::styled(
-                "Enabled",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("Disabled", Style::default().fg(Color::DarkGray))
-        };
-
-        let background_line = Line::from(vec![
-            Span::styled(" Background updates ", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            background_status,
-            Span::raw("    (Space) toggle"),
-        ]);
-
-        let background_para = Paragraph::new(background_line)
-            .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        f.render_widget(background_para, chunks[1]);
-
         let cache_label = Line::from(vec![
-            Span::styled(" Cache TTL (minutes) ", Style::default().fg(Color::White)),
+            Span::styled(" Cache TTL (minutes) ", Style::default().fg(colors.text)),
             Span::raw(" "),
             Span::styled(
                 app.settings_modal.cache_minutes_input.value(),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(colors.warning)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
 
         let cache_para = Paragraph::new(cache_label)
             .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        f.render_widget(cache_para, chunks[2]);
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(colors.dim)),
+            );
+        f.render_widget(cache_para, chunks[1]);
 
         let mut lines = vec![Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Green)),
+            Span::styled(" Enter", Style::default().fg(colors.success)),
             Span::raw(": Save"),
             Span::raw("    "),
-            Span::styled("Esc", Style::default().fg(Color::Red)),
+            Span::styled("Esc", Style::default().fg(colors.error)),
             Span::raw(": Cancel"),
         ])];
 
@@ -155,7 +133,7 @@ impl Component for SettingsModal {
             lines.push(Line::from(vec![Span::styled(
                 error.as_str(),
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(colors.error)
                     .add_modifier(Modifier::BOLD | Modifier::ITALIC),
             )]));
         }
@@ -163,8 +141,9 @@ impl Component for SettingsModal {
         let help_para = Paragraph::new(lines).alignment(Alignment::Center).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta)),
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::default().fg(colors.selection)),
         );
-        f.render_widget(help_para, chunks[4]);
+        f.render_widget(help_para, chunks[3]);
     }
 }

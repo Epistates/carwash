@@ -10,10 +10,10 @@ use crate::components::{
 use crate::config::Config;
 use crate::events::{Action, Focus, Mode};
 use crate::project::Project;
-use crate::runner::UpdateQueue;
 use crate::tree::{FlattenedTree, TreeNode, TreeSelectionState};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// Represents the complete state of the CarWash application
 ///
@@ -44,7 +44,7 @@ pub struct AppState {
     /// Set of workspace names that are collapsed in the tree view
     pub collapsed_workspaces: HashSet<String>,
     /// Set of selected project paths
-    pub selected_projects: HashSet<String>,
+    pub selected_projects: HashSet<PathBuf>,
     /// Tab panes for command output
     pub tabs: Vec<Tab>,
     /// Index of the currently active tab
@@ -57,8 +57,6 @@ pub struct AppState {
     pub updater: UpdateWizardState,
     /// State of text input fields
     pub text_input: TextInputState,
-    /// Queue of pending update checks
-    pub update_queue: UpdateQueue,
     /// Modal state for editing settings
     pub settings_modal: SettingsModalState,
     /// Filter/search state
@@ -125,7 +123,6 @@ impl Default for AppState {
             palette: CommandPaletteState::new(),
             updater: UpdateWizardState::new(),
             text_input: TextInputState::new(),
-            update_queue: UpdateQueue::new(),
             settings_modal: SettingsModalState::new(),
             filter: FilterState::new(),
             config: Config::load(),
@@ -167,12 +164,12 @@ impl AppState {
                 if let crate::tree::TreeNodeType::Project(tree_project) = &node.node_type {
                     // IMPORTANT: The tree contains cloned copies of projects,
                     // but dependencies are updated in all_projects.
-                    // So we need to look up the project by name in all_projects
+                    // So we need to look up the project by path in all_projects
                     // to get the current state with updated dependencies.
                     return self
                         .all_projects
                         .iter()
-                        .find(|p| p.name == tree_project.name);
+                        .find(|p| p.path == tree_project.path);
                 }
             }
         }
@@ -218,6 +215,23 @@ impl AppState {
             .map(|(node, _)| node)
     }
 
+    fn find_tree_node_by_path<'a>(
+        node: &'a crate::tree::TreeNode,
+        path: &Path,
+    ) -> Option<&'a crate::tree::TreeNode> {
+        if node.node_type.path() == path {
+            return Some(node);
+        }
+
+        for child in &node.children {
+            if let Some(found) = Self::find_tree_node_by_path(child, path) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
     /// Get all projects under the currently selected node
     /// - If cursor is on a project: returns just that project
     /// - If cursor is on a directory: returns all projects under that directory
@@ -228,16 +242,23 @@ impl AppState {
                     // Return the actual project from all_projects (has updated dependencies)
                     self.all_projects
                         .iter()
-                        .filter(|p| p.name == tree_project.name)
+                        .filter(|p| p.path == tree_project.path)
                         .collect()
                 }
                 crate::tree::TreeNodeType::Directory { .. } => {
-                    // Collect all projects under this directory
-                    let tree_projects = node.collect_projects();
+                    // Flattened directory nodes intentionally do not carry children.
+                    // Resolve the selected path back into the real tree before collecting.
+                    let tree_projects = self
+                        .tree_root
+                        .as_ref()
+                        .and_then(|root| Self::find_tree_node_by_path(root, node.node_type.path()))
+                        .map(|node| node.collect_projects())
+                        .unwrap_or_default();
+
                     // Map to actual projects from all_projects (has updated dependencies)
                     tree_projects
                         .into_iter()
-                        .filter_map(|tp| self.all_projects.iter().find(|p| p.name == tp.name))
+                        .filter_map(|tp| self.all_projects.iter().find(|p| p.path == tp.path))
                         .collect()
                 }
             }
@@ -275,21 +296,19 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::PaletteSelectPrevious => handle_palette_select_previous(state),
         Action::StartUpdateWizard => handle_start_update_wizard(state),
         Action::ToggleUpdateSelection => handle_toggle_update_selection(state),
-        Action::CheckForUpdates => handle_check_for_updates(state),
         Action::SettingsUpdateCacheInput(input) => handle_settings_update_cache_input(state, input),
-        Action::SettingsToggleBackground => handle_settings_toggle_background(state),
         Action::SaveSettings => handle_save_settings(state),
-        Action::UpdateDependencies(project_name, deps) => {
-            handle_update_dependencies(state, project_name, deps)
+        Action::UpdateDependencies(project_id, deps) => {
+            handle_update_dependencies(state, project_id, deps)
         }
-        Action::UpdateDependenciesStreamStart(project_name) => {
-            handle_update_dependencies_stream_start(state, project_name)
+        Action::UpdateDependenciesStreamStart(project_id) => {
+            handle_update_dependencies_stream_start(state, project_id)
         }
-        Action::UpdateSingleDependency(project_name, dep) => {
-            handle_update_single_dependency(state, project_name, dep)
+        Action::UpdateSingleDependency(project_id, dep) => {
+            handle_update_single_dependency(state, project_id, dep)
         }
-        Action::UpdateDependencyCheckStatus(project_name, dep_name, status) => {
-            handle_update_dependency_status(state, Some(project_name), dep_name, status)
+        Action::UpdateDependencyCheckStatus(project_id, dep_name, status) => {
+            handle_update_dependency_status(state, Some(project_id), dep_name, status)
         }
         Action::CreateTab(title) => handle_create_tab(state, title),
         Action::AddOutput(tab_index, line) => handle_add_output(state, tab_index, line),
@@ -301,20 +320,8 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::RunUpdate => {
             // Update execution is handled in main event loop
         }
-        Action::StartBackgroundUpdateCheck => {
-            // Background update check is handled in main event loop
-        }
-        Action::UpdateDependencyStatus(dep_name, status) => {
-            handle_update_dependency_status(state, None, dep_name, status)
-        }
-        Action::ProcessBackgroundUpdateQueue => {
-            // Background update queue processing is handled in main event loop
-        }
-        Action::QueueBackgroundUpdate(project_name, is_priority) => {
-            handle_queue_background_update(state, project_name, is_priority)
-        }
-        Action::UpdateProjectCheckStatus(project_name, check_status) => {
-            handle_update_project_check_status(state, project_name, check_status)
+        Action::UpdateProjectCheckStatus(project_id, check_status) => {
+            handle_update_project_check_status(state, project_id, check_status)
         }
         Action::EnterFilterMode => handle_enter_filter_mode(state),
         Action::ExitFilterMode => handle_exit_filter_mode(state),
@@ -332,8 +339,8 @@ pub fn reducer(state: &mut AppState, action: Action) {
         Action::CalculateProjectSizes => {
             // Size calculation is handled in main event loop (async)
         }
-        Action::UpdateProjectSize(project_name, total_size, target_size) => {
-            handle_update_project_size(state, project_name, total_size, target_size)
+        Action::UpdateProjectSize(project_id, total_size, target_size) => {
+            handle_update_project_size(state, project_id, total_size, target_size)
         }
         Action::FocusNext => handle_focus_next(state),
         Action::InitializeTree(target_dir) => handle_initialize_tree(state, target_dir),
@@ -348,13 +355,17 @@ pub fn reducer(state: &mut AppState, action: Action) {
 mod tests {
     use super::*;
     use crate::events::{Action, Mode};
-    use crate::project::{Project, ProjectStatus};
+    use crate::project::{Dependency, DependencyCheckStatus, Project, ProjectStatus};
     use std::path::PathBuf;
 
     fn create_test_project(name: &str) -> Project {
+        create_test_project_at(name, "test")
+    }
+
+    fn create_test_project_at(name: &str, path: &str) -> Project {
         Project {
             name: name.to_string(),
-            path: PathBuf::from("test"),
+            path: PathBuf::from(path),
             status: ProjectStatus::Pending,
             version: "0.1.0".to_string(),
             authors: vec![],
@@ -438,11 +449,161 @@ mod tests {
 
         // Select the project
         reducer(&mut state, Action::ToggleSelection);
-        assert!(state.selected_projects.contains("test1"));
+        assert!(state.selected_projects.contains(&PathBuf::from("test")));
 
         // Deselect the project
         reducer(&mut state, Action::ToggleSelection);
-        assert!(!state.selected_projects.contains("test1"));
+        assert!(!state.selected_projects.contains(&PathBuf::from("test")));
+    }
+
+    #[test]
+    fn test_duplicate_project_names_are_selected_by_path() {
+        let mut state = AppState::new();
+        let project_a = create_test_project_at("shared", "/repo/a");
+        let project_b = create_test_project_at("shared", "/repo/b");
+        state.all_projects = vec![project_a.clone(), project_b.clone()];
+
+        let project_node = crate::tree::TreeNode::project(project_b.clone(), 0);
+        let mut flattened = crate::tree::FlattenedTree::new();
+        flattened.items.push((project_node, 0));
+        state.flattened_tree = flattened;
+        state.tree_state.select(Some(0));
+
+        let selected = state.get_selected_project().expect("selected project");
+        assert_eq!(selected.path, project_b.path);
+
+        reducer(&mut state, Action::ToggleSelection);
+        assert!(state.selected_projects.contains(&project_b.path));
+        assert!(!state.selected_projects.contains(&project_a.path));
+    }
+
+    #[test]
+    fn test_start_update_wizard_ignores_directory_selection() {
+        let mut state = AppState::new();
+        state.mode = Mode::Normal;
+        state.is_scanning = false;
+
+        let directory =
+            crate::tree::TreeNode::directory("repo".to_string(), PathBuf::from("/repo"), 0);
+        let mut flattened = crate::tree::FlattenedTree::new();
+        flattened.items.push((directory, 0));
+        state.flattened_tree = flattened;
+        state.tree_state.select(Some(0));
+
+        reducer(&mut state, Action::StartUpdateWizard);
+
+        assert_eq!(state.mode, Mode::Normal);
+        assert!(!state.is_checking_updates);
+        assert!(state.updater.locked_project_id.is_none());
+    }
+
+    #[test]
+    fn test_start_update_wizard_locks_selected_project_by_path() {
+        let mut state = AppState::new();
+        state.mode = Mode::Normal;
+        state.is_scanning = false;
+
+        let project = create_test_project_at("shared", "/repo/project-a");
+        state.all_projects = vec![project.clone()];
+        state.projects = vec![project.clone()];
+
+        let project_node = crate::tree::TreeNode::project(project.clone(), 0);
+        let mut flattened = crate::tree::FlattenedTree::new();
+        flattened.items.push((project_node, 0));
+        state.flattened_tree = flattened;
+        state.tree_state.select(Some(0));
+
+        reducer(&mut state, Action::StartUpdateWizard);
+
+        assert_eq!(state.mode, Mode::UpdateWizard);
+        assert!(state.is_checking_updates);
+        assert_eq!(
+            state.updater.locked_project_id.as_deref(),
+            Some(project.path.as_path())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_project_names_update_by_path() {
+        let mut state = AppState::new();
+        let mut project_a = create_test_project_at("shared", "/repo/a");
+        let mut project_b = create_test_project_at("shared", "/repo/b");
+        project_a.dependencies = vec![Dependency {
+            name: "serde".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: None,
+            check_status: DependencyCheckStatus::NotChecked,
+            last_checked: None,
+        }];
+        project_b.dependencies = vec![Dependency {
+            name: "serde".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: None,
+            check_status: DependencyCheckStatus::NotChecked,
+            last_checked: None,
+        }];
+        state.all_projects = vec![project_a.clone(), project_b.clone()];
+        state.projects = vec![project_a.clone(), project_b.clone()];
+        state.tree_root = Some(crate::tree::TreeNode {
+            node_type: crate::tree::TreeNodeType::Directory {
+                name: "repo".to_string(),
+                path: PathBuf::from("/repo"),
+            },
+            children: vec![
+                crate::tree::TreeNode::project(project_a.clone(), 1),
+                crate::tree::TreeNode::project(project_b.clone(), 1),
+            ],
+            expanded: true,
+            children_loaded: true,
+            loading: false,
+            depth: 0,
+        });
+
+        let updated_dep = Dependency {
+            name: "serde".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: Some("1.0.1".to_string()),
+            check_status: DependencyCheckStatus::Checked,
+            last_checked: None,
+        };
+        reducer(
+            &mut state,
+            Action::UpdateSingleDependency(project_b.path.clone(), updated_dep),
+        );
+
+        assert_eq!(state.all_projects[0].dependencies[0].latest_version, None);
+        assert_eq!(
+            state.all_projects[1].dependencies[0]
+                .latest_version
+                .as_deref(),
+            Some("1.0.1")
+        );
+    }
+
+    #[test]
+    fn test_directory_selection_uses_real_tree_children() {
+        let mut state = AppState::new();
+        let project = create_test_project_at("nested", "/repo/nested");
+        let root = crate::tree::TreeNode {
+            node_type: crate::tree::TreeNodeType::Directory {
+                name: "repo".to_string(),
+                path: PathBuf::from("/repo"),
+            },
+            children: vec![crate::tree::TreeNode::project(project.clone(), 1)],
+            expanded: true,
+            children_loaded: true,
+            loading: false,
+            depth: 0,
+        };
+
+        state.all_projects = vec![project.clone()];
+        state.tree_root = Some(root.clone());
+        state.flattened_tree = crate::tree::FlattenedTree::from_tree(&root);
+        state.tree_state.select(Some(0));
+
+        let projects = state.get_projects_under_selected();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, project.path);
     }
 
     #[test]

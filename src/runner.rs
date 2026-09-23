@@ -1,14 +1,13 @@
 //! Task execution and update checking
 //!
 //! This module handles the execution of cargo commands and dependency update checking.
-//! It manages a queue of tasks that are executed with proper concurrency limits and caching.
+//! Dependency update checks are user-initiated and scoped to one project at a time.
 
 use crate::app::AppState;
-use crate::cache::UpdateCache;
 use crate::events::Action;
 use crate::project::{Dependency, DependencyCheckStatus, Project};
 use crates_io_api::AsyncClient;
-use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -19,101 +18,20 @@ use tokio::{
 };
 
 const PARALLEL_UPDATE_CHECKS: usize = 5;
-/// A task to check for dependency updates on a project
-#[derive(Debug, Clone)]
-pub struct UpdateCheckTask {
-    /// Name of the project to check
-    pub project_name: String,
-    /// Whether this is a priority task (user-initiated)
-    pub is_priority: bool,
-}
-
-/// Queue for managing parallel update check tasks
-///
-/// The queue manages a limited number of concurrent update checks to avoid overwhelming
-/// the crates.io API. Priority tasks (user-initiated) are processed before background tasks.
-#[derive(Debug, Clone)]
-pub struct UpdateQueue {
-    /// Queue of pending tasks
-    pub queue: VecDeque<UpdateCheckTask>,
-    /// Number of tasks currently in progress
-    pub in_progress: usize,
-}
-
-impl UpdateQueue {
-    pub fn new() -> Self {
-        Self {
-            queue: VecDeque::new(),
-            in_progress: 0,
-        }
-    }
-
-    pub fn add_task(&mut self, task: UpdateCheckTask) {
-        // Check if this project is already in the queue
-        let already_queued = self
-            .queue
-            .iter()
-            .any(|t| t.project_name == task.project_name);
-
-        if already_queued {
-            // If it's a priority task and the existing one isn't, upgrade it
-            if task.is_priority {
-                // Remove the existing non-priority task
-                self.queue.retain(|t| t.project_name != task.project_name);
-                // Add the priority version at the front
-                self.queue.push_front(task);
-            }
-            // Otherwise skip (duplicate)
-            return;
-        }
-
-        if task.is_priority {
-            // Insert at the front for priority tasks
-            self.queue.push_front(task);
-        } else {
-            // Append to the back for background tasks
-            self.queue.push_back(task);
-        }
-    }
-
-    pub fn get_next_task(&mut self) -> Option<UpdateCheckTask> {
-        if self.in_progress >= PARALLEL_UPDATE_CHECKS {
-            return None;
-        }
-
-        if let Some(task) = self.queue.pop_front() {
-            self.in_progress += 1;
-            Some(task)
-        } else {
-            None
-        }
-    }
-
-    pub fn task_completed(&mut self) {
-        if self.in_progress > 0 {
-            self.in_progress -= 1;
-        }
-    }
-
-    pub fn has_pending_tasks(&self) -> bool {
-        !self.queue.is_empty() || self.in_progress > 0
-    }
-
-    pub fn clear(&mut self) {
-        self.queue.clear();
-        self.in_progress = 0;
-    }
-}
 
 /// Check for updates on selected project with proper caching
 /// This is called when user presses 'u' or opens update wizard
-pub async fn check_for_updates(state: &AppState, tx: mpsc::Sender<Action>) {
+pub async fn check_for_updates(
+    state: &AppState,
+    tx: mpsc::Sender<Action>,
+    dep_cache: Arc<tokio::sync::RwLock<crate::cache::DependencyVersionCache>>,
+) {
     // CRITICAL FIX: When called from wizard, use the LOCKED project, not current selection!
     // User might have moved cursor after opening wizard
     let project_to_check = if state.mode == crate::events::Mode::UpdateWizard {
         // Wizard is open - use the locked project
-        if let Some(ref locked_name) = state.updater.locked_project_name {
-            state.all_projects.iter().find(|p| &p.name == locked_name)
+        if let Some(ref locked_id) = state.updater.locked_project_id {
+            state.all_projects.iter().find(|p| &p.path == locked_id)
         } else {
             state.get_selected_project()
         }
@@ -123,22 +41,20 @@ pub async fn check_for_updates(state: &AppState, tx: mpsc::Sender<Action>) {
 
     if let Some(project) = project_to_check {
         let deps = project.dependencies.clone();
-        let project_name = project.name.clone();
-        let project_path = project.path.clone();
+        let project_id = project.path.clone();
 
         // Send initial action to show we're checking
         let _ = tx
-            .send(Action::UpdateDependenciesStreamStart(project_name.clone()))
+            .send(Action::UpdateDependenciesStreamStart(project_id.clone()))
             .await;
 
-        // Perform checks asynchronously - don't await here
         check_dependencies_with_cache(
-            project_name,
+            project_id,
             deps,
             tx,
             true,
-            Some(project_path),
             state.config.app.cache_duration(),
+            dep_cache,
         )
         .await;
     }
@@ -149,12 +65,13 @@ async fn check_single_dependency(
     dep: Dependency,
     client: &AsyncClient,
     tx: &mpsc::Sender<Action>,
-    project_name: &str,
+    project_id: &Path,
     use_cache: bool,
     cache_duration: std::time::Duration,
     now: SystemTime,
-) -> Option<Dependency> {
+) -> Option<(Dependency, bool)> {
     let mut updated_dep = dep.clone();
+    let mut checked_remote = false;
     let should_check = if use_cache {
         if let Some(last_checked) = updated_dep.last_checked {
             if let Ok(elapsed) = now.duration_since(last_checked) {
@@ -174,7 +91,7 @@ async fn check_single_dependency(
 
         let _ = tx
             .send(Action::UpdateDependencyCheckStatus(
-                project_name.to_string(),
+                project_id.to_path_buf(),
                 updated_dep.name.clone(),
                 DependencyCheckStatus::Checking,
             ))
@@ -190,35 +107,51 @@ async fn check_single_dependency(
                 updated_dep.latest_version = Some(crate_info.crate_data.max_version);
                 updated_dep.check_status = DependencyCheckStatus::Checked;
                 updated_dep.last_checked = Some(SystemTime::now());
+                checked_remote = true;
             }
             _ => {
-                updated_dep.check_status = DependencyCheckStatus::Checked;
-                updated_dep.last_checked = Some(SystemTime::now());
+                updated_dep.check_status = DependencyCheckStatus::NotChecked;
             }
         }
 
-        // Only send update for deps we actually checked (avoid redundant UI updates)
+        // Only send update for deps we actually checked (avoid redundant UI updates).
+        // Failed checks intentionally remain NotChecked so the project is not shown
+        // as up to date from incomplete data.
         let _ = tx
             .send(Action::UpdateSingleDependency(
-                project_name.to_string(),
+                project_id.to_path_buf(),
                 updated_dep.clone(),
             ))
             .await;
     }
     // Skip sending UpdateSingleDependency for cached deps - they're already up to date
 
-    Some(updated_dep)
+    Some((updated_dep, checked_remote))
 }
 
 pub async fn check_dependencies_with_cache(
-    project_name: String,
+    project_id: PathBuf,
     deps: Vec<Dependency>,
     tx: mpsc::Sender<Action>,
     use_cache: bool,
-    project_path: Option<std::path::PathBuf>,
     cache_duration: std::time::Duration,
+    dep_cache: Arc<tokio::sync::RwLock<crate::cache::DependencyVersionCache>>,
 ) {
-    let cache = UpdateCache::new();
+    let mut deps = deps;
+    if use_cache {
+        let cache = dep_cache.read().await;
+        for dep in &mut deps {
+            if let Some(entry) = cache.lookup(&dep.name, &dep.current_version, cache_duration) {
+                dep.latest_version = Some(entry.latest.clone());
+                dep.check_status = DependencyCheckStatus::Checked;
+                dep.last_checked = Some(
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(entry.checked_at),
+                );
+            }
+        }
+    }
+
     let semaphore = Arc::new(Semaphore::new(PARALLEL_UPDATE_CHECKS));
     let client = match AsyncClient::new(
         "carwash/0.1.0 (https://github.com/epistates/carwash)",
@@ -226,9 +159,7 @@ pub async fn check_dependencies_with_cache(
     ) {
         Ok(client) => client,
         Err(_) => {
-            let _ = tx
-                .send(Action::UpdateDependencies(project_name, deps))
-                .await;
+            let _ = tx.send(Action::UpdateDependencies(project_id, deps)).await;
             return;
         }
     };
@@ -239,7 +170,7 @@ pub async fn check_dependencies_with_cache(
         let semaphore_clone = semaphore.clone();
         let client_clone = client.clone();
         let tx_clone = tx.clone();
-        let project_name_clone = project_name.clone();
+        let project_id_clone = project_id.clone();
 
         let task = tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await.ok()?;
@@ -247,7 +178,7 @@ pub async fn check_dependencies_with_cache(
                 dep,
                 &client_clone,
                 &tx_clone,
-                &project_name_clone,
+                &project_id_clone,
                 use_cache,
                 cache_duration,
                 now,
@@ -258,41 +189,37 @@ pub async fn check_dependencies_with_cache(
     }
 
     let mut updated_deps = Vec::new();
+    let mut remotely_checked_deps = Vec::new();
     for task in tasks {
-        if let Ok(Some(dep)) = task.await {
+        if let Ok(Some((dep, checked_remote))) = task.await {
+            if checked_remote {
+                remotely_checked_deps.push(dep.clone());
+            }
             updated_deps.push(dep);
         }
     }
 
-    if let Some(path) = project_path
-        && let Some(lock_hash) = UpdateCache::hash_cargo_lock(&path.join("Cargo.lock"))
-    {
-        let mut cached_deps = std::collections::HashMap::new();
-        for dep in &updated_deps {
-            if dep.latest_version.is_some() {
-                cached_deps.insert(
-                    dep.name.clone(),
-                    crate::cache::CachedDependency {
-                        latest_version: dep.latest_version.clone(),
-                        cached_at: dep.last_checked.unwrap_or_else(SystemTime::now),
-                    },
-                );
+    // Update the global per-dependency version cache
+    if !remotely_checked_deps.is_empty() {
+        let mut cache = dep_cache.write().await;
+        for dep in &remotely_checked_deps {
+            if dep.check_status == DependencyCheckStatus::Checked
+                && let Some(ref latest) = dep.latest_version
+            {
+                cache.insert(&dep.name, &dep.current_version, latest.clone());
             }
         }
-
-        if !cached_deps.is_empty() {
-            let _ = cache.save(&path, lock_hash, cached_deps.clone());
-        }
+        let _ = cache.save();
     }
 
     let _ = tx
-        .send(Action::UpdateDependencies(project_name, updated_deps))
+        .send(Action::UpdateDependencies(project_id, updated_deps))
         .await;
 }
 
 /// Recalculate the size of a single project after a command (e.g., cargo clean)
 async fn recalculate_project_size(project: &Project, tx: &mpsc::Sender<Action>) {
-    let project_name = project.name.clone();
+    let project_id = project.path.clone();
     let project_path = project.path.clone();
     let workspace_root = project.workspace_root.clone();
     let tx = tx.clone();
@@ -326,7 +253,7 @@ async fn recalculate_project_size(project: &Project, tx: &mpsc::Sender<Action>) 
         // Send update back to main thread
         let _ = tx
             .send(Action::UpdateProjectSize(
-                project_name,
+                project_id,
                 total_size,
                 target_size,
             ))
@@ -421,110 +348,153 @@ async fn spawn_and_stream_command(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct CleanCommandTarget {
+    tab_index: usize,
+    command_project: Project,
+    affected_projects: Vec<Project>,
+}
+
+fn clean_target_path(project: &Project) -> PathBuf {
+    project
+        .workspace_root
+        .clone()
+        .unwrap_or_else(|| project.path.clone())
+}
+
+fn clean_target_name(first_project: &Project, target_path: &Path) -> String {
+    first_project.workspace_name.clone().unwrap_or_else(|| {
+        target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(first_project.name.as_str())
+            .to_string()
+    })
+}
+
+fn plan_clean_command_targets(
+    projects: Vec<Project>,
+    start_tab_count: usize,
+) -> Vec<CleanCommandTarget> {
+    let mut grouped_projects: Vec<(PathBuf, Vec<Project>)> = Vec::new();
+
+    for project in projects {
+        let target_path = clean_target_path(&project);
+        if let Some((_, existing_projects)) = grouped_projects
+            .iter_mut()
+            .find(|(path, _)| *path == target_path)
+        {
+            existing_projects.push(project);
+        } else {
+            grouped_projects.push((target_path, vec![project]));
+        }
+    }
+
+    grouped_projects
+        .into_iter()
+        .enumerate()
+        .map(|(offset, (target_path, affected_projects))| {
+            let mut command_project = affected_projects[0].clone();
+            command_project.name = clean_target_name(&command_project, &target_path);
+            command_project.path = target_path;
+            command_project.workspace_root = None;
+
+            CleanCommandTarget {
+                tab_index: start_tab_count + offset,
+                command_project,
+                affected_projects,
+            }
+        })
+        .collect()
+}
+
 pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<Action>) {
     if command_str.is_empty() {
         return;
     }
 
     let projects_to_run: Vec<Project> = state
-        .projects
+        .all_projects
         .iter()
-        .filter(|p| state.selected_projects.contains(&p.name))
+        .filter(|p| state.selected_projects.contains(&p.path))
         .cloned()
         .collect();
 
     if projects_to_run.is_empty() {
+        let tab_index = state.tabs.len();
         let _ = tx
             .send(Action::CreateTab("Error: No projects selected".to_string()))
             .await;
         let _ = tx
             .send(Action::AddOutput(
-                0,
+                tab_index,
                 "Please select at least one project to run commands.".to_string(),
             ))
             .await;
-        let _ = tx.send(Action::FinishCommand(0)).await;
+        let _ = tx.send(Action::FinishCommand(tab_index)).await;
         return;
     }
 
     let start_tab_count = state.tabs.len();
-    let is_clean_command = command_str.contains("clean");
+    let is_clean_command = shlex::split(command_str)
+        .unwrap_or_else(|| command_str.split_whitespace().map(String::from).collect())
+        .first()
+        .is_some_and(|command| command == "clean");
 
-    // For clean commands on workspace members, we need to run sequentially to avoid race conditions
-    // Group projects by workspace root
     if is_clean_command {
-        use std::collections::HashMap;
-        use std::path::PathBuf;
+        let clean_targets = plan_clean_command_targets(projects_to_run, start_tab_count);
 
-        let mut workspace_groups: HashMap<Option<PathBuf>, Vec<(usize, Project)>> = HashMap::new();
-        for (i, project) in projects_to_run.into_iter().enumerate() {
-            workspace_groups
-                .entry(project.workspace_root.clone())
-                .or_default()
-                .push((i, project));
+        for target in &clean_targets {
+            let tab_title = format!("{}: {}", command_str, target.command_project.name);
+            let _ = tx.send(Action::CreateTab(tab_title)).await;
         }
 
-        // Process each workspace group
-        for (_ws_root, group) in workspace_groups {
-            let has_shared_target = group.len() > 1 && group[0].1.workspace_root.is_some();
-
-            if has_shared_target {
-                // Spawn a single background task to run workspace member cleans sequentially
-                // This prevents race conditions while keeping the UI responsive
-                let tx = tx.clone();
-                let command_str = command_str.to_string();
-
-                tokio::spawn(async move {
-                    for (i, project) in group {
-                        let tab_title = format!("{}: {}", command_str, project.name);
-                        let tab_index = start_tab_count + i;
-
-                        let _ = tx.send(Action::CreateTab(tab_title)).await;
-
-                        if let Err(e) =
-                            spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
-                        {
-                            let _ = tx
-                                .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
-                                .await;
-                        }
-                        recalculate_project_size(&project, &tx).await;
-                        let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                    }
-                });
-            } else {
-                // Run in parallel for standalone projects
-                for (i, project) in group {
-                    let tx = tx.clone();
-                    let command_str = command_str.to_string();
-                    let tab_title = format!("{}: {}", command_str, project.name);
-                    let tab_index = start_tab_count + i;
-
-                    let _ = tx.send(Action::CreateTab(tab_title)).await;
-
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            spawn_and_stream_command(&command_str, &project, &tx, tab_index).await
-                        {
-                            let _ = tx
-                                .send(Action::AddOutput(tab_index, format!("❌ Error: {}", e)))
-                                .await;
-                        }
-                        recalculate_project_size(&project, &tx).await;
-                        let _ = tx.send(Action::FinishCommand(tab_index)).await;
-                    });
-                }
-            }
-        }
-    } else {
-        // Non-clean commands: run in parallel as before
-        for (i, project) in projects_to_run.into_iter().enumerate() {
+        // `cargo clean` acts on the workspace target directory for workspace members.
+        // Run it once per unique target directory, then refresh every affected row.
+        for target in clean_targets {
             let tx = tx.clone();
             let command_str = command_str.to_string();
-            let tab_title = format!("{}: {}", command_str, project.name);
-            let tab_index = start_tab_count + i;
 
+            tokio::spawn(async move {
+                if let Err(e) = spawn_and_stream_command(
+                    &command_str,
+                    &target.command_project,
+                    &tx,
+                    target.tab_index,
+                )
+                .await
+                {
+                    let _ = tx
+                        .send(Action::AddOutput(
+                            target.tab_index,
+                            format!("❌ Error: {}", e),
+                        ))
+                        .await;
+                }
+
+                for project in target.affected_projects {
+                    recalculate_project_size(&project, &tx).await;
+                }
+
+                let _ = tx.send(Action::FinishCommand(target.tab_index)).await;
+            });
+        }
+    } else {
+        let projects_with_tabs: Vec<(usize, Project)> = projects_to_run
+            .into_iter()
+            .enumerate()
+            .map(|(i, project)| (start_tab_count + i, project))
+            .collect();
+
+        for (_, project) in &projects_with_tabs {
+            let tab_title = format!("{}: {}", command_str, project.name);
             let _ = tx.send(Action::CreateTab(tab_title)).await;
+        }
+
+        // Non-clean commands: run in parallel as before
+        for (tab_index, project) in projects_with_tabs {
+            let tx = tx.clone();
+            let command_str = command_str.to_string();
 
             tokio::spawn(async move {
                 if let Err(e) =
@@ -537,5 +507,59 @@ pub async fn run_command(command_str: &str, state: &AppState, tx: mpsc::Sender<A
                 let _ = tx.send(Action::FinishCommand(tab_index)).await;
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::{GitStatus, ProjectCheckStatus, ProjectStatus};
+
+    fn project(name: &str, path: &str, workspace_root: Option<&str>) -> Project {
+        Project {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            status: ProjectStatus::Pending,
+            version: "0.1.0".to_string(),
+            authors: vec![],
+            dependencies: vec![],
+            workspace_root: workspace_root.map(PathBuf::from),
+            workspace_name: workspace_root.map(|_| "workspace".to_string()),
+            cargo_lock_hash: None,
+            check_status: ProjectCheckStatus::Unchecked,
+            git_status: GitStatus::Clean,
+            total_size: None,
+            target_size: None,
+        }
+    }
+
+    #[test]
+    fn clean_targets_dedupe_workspace_members() {
+        let member_a = project("member-a", "/repo/member-a", Some("/repo"));
+        let member_b = project("member-b", "/repo/member-b", Some("/repo"));
+
+        let targets = plan_clean_command_targets(vec![member_a, member_b], 3);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].tab_index, 3);
+        assert_eq!(targets[0].command_project.path, PathBuf::from("/repo"));
+        assert_eq!(targets[0].affected_projects.len(), 2);
+    }
+
+    #[test]
+    fn clean_targets_keep_standalone_projects_separate() {
+        let workspace_member = project("member-a", "/repo/member-a", Some("/repo"));
+        let standalone = project("tool", "/tools/tool", None);
+
+        let targets = plan_clean_command_targets(vec![workspace_member, standalone], 10);
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].tab_index, 10);
+        assert_eq!(targets[0].command_project.path, PathBuf::from("/repo"));
+        assert_eq!(targets[1].tab_index, 11);
+        assert_eq!(
+            targets[1].command_project.path,
+            PathBuf::from("/tools/tool")
+        );
     }
 }

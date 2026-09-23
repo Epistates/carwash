@@ -33,7 +33,7 @@ pub struct Config {
     #[serde(default)]
     pub progress: ProgressConfig,
 
-    /// App settings (cache, background updates, etc)
+    /// App settings (cache TTL, folder visibility, etc)
     #[serde(default)]
     pub app: AppSettings,
 }
@@ -116,7 +116,10 @@ impl Config {
                 if path.exists() {
                     match fs::read_to_string(&path) {
                         Ok(content) => match toml::from_str::<Config>(&content) {
-                            Ok(config) => config,
+                            Ok(mut config) => {
+                                config.app = config.app.normalize();
+                                config
+                            }
                             Err(e) => {
                                 eprintln!("Warning: Failed to parse config: {}", e);
                                 Self::default()

@@ -63,7 +63,7 @@ impl ProjectList {
 impl ProjectList {
     /// Create a list item for a project from the tree (with indentation)
     fn create_tree_project_item<'a>(
-        selected_projects: &'a std::collections::HashSet<String>,
+        selected_projects: &'a std::collections::HashSet<std::path::PathBuf>,
         project: &'a crate::project::Project,
         depth: usize,
         is_selected: bool,
@@ -71,7 +71,7 @@ impl ProjectList {
     ) -> ListItem<'a> {
         let (status_icon, status_style) = Self::get_project_status(project, colors);
 
-        let is_checked = selected_projects.contains(&project.name);
+        let is_checked = selected_projects.contains(&project.path);
         let checkbox_symbol = if is_checked { "☑" } else { "☐" };
         let checkbox_style = if is_checked {
             Style::default().fg(colors.success)
@@ -97,7 +97,7 @@ impl ProjectList {
             ratatui::text::Span::styled(checkbox_symbol, checkbox_style),
             ratatui::text::Span::raw(" "),
             ratatui::text::Span::styled(status_icon, status_style),
-            ratatui::text::Span::raw(" "),
+            ratatui::text::Span::raw(" 🦀 "),
             ratatui::text::Span::styled(&project.name, name_style),
         ];
 
@@ -167,6 +167,7 @@ impl Component for ProjectList {
                     // Render directory node with expand/collapse indicator
                     let indicator = if is_selected { "▶ " } else { "  " };
                     let collapse_indicator = if node.expanded { "▾" } else { "▸" };
+                    let icon = if node.expanded { "📂" } else { "📁" };
                     let indent = "  ".repeat(node.depth);
 
                     // Check if any children are selected
@@ -178,12 +179,12 @@ impl Component for ProjectList {
                         .take_while(|(child_node, _)| child_node.depth > node.depth)
                         .filter_map(|(child_node, _)| {
                             if let crate::tree::TreeNodeType::Project(p) = &child_node.node_type {
-                                Some(&p.name)
+                                Some(&p.path)
                             } else {
                                 None
                             }
                         })
-                        .any(|name| app.selected_projects.contains(name));
+                        .any(|path| app.selected_projects.contains(path));
 
                     let checkbox_symbol = if has_selected_children { "☑" } else { "☐" };
                     let checkbox_style = if has_selected_children {
@@ -206,7 +207,7 @@ impl Component for ProjectList {
                         ratatui::text::Span::styled(checkbox_symbol, checkbox_style),
                         ratatui::text::Span::raw(" "),
                         ratatui::text::Span::styled(
-                            format!("{} {}", collapse_indicator, name),
+                            format!("{} {} {}", collapse_indicator, icon, name),
                             style,
                         ),
                     ])));

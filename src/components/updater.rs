@@ -8,37 +8,26 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
 };
 use std::collections::HashSet;
-
-/// Pending directory check for multiple projects
-#[derive(Debug, Clone)]
-pub struct PendingDirectoryCheck {
-    pub directory_name: String,
-    pub project_names: Vec<String>,
-}
+use std::path::PathBuf;
 
 /// State for the update wizard UI component
 ///
-/// The wizard is "locked" to a specific project when it opens, ensuring that
-/// background update checks for other projects don't interfere with the display.
+/// The wizard is locked to a single project while a user-initiated check runs.
 #[derive(Debug, Clone)]
 pub struct UpdateWizardState {
     pub outdated_dependencies: Vec<Dependency>,
     pub selected_dependencies: HashSet<String>,
     pub list_state: ratatui::widgets::ListState,
-    /// The project this wizard is locked to (prevents background updates from changing display)
-    pub locked_project_name: Option<String>,
+    /// The project this wizard is locked to.
+    pub locked_project_id: Option<PathBuf>,
     /// Whether a user-initiated check is in progress for the locked project
-    /// This prevents background checks from clearing the is_checking_updates flag prematurely
     pub user_check_in_progress: bool,
-    /// Pending directory check (set when user presses 'u' on a directory)
-    /// The async handler will process this and queue all projects for checking
-    pub pending_directory_check: Option<PendingDirectoryCheck>,
-    /// Project name pending dependency reload after update command completes
+    /// Project path pending dependency reload after update command completes
     /// Set when RunUpdate starts, cleared and processed when command finishes
-    pub pending_reload_project: Option<String>,
+    pub pending_reload_project: Option<PathBuf>,
 }
 
 impl UpdateWizardState {
@@ -47,9 +36,8 @@ impl UpdateWizardState {
             outdated_dependencies: Vec::new(),
             selected_dependencies: HashSet::new(),
             list_state: ratatui::widgets::ListState::default(),
-            locked_project_name: None,
+            locked_project_id: None,
             user_check_in_progress: false,
-            pending_directory_check: None,
             pending_reload_project: None,
         }
     }
@@ -92,6 +80,11 @@ impl Component for UpdateWizard {
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                if app.updater.outdated_dependencies.is_empty() {
+                    app.updater.list_state.select(None);
+                    return None;
+                }
+
                 let i = match app.updater.list_state.selected() {
                     Some(i) => {
                         if i >= app.updater.outdated_dependencies.len() - 1 {
@@ -106,6 +99,11 @@ impl Component for UpdateWizard {
                 None
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                if app.updater.outdated_dependencies.is_empty() {
+                    app.updater.list_state.select(None);
+                    return None;
+                }
+
                 let i = match app.updater.list_state.selected() {
                     Some(i) => {
                         if i == 0 {
@@ -137,8 +135,22 @@ impl Component for UpdateWizard {
             ])
             .split(popup_area);
 
-        // Title - show the locked project name and checking status
-        let title_text = if let Some(ref project_name) = app.updater.locked_project_name {
+        // Title - show the locked project label and checking status
+        let locked_project_title = app.updater.locked_project_id.as_ref().map(|project_id| {
+            app.all_projects
+                .iter()
+                .find(|p| &p.path == project_id)
+                .or_else(|| app.projects.iter().find(|p| &p.path == project_id))
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| {
+                    project_id
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| project_id.display().to_string())
+                })
+        });
+
+        let title_text = if let Some(project_name) = locked_project_title {
             if app.is_checking_updates {
                 format!(" Update Dependencies - {} ⟳ ", project_name)
             } else {
@@ -165,10 +177,10 @@ impl Component for UpdateWizard {
         if app.updater.outdated_dependencies.is_empty() {
             // Check if dependencies have been checked (have latest_version set)
             // Use the LOCKED project, not the currently selected one (user may have moved cursor)
-            let has_been_checked = if let Some(ref locked_name) = app.updater.locked_project_name {
-                app.projects
+            let has_been_checked = if let Some(ref locked_id) = app.updater.locked_project_id {
+                app.all_projects
                     .iter()
-                    .find(|p| &p.name == locked_name)
+                    .find(|p| &p.path == locked_id)
                     .map(|project| {
                         !project.dependencies.is_empty()
                             && project
@@ -198,7 +210,11 @@ impl Component for UpdateWizard {
                         Color::Green
                     }),
                 )
-                .block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
+                .block(
+                    Block::default()
+                        .borders(Borders::LEFT | Borders::RIGHT)
+                        .border_type(BorderType::Rounded),
+                );
             f.render_widget(empty_para, chunks[1]);
         } else {
             let items: Vec<ListItem> = app
@@ -228,14 +244,17 @@ impl Component for UpdateWizard {
                         ),
                         Span::raw("  "),
                         Span::styled(&dep.current_version, Style::default().fg(Color::Red)),
-                        Span::styled(" → ", Style::default().fg(Color::Yellow)),
-                        Span::styled(
-                            dep.latest_version.as_ref().unwrap(),
+                    ];
+
+                    if let Some(ref latest) = dep.latest_version {
+                        spans.push(Span::styled(" → ", Style::default().fg(Color::Yellow)));
+                        spans.push(Span::styled(
+                            latest,
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD),
-                        ),
-                    ];
+                        ));
+                    }
 
                     // Add note for major version updates
                     if is_major {
@@ -254,7 +273,11 @@ impl Component for UpdateWizard {
                 .collect();
 
             let list = List::new(items)
-                .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                .block(
+                    Block::default()
+                        .borders(Borders::LEFT | Borders::RIGHT)
+                        .border_type(BorderType::Rounded),
+                )
                 .highlight_style(
                     Style::default()
                         .bg(Color::Rgb(60, 40, 60))

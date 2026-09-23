@@ -25,7 +25,7 @@ impl Default for ThemeManager {
 impl ThemeManager {
     /// Create a new theme manager with default theme
     pub fn new() -> Self {
-        let scheme = ColorScheme::Dark;
+        let scheme = ColorScheme::Gestalt;
         let colors = scheme.colors();
         Self {
             current_scheme: scheme,
@@ -98,14 +98,14 @@ mod tests {
     #[test]
     fn test_theme_manager_creation() {
         let tm = ThemeManager::new();
-        assert_eq!(tm.scheme(), ColorScheme::Dark);
+        assert_eq!(tm.scheme(), ColorScheme::Gestalt);
     }
 
     #[test]
     fn test_next_theme() {
         let mut tm = ThemeManager::new();
         tm.next_theme();
-        assert_ne!(tm.scheme(), ColorScheme::Dark);
+        assert_ne!(tm.scheme(), ColorScheme::Gestalt);
     }
 
     #[test]
@@ -113,6 +113,6 @@ mod tests {
         let mut tm = ThemeManager::new();
         tm.next_theme();
         tm.previous_theme();
-        assert_eq!(tm.scheme(), ColorScheme::Dark);
+        assert_eq!(tm.scheme(), ColorScheme::Gestalt);
     }
 }

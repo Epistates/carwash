@@ -6,7 +6,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
@@ -70,6 +70,7 @@ impl Component for CommandPalette {
     }
 
     fn draw(&mut self, f: &mut Frame, app: &mut AppState, area: Rect) {
+        let colors = app.current_colors();
         // Center the palette
         let popup_area = Self::centered_rect(60, 60, area);
 
@@ -86,12 +87,13 @@ impl Component for CommandPalette {
 
         // Input box
         let input_box = Paragraph::new(app.palette.input.value())
-            .style(Style::default().fg(Color::Yellow))
+            .style(Style::default().fg(colors.warning))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(" Command ")
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(colors.selection)),
             );
         f.render_widget(input_box, chunks[0]);
 
@@ -106,10 +108,10 @@ impl Component for CommandPalette {
                         Span::styled(
                             "cargo ",
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(colors.selection)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(command, Style::default().fg(Color::White)),
+                        Span::styled(command, Style::default().fg(colors.text)),
                     ]),
                     _ => Line::from(format!("{:?}", cmd)),
                 };
@@ -128,13 +130,10 @@ impl Component for CommandPalette {
                 Block::default()
                     .title(list_title)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(colors.selection)),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Rgb(60, 60, 80))
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(Style::default().bg(colors.dim).add_modifier(Modifier::BOLD))
             .highlight_symbol("▶ ");
 
         f.render_stateful_widget(list, chunks[1], &mut app.palette.list_state);
@@ -148,12 +147,17 @@ impl Component for CommandPalette {
 
         let help = Paragraph::new(selected_info)
             .style(if app.selected_projects.is_empty() {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(colors.warning)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(colors.muted)
             })
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(colors.primary)),
+            );
         f.render_widget(help, chunks[2]);
     }
 }
