@@ -37,6 +37,9 @@ tui-input.workspace = true
 nucleo-matcher.workspace = true
 fs4.workspace = true
 globset.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
+tui-term.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

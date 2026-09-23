@@ -220,6 +220,11 @@ impl Fuzzy {
             .score(Utf32Str::new(haystack, &mut self.buf), &mut self.matcher)
             .is_some()
     }
+
+    /// Plain fuzzy match, for lists without facets.
+    pub fn matches_text(&mut self, pattern: &Pattern, haystack: &str) -> bool {
+        self.matches(pattern, haystack)
+    }
 }
 
 #[cfg(test)]

@@ -1,14 +1,16 @@
 //! Application state and the update function (Elm architecture: messages in, effects out).
 
-use super::keymap::{self, Action};
+use super::keymap::{self, Action, Tab};
 use super::query::{Fuzzy, Query};
 use super::store::{self, EntryStatus, Grouping, RowKey, Rows, SortKey, Store, View};
+use super::tasks::{JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use carwash_core::cache::SizeCache;
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::history::Record;
 use carwash_core::select::{Hold, Policy};
-use carwash_core::{ArtifactId, Counters, Registry, ScanEvent, fmt};
+use carwash_core::tasks::Task;
+use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, fmt};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
 };
@@ -32,6 +34,10 @@ pub enum Msg {
     Clean(CleanEvent),
     CleanFinished(CleanReport),
     Disk { free: u64, total: u64 },
+    TasksDiscovered(PathBuf, Vec<Task>),
+    JobStarted { id: u64, label: String, task: Task },
+    JobOutput(u64, Vec<u8>),
+    JobExited(u64, Result<i32, String>),
 }
 
 #[derive(Debug)]
@@ -47,6 +53,17 @@ pub enum Effect {
     RecordHistory(Vec<Record>),
     Reveal(PathBuf),
     RefreshDisk,
+    DiscoverTasks {
+        path: PathBuf,
+        ecosystems: Vec<EcoId>,
+    },
+    /// Runs task `name` in each target that has it, on terminals of `size` (rows, cols).
+    RunTask {
+        name: String,
+        targets: Vec<RunTarget>,
+        size: (u16, u16),
+    },
+    KillJob(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +161,10 @@ pub struct App {
     pub now: SystemTime,
     pub disk: Option<(u64, u64)>,
     pub spinner: usize,
+    pub tab: Tab,
+    pub tasks: TasksState,
+    /// Quit was pressed once while jobs were running.
+    quit_armed: bool,
     pub quit: bool,
     pub dirty: bool,
 }
@@ -199,6 +220,9 @@ impl App {
             now: SystemTime::now(),
             disk: None,
             spinner: 0,
+            tab: Tab::Reclaim,
+            tasks: TasksState::default(),
+            quit_armed: false,
             quit: false,
             dirty: true,
         }
@@ -209,9 +233,10 @@ impl App {
         self.scan.running
             || matches!(&self.mode, Mode::Review(r) if matches!(r.phase, ReviewPhase::Running { .. }))
             || self.toast.is_some()
+            || self.tasks.running() > 0
     }
 
-    fn toast(&mut self, text: impl Into<String>, level: Level) {
+    pub(crate) fn toast(&mut self, text: impl Into<String>, level: Level) {
         self.toast = Some(Toast {
             text: text.into(),
             level,
@@ -305,6 +330,44 @@ impl App {
                 self.disk = Some((free, total));
                 Vec::new()
             }
+            Msg::TasksDiscovered(path, tasks) => {
+                self.tasks.tasks.insert(path, Some(tasks));
+                Vec::new()
+            }
+            Msg::JobStarted { id, label, task } => {
+                self.tasks.add_job(id, label, task);
+                Vec::new()
+            }
+            Msg::JobOutput(id, bytes) => {
+                if let Some(job) = self.tasks.job_mut(id) {
+                    job.parser.process(&bytes);
+                }
+                Vec::new()
+            }
+            Msg::JobExited(id, result) => {
+                self.tasks.finish_job(id, result);
+                if let Some(job) = self.tasks.jobs.iter().find(|j| j.id == id) {
+                    let (text, level) = match &job.status {
+                        JobStatus::Exited(0) => (
+                            format!("✓ {} · {} succeeded", job.label, job.task.name),
+                            Level::Info,
+                        ),
+                        JobStatus::Exited(code) => (
+                            format!("✗ {} · {} failed (exit {code})", job.label, job.task.name),
+                            Level::Warn,
+                        ),
+                        JobStatus::Failed(error) => (
+                            format!("✗ {} · {}: {error}", job.label, job.task.name),
+                            Level::Warn,
+                        ),
+                        JobStatus::Running => (String::new(), Level::Info),
+                    };
+                    if !text.is_empty() {
+                        self.toast(text, level);
+                    }
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -335,8 +398,8 @@ impl App {
             }
             Mode::Search => self.on_search_key(key),
             Mode::Review(_) => self.on_review_key(key),
-            Mode::Browse => match keymap::action_for(&key) {
-                Some(action) => self.on_action(action),
+            Mode::Browse => match keymap::action_for(self.tab, &key) {
+                Some(action) => self.on_global_action(action),
                 None => {
                     self.dirty = false;
                     Vec::new()
@@ -345,24 +408,90 @@ impl App {
         }
     }
 
+    /// Actions shared by every tab; the rest go to the current tab.
+    fn on_global_action(&mut self, action: Action) -> Vec<Effect> {
+        if action != Action::Quit {
+            self.quit_armed = false;
+        }
+        match action {
+            Action::ShowReclaim => self.tab = Tab::Reclaim,
+            Action::ShowTasks => {
+                self.tab = Tab::Tasks;
+                return self.tasks_effects();
+            }
+            Action::Theme => {
+                self.theme = self.theme.next();
+                self.toast(format!("Theme: {}", self.theme.name), Level::Info);
+            }
+            Action::Help => self.mode = Mode::Help,
+            Action::Search => {
+                let current = match self.tab {
+                    Tab::Reclaim => self.query.raw.clone(),
+                    Tab::Tasks => self.tasks.filter.clone(),
+                };
+                self.input = Input::new(current);
+                self.mode = Mode::Search;
+            }
+            Action::Quit => {
+                let running = self.tasks.running();
+                if running > 0 && !self.quit_armed {
+                    self.quit_armed = true;
+                    self.toast(
+                        format!("{running} jobs running: press q again to stop them and quit"),
+                        Level::Warn,
+                    );
+                } else {
+                    self.quit = true;
+                    return vec![Effect::CancelScan];
+                }
+            }
+            action => {
+                return match self.tab {
+                    Tab::Reclaim => self.on_action(action),
+                    Tab::Tasks => self.on_tasks_action(action),
+                };
+            }
+        }
+        Vec::new()
+    }
+
     fn on_search_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match key.code {
             KeyCode::Esc => {
                 self.input.reset();
-                self.set_query(String::new());
+                self.apply_search(String::new());
                 self.mode = Mode::Browse;
             }
             KeyCode::Enter => self.mode = Mode::Browse,
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
+            KeyCode::Up | KeyCode::Down => {
+                let action = if key.code == KeyCode::Up {
+                    Action::Up
+                } else {
+                    Action::Down
+                };
+                return match self.tab {
+                    Tab::Reclaim => self.on_action(action),
+                    Tab::Tasks => self.on_tasks_action(action),
+                };
+            }
             _ => {
                 if self.input.handle_event(&Event::Key(key)).is_some() {
                     let value = self.input.value().to_owned();
-                    self.set_query(value);
+                    self.apply_search(value);
                 }
             }
         }
+        if self.tab == Tab::Tasks {
+            return self.tasks_effects();
+        }
         Vec::new()
+    }
+
+    fn apply_search(&mut self, value: String) {
+        match self.tab {
+            Tab::Reclaim => self.set_query(value),
+            Tab::Tasks => self.tasks.set_filter(value),
+        }
     }
 
     fn set_query(&mut self, raw: String) {
@@ -549,10 +678,6 @@ impl App {
                 }
             }
             Action::Clean => self.open_review(),
-            Action::Search => {
-                self.input = Input::new(self.query.raw.clone());
-                self.mode = Mode::Search;
-            }
             Action::Sort => {
                 self.sort = self.sort.next();
                 self.view_changed();
@@ -562,10 +687,6 @@ impl App {
                 self.view_changed();
             }
             Action::Details => self.show_details = !self.show_details,
-            Action::Theme => {
-                self.theme = self.theme.next();
-                self.toast(format!("Theme: {}", self.theme.name), Level::Info);
-            }
             Action::Rescan => {
                 if self.scan.running {
                     self.toast("A scan is already running", Level::Warn);
@@ -581,11 +702,8 @@ impl App {
                     return vec![Effect::Reveal(path)];
                 }
             }
-            Action::Help => self.mode = Mode::Help,
-            Action::Quit => {
-                self.quit = true;
-                return vec![Effect::CancelScan];
-            }
+            // Global actions and other tabs' actions.
+            _ => self.dirty = false,
         }
         Vec::new()
     }

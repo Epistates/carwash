@@ -1,7 +1,7 @@
 //! Rendering. Pure functions of [`App`], except for recording table geometry for the mouse.
 
 use super::app::{App, Level, Mode, Review, ReviewPhase};
-use super::keymap::{BINDINGS, Section};
+use super::keymap::{self, Section, Tab};
 use super::store::{EntryStatus, Row, RowKey};
 use carwash_core::clean::DeleteMode;
 use carwash_core::select::Hold;
@@ -32,7 +32,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_header(frame, app, header);
     render_toolbar(frame, app, toolbar);
     let details = app.show_details && body.width >= MIN_WIDTH_FOR_DETAILS;
-    if details {
+    if app.tab == Tab::Tasks {
+        super::tasks::render(frame, app, body);
+    } else if details {
         let [table, side] =
             Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAILS_WIDTH)])
                 .areas(body);
@@ -118,12 +120,39 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
-    let mut left = vec![
+    let mut left = vec![Span::raw(" ")];
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let style = if *tab == app.tab {
+            t.bold(t.accent).add_modifier(Modifier::REVERSED)
+        } else {
+            t.muted()
+        };
+        left.push(Span::styled(format!(" {} {} ", i + 1, tab.title()), style));
+        left.push(Span::raw(" "));
+    }
+    if app.tab == Tab::Tasks {
+        let running = app.tasks.running();
+        let mut right = vec![Span::styled(
+            format!("{} jobs", app.tasks.jobs.len()),
+            t.muted(),
+        )];
+        if running > 0 {
+            right.push(Span::styled(
+                format!(" · {running} running "),
+                t.fg(t.accent),
+            ));
+        } else {
+            right.push(Span::raw(" "));
+        }
+        split_line(frame, area, Line::from(left), Line::from(right));
+        return;
+    }
+    left.extend([
         Span::styled(" view ", t.muted()),
         Span::styled(app.grouping.label(), t.fg(t.accent)),
         Span::styled("  sort ", t.muted()),
         Span::styled(app.sort.label(), t.fg(t.accent)),
-    ];
+    ]);
     if !app.query.is_empty() && !matches!(app.mode, Mode::Search) {
         left.push(Span::styled("  filter ", t.muted()));
         left.push(Span::styled(app.query.raw.clone(), t.fg(t.warning)));
@@ -663,17 +692,30 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let hints = [
-        ("space", "mark"),
-        ("a", "mark ready"),
-        ("d", "clean"),
-        ("/", "filter"),
-        ("tab", "group"),
-        ("s", "sort"),
-        ("o", "reveal"),
-        ("?", "help"),
-        ("q", "quit"),
-    ];
+    let hints: &[(&str, &str)] = match app.tab {
+        Tab::Reclaim => &[
+            ("space", "mark"),
+            ("a", "mark ready"),
+            ("d", "clean"),
+            ("/", "filter"),
+            ("tab", "group"),
+            ("s", "sort"),
+            ("2", "tasks"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Tasks => &[
+            ("enter", "run"),
+            ("space", "mark project"),
+            ("tab", "pane"),
+            ("x", "stop"),
+            ("[ ]", "jobs"),
+            ("/", "filter"),
+            ("1", "reclaim"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+    };
     let mut spans = vec![Span::raw(" ")];
     for (i, (key, label)) in hints.iter().enumerate() {
         if i > 0 {
@@ -908,15 +950,29 @@ fn render_help(frame: &mut Frame, app: &App) {
         .border_style(t.fg(t.accent))
         .title(Span::styled(" Help ", t.bold(t.accent)));
     let mut lines: Vec<Line> = Vec::new();
-    for section in Section::ALL {
+    let mut sections: Vec<Section> = Vec::new();
+    for binding in keymap::help(app.tab) {
+        if !sections.contains(&binding.section) {
+            sections.push(binding.section);
+        }
+    }
+    for section in sections {
         lines.push(Line::from(Span::styled(section.title(), t.bold(t.accent2))));
-        for binding in BINDINGS.iter().filter(|b| b.section == section) {
+        for binding in keymap::help(app.tab).filter(|b| b.section == section) {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<10}", binding.label), t.bold(t.text)),
                 Span::styled(binding.description, t.subtle()),
             ]));
         }
         lines.push(Line::default());
+    }
+    if app.tab == Tab::Tasks {
+        lines.push(Line::from(Span::styled(
+            "Press any key to close",
+            t.muted(),
+        )));
+        frame.render_widget(Paragraph::new(lines).block(block), popup);
+        return;
     }
     let g = &app.glyphs;
     lines.push(Line::from(Span::styled("Legend", t.bold(t.accent2))));

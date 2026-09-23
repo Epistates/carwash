@@ -5,8 +5,10 @@
 
 mod app;
 mod keymap;
+mod pty;
 mod query;
 mod store;
+mod tasks;
 mod theme;
 mod view;
 
@@ -18,6 +20,7 @@ use carwash_core::{Cancel, Counters, ScanOptions, history};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +65,9 @@ pub fn run(ctx: &Context, root: PathBuf, options: ScanOptions) -> Result<()> {
         tx,
         scan_cancel: None,
         clean_cancel: None,
+        jobs: HashMap::new(),
+        next_job: 0,
+        pty_size: (24, 80),
     };
     runtime.execute(Effect::Scan);
     runtime.execute(Effect::RefreshDisk);
@@ -91,6 +97,7 @@ fn event_loop(
         if app.dirty {
             terminal.draw(|frame| view::render(frame, app))?;
             app.dirty = false;
+            runtime.resize_jobs(app.tasks.pty_size);
         }
         let timeout = if app.animating() {
             FAST_TICK
@@ -149,6 +156,9 @@ struct Runtime<'a> {
     tx: Sender<Msg>,
     scan_cancel: Option<Cancel>,
     clean_cancel: Option<Cancel>,
+    jobs: HashMap<u64, pty::PtyJob>,
+    next_job: u64,
+    pty_size: (u16, u16),
 }
 
 impl Runtime<'_> {
@@ -158,6 +168,19 @@ impl Runtime<'_> {
             .flatten()
         {
             cancel.cancel();
+        }
+        for (_, job) in self.jobs.drain() {
+            job.kill();
+        }
+    }
+
+    /// Keeps every job's terminal the size of the output pane.
+    fn resize_jobs(&mut self, size: (u16, u16)) {
+        if size != self.pty_size {
+            self.pty_size = size;
+            for job in self.jobs.values() {
+                job.resize(size);
+            }
         }
     }
 
@@ -219,6 +242,49 @@ impl Runtime<'_> {
                 }
             }
             Effect::Reveal(path) => reveal(&path),
+            Effect::DiscoverTasks { path, ecosystems } => {
+                let (registry, tx) = (self.ctx.engine.registry().clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let tasks = carwash_core::tasks::discover(&path, &ecosystems, &registry);
+                    let _ = tx.send(Msg::TasksDiscovered(path, tasks));
+                });
+            }
+            Effect::RunTask {
+                name,
+                targets,
+                size,
+            } => {
+                let registry = self.ctx.engine.registry().clone();
+                for target in targets {
+                    let Some(task) =
+                        carwash_core::tasks::discover(&target.path, &target.ecosystems, &registry)
+                            .into_iter()
+                            .find(|t| t.name == name)
+                    else {
+                        continue;
+                    };
+                    let id = self.next_job;
+                    self.next_job += 1;
+                    let _ = self.tx.send(Msg::JobStarted {
+                        id,
+                        label: target.label,
+                        task: task.clone(),
+                    });
+                    match pty::spawn(id, &task, size, self.tx.clone()) {
+                        Ok(job) => {
+                            self.jobs.insert(id, job);
+                        }
+                        Err(error) => {
+                            let _ = self.tx.send(Msg::JobExited(id, Err(error)));
+                        }
+                    }
+                }
+            }
+            Effect::KillJob(id) => {
+                if let Some(job) = self.jobs.remove(&id) {
+                    job.kill();
+                }
+            }
             Effect::RefreshDisk => {
                 let (root, tx) = (self.root.clone(), self.tx.clone());
                 std::thread::spawn(move || {
