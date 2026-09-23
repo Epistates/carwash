@@ -10,7 +10,26 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub scan: ScanConfig,
     pub clean: CleanConfig,
+    pub updates: UpdatesConfig,
     pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdatesConfig {
+    /// Reuse registry lookups for this many hours.
+    pub cache_hours: u64,
+    /// Also look up known vulnerabilities (OSV).
+    pub vulnerabilities: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            cache_hours: 6,
+            vulnerabilities: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

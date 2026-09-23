@@ -15,6 +15,7 @@
 
 pub mod cache;
 pub mod clean;
+pub mod deps;
 pub mod discover;
 pub mod ecosystem;
 pub mod fmt;

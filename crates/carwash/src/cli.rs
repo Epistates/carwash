@@ -58,6 +58,8 @@ pub enum Command {
     Tasks(TasksArgs),
     /// Run a task in every project that has it.
     Run(RunArgs),
+    /// Show outdated and vulnerable dependencies (Rust, JavaScript, Python, Go).
+    Outdated(OutdatedArgs),
     /// List the ecosystems carwash recognises.
     Ecosystems(JsonArgs),
     /// Show how much space carwash has reclaimed.
@@ -260,6 +262,41 @@ pub struct RunArgs {
     /// Print the commands without running them.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct OutdatedArgs {
+    #[command(flatten)]
+    pub walk: WalkArgs,
+
+    /// Only projects of these ecosystems.
+    #[arg(
+        long = "ecosystem",
+        short = 'e',
+        value_name = "ID",
+        value_delimiter = ','
+    )]
+    pub ecosystems: Vec<String>,
+
+    /// Also list dependencies that are up to date.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Skip the vulnerability lookup (OSV).
+    #[arg(long)]
+    pub no_vulns: bool,
+
+    /// Ignore cached registry data.
+    #[arg(long)]
+    pub refresh: bool,
+
+    /// Exit with status 1 when anything is outdated or vulnerable (for CI).
+    #[arg(long)]
+    pub exit_code: bool,
+
+    /// Machine-readable output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
