@@ -32,6 +32,10 @@ unicode-width.workspace = true
 indicatif.workspace = true
 anstream.workspace = true
 anstyle.workspace = true
+ratatui.workspace = true
+tui-input.workspace = true
+nucleo-matcher.workspace = true
+fs4.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

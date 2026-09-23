@@ -1,6 +1,6 @@
 //! `carwash clean`: delete selected artifacts.
 
-use super::{artifact_table, count};
+use super::artifact_table;
 use crate::cli::{CleanArgs, SortKey};
 use crate::context::Context;
 use anstyle::{AnsiColor, Style};
@@ -128,8 +128,8 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
         };
         write!(
             out,
-            "{verb} {} directories, freeing {}? [y/N] ",
-            count(u64::try_from(selected.len()).unwrap_or(u64::MAX)),
+            "{verb} {}, freeing {}? [y/N] ",
+            super::directories(selected.len()),
             fmt::bytes(total)
         )?;
         out.flush()?;
@@ -238,11 +238,11 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
         let green = AnsiColor::Green.on_default().bold();
         writeln!(
             out,
-            "{}Freed {}{} from {} directories.",
+            "{}Freed {}{} from {}.",
             green.render(),
             fmt::bytes(report.bytes),
             green.render_reset(),
-            count(u64::try_from(report.removed).unwrap_or(u64::MAX))
+            super::directories(report.removed)
         )?;
         if let (Some(before), Some(after)) = (report.free_before, report.free_after) {
             writeln!(
@@ -312,8 +312,8 @@ fn print_plan(
         let bold = Style::new().bold();
         writeln!(
             out,
-            "Selected {} directories, {}{}{} to free.",
-            count(u64::try_from(selected.len()).unwrap_or(u64::MAX)),
+            "Selected {}, {}{}{} to free.",
+            super::directories(selected.len()),
             bold.render(),
             fmt::bytes(total),
             bold.render_reset()

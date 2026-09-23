@@ -92,6 +92,20 @@ pub struct WalkArgs {
     pub no_enclosing: bool,
 }
 
+impl WalkArgs {
+    /// Defaults for `path`, as when no walk flags are given.
+    pub fn for_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            exclude: Vec::new(),
+            hidden: false,
+            max_depth: None,
+            cross_fs: false,
+            no_enclosing: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct FilterArgs {
     /// Only artifacts freeing at least this much, e.g. 100MB, 1.5GB.

@@ -115,6 +115,17 @@ pub(crate) fn artifact_table(
     table
 }
 
+/// `1 directory`, `1,234 directories`.
+pub(crate) fn directories(n: usize) -> String {
+    match n {
+        1 => "1 directory".into(),
+        n => format!(
+            "{} directories",
+            count(u64::try_from(n).unwrap_or(u64::MAX))
+        ),
+    }
+}
+
 /// Formats a count with thousands separators.
 pub(crate) fn count(n: impl Into<u64>) -> String {
     let digits = n.into().to_string();

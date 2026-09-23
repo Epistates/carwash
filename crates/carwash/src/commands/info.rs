@@ -1,6 +1,5 @@
 //! `carwash ecosystems` and `carwash history`.
 
-use super::count;
 use crate::cli::JsonArgs;
 use crate::context::Context;
 use crate::table::{Align, Cell, Table};
@@ -104,11 +103,11 @@ pub fn history(ctx: &Context, args: &JsonArgs) -> Result<ExitCode> {
     let bold = Style::new().bold();
     writeln!(
         out,
-        "{}{}{} reclaimed across {} directories.\n",
+        "{}{}{} reclaimed across {}.\n",
         bold.render(),
         fmt::bytes(total),
         bold.render_reset(),
-        count(u64::try_from(records.len()).unwrap_or(u64::MAX))
+        super::directories(records.len())
     )?;
     let mut ranked: Vec<(&String, &u64)> = by_ecosystem.iter().collect();
     ranked.sort_by_key(|(_, bytes)| std::cmp::Reverse(**bytes));
