@@ -41,28 +41,28 @@ module_name_repetitions = "allow"
 
 [dependencies]
 cargo-lock = "11.0.1"
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 crates_io_api = "0.12.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3.32"
 fuzzy-matcher = "0.3.7"
 glob = "0.3.3"
 ratatui = "0.30.0"
-rayon = "1.11.0"
+rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.49.0", features = ["full"] }
-toml = "1.0.3"
-once_cell = "1.21.3"
-tui-input = "0.15.0"
+tokio = { version = "1.52.3", features = ["full"] }
+toml = "1.1.2"
+once_cell = "1.21.4"
+tui-input = "0.15.3"
 tui-tree-widget = "0.24.0"
 walkdir = "2.5.0"
 chrono = "0.4.44"
 anyhow = "1.0.102"
-semver = "1.0.27"
+semver = "1.0.28"
 directories = "6.0.0"
 serde_json = "1.0.149"
 ignore = "0.4.25"
-tracing-subscriber = "0.3.22"
-tracing-appender = "0.2.4"
+tracing-subscriber = "0.3.23"
+tracing-appender = "0.2.5"
 tracing = "0.1.44"
-shlex = "1.3.0"
+shlex = "2.0.1"
