@@ -353,6 +353,24 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_scrolls_the_caches_list() {
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        let caches = (0..5).map(|i| cache(&format!("c{i}"))).collect();
+        app.update(Msg::CachesDiscovered(caches));
+        let reclaim_before = app.selected;
+        app.update(Msg::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.caches.cursor, 3);
+        assert_eq!(app.selected, reclaim_before);
+    }
+
+    #[test]
     fn cleaning_needs_a_second_press() {
         let mut app = app();
         press(&mut app, KeyCode::Char('4'));

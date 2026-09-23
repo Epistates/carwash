@@ -677,6 +677,18 @@ impl App {
             self.dirty = false;
             return Vec::new();
         }
+        if self.tab != Tab::Reclaim {
+            // Other tabs record no row geometry; the wheel moves their own cursor.
+            let action = match mouse.kind {
+                MouseEventKind::ScrollDown => Action::Down,
+                MouseEventKind::ScrollUp => Action::Up,
+                _ => {
+                    self.dirty = false;
+                    return Vec::new();
+                }
+            };
+            return (0..3).flat_map(|_| self.on_global_action(action)).collect();
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown => self.move_by(3),
             MouseEventKind::ScrollUp => self.move_by(-3),
