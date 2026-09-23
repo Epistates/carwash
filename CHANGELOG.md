@@ -5,6 +5,38 @@ All notable changes to CarWash will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+A rewrite. carwash is no longer a Rust project manager: it reclaims disk space across projects
+in any of 40 ecosystems, and checks dependencies and runs tasks along the way. Nothing from 0.3
+carries over, including the configuration file.
+
+### Added
+- Engine crate `carwash-core`, independent of the UI: parallel discovery driven by declarative
+  ecosystem rules, content detection (`CACHEDIR.TAG`, virtualenvs, conda, CMake and Meson build
+  trees, orphaned Cargo targets), workspace and enclosing-project awareness.
+- Sizes from allocated blocks with hard links counted once, and a separate "reclaimable" figure
+  for data that deleting the artifact would actually free.
+- Safety policy from git: tracked content is protected; generic names such as `build` or
+  `vendor` need git or content confirmation; recently modified artifacts are held back.
+- Validated deletion: re-checked just before removal, renamed to a staging name, then removed in
+  parallel. Optional trash mode. Interrupted cleans are found and finished by the next scan.
+- CLI: `scan`, `clean`, `tasks`, `run`, `outdated`, `caches`, `ecosystems`, `history`,
+  `completions`; `--json` on every listing.
+- TUI with four tabs: Reclaim (tree, fuzzy and facet filter, review before cleaning), Tasks (jobs
+  in pseudo-terminals), Updates (outdated and vulnerable dependencies for Rust, JavaScript, Python
+  and Go, updated through each ecosystem's own tool) and Caches (per-user caches outside projects).
+- Task discovery from `package.json`, `deno.json`, justfiles, Makefiles, Taskfiles, mise,
+  Poe/PDM, Composer and Cargo aliases, plus standard commands per ecosystem.
+- 32 global caches (package stores, toolchains, Xcode and simulator data, IDE caches) with the
+  tool's own prune command where one exists.
+- User-extensible rules in `ecosystems.toml` and `caches.toml`.
+- Themes: gestalt (default), latte, nord, dracula, and a 16-color fallback.
+
+### Changed
+- Configuration moved to `~/.config/carwash/config.toml` with a new schema.
+- Minimum supported Rust version is 1.88.
+
 ## [0.3.5] - 2026-03-03
 
 ### Added

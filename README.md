@@ -1,176 +1,151 @@
-# CarWash - Rust Project Manager
+# carwash
 
-A TUI (Terminal User Interface) for managing multiple Rust projects with ease. CarWash provides an intuitive interface for running cargo commands across multiple projects simultaneously, managing dependencies, and monitoring build outputs.
+Reclaim disk space across every project on your machine. carwash finds build outputs, dependency
+installs, virtualenvs and caches in 40 ecosystems, tells you which ones are safe to delete, and
+cleans them. It also checks dependencies for updates and vulnerabilities and runs project tasks,
+all from one TUI or a scriptable CLI.
 
 [![Crates.io](https://img.shields.io/crates/v/carwash.svg)](https://crates.io/crates/carwash)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/epistates/carwash/actions/workflows/ci.yml/badge.svg)](https://github.com/epistates/carwash/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-<img src="assets/carwash.png" alt="Carwash" style="width: 100%; max-width: 100%; margin: 20px 0;"/>
-
-## Features
-
-### Core Features
-- **Multi-Project Management**: Automatically discover and manage all Rust projects in a directory tree
-- **Parallel Command Execution**: Run cargo commands across multiple projects simultaneously
-- **Interactive Command Palette**: Fuzzy search through cargo commands with vim-style navigation
-- **Real-time Output Monitoring**: Watch command output with colored syntax highlighting
-- **Dependency Management**: Check for outdated dependencies and update them interactively
-- **Workspace Support**: Intelligently handles Cargo workspaces and member projects
-
-### Enterprise-Grade UX
-- **Beautiful UI**: Modern, colorful interface with intuitive layouts
-- **Status Indicators**: Real-time status updates with progress indicators
-- **Smart Color Coding**: Errors (red), warnings (yellow), success (green)
-- **Scrollable Output**: Navigate through large command outputs with keyboard shortcuts
-- **Multiple Tabs**: Switch between running commands with arrow keys
-- **Project Selection**: Select single or multiple projects with visual checkboxes
-
-### Keyboard-Driven Workflow
-- **Vim-style Navigation**: `j/k` for up/down, `h/l` for left/right
-- **Quick Commands**: Press `:` to open command palette instantly
-- **Space to Select**: Toggle project selection with spacebar
-- **Esc to Cancel**: Consistent escape behavior throughout
-- **Tab to Toggle**: Switch command scope between selected and all projects
-
-## Installation
-
-### Prerequisites
-- **Rust 1.93.0+** (Rust Edition 2024)
-
-### From crates.io (Recommended)
+Point it at a single package, a monorepo, or a directory holding hundreds of repositories in
+mixed languages:
 
 ```bash
-cargo install carwash
+carwash ~/work            # interactive
+carwash scan ~/work       # what could be freed, largest first
+carwash clean ~/work --older-than 30d
 ```
 
-See the package on [crates.io](https://crates.io/crates/carwash).
+## What it finds
 
-### From source
+| | Examples |
+|---|---|
+| Build outputs | `target/`, `build/`, `dist/`, `.next/`, `DerivedData/`, `_build/`, `zig-out/`, `bin/` + `obj/` |
+| Dependency installs | `node_modules/`, `vendor/`, `Pods/`, `deps/`, `.gradle/`, `renv/library/` |
+| Environments | `.venv/`, `.tox/`, `.direnv/`, `.pixi/`, conda environments |
+| Tool caches | `__pycache__/`, `.pytest_cache/`, `.turbo/`, `.parcel-cache/`, `.terraform/`, `.godot/` |
+| Global caches | Cargo registry, old Rust toolchains, npm/pnpm/yarn/bun, pip/uv/poetry, Go modules, Gradle, Maven, Homebrew, Xcode DerivedData, iOS device support, simulators, and more |
+
+Projects are recognised by their manifests (`Cargo.toml`, `package.json`, `pyproject.toml`,
+`go.mod`, `pom.xml`, `*.csproj`, `Package.swift`, `pubspec.yaml`, `mix.exs`, `CMakeLists.txt`,
+`*.uproject`, `project.godot`...). Directories that are unmistakable on their own are found
+without a manifest too: a `CACHEDIR.TAG`, a `pyvenv.cfg`, a CMake or Meson build tree, a Cargo
+`target/` whose `Cargo.toml` is gone. Run `carwash ecosystems` for the full list.
+
+## Safety
+
+Deleting the wrong directory is the one mistake a cleaner cannot make, so every artifact gets a
+status before anything is selected:
+
+- **protected**: git tracks files inside it (a committed `vendor/` or `dist/`). Never deleted.
+- **review**: a generic name like `build` or `bin` that nothing confirms as generated, or one git
+  reports as untracked rather than ignored. Needs `--include-review` or a look in the TUI.
+- **recent**: modified in the last 7 days. Held back by default so you don't delete what you're
+  using.
+- **ready**: everything else.
+
+Each target is re-checked just before deletion (still a directory, not a symlink, inside the
+scanned root, no `.git` inside). Permanent deletion renames the directory to a staging name
+first, which is instant and atomic, then removes it in parallel. An interrupted clean leaves a
+`.carwash-trash-*` directory that the next scan offers to finish. `--trash` moves to the system
+trash instead.
+
+Sizes are allocated blocks, not apparent sizes, with hard links counted once. "Reclaimable" only
+counts data whose every link is inside the artifact, so a pnpm `node_modules` hard-linked into
+the global store shows how much deleting it would actually free.
+
+## Install
 
 ```bash
-# Clone the repository
-git clone https://github.com/epistates/carwash.git
-cd carwash
-
-# Build and install
-cargo install --path .
-
-# Or run directly
-cargo run -- /path/to/your/rust/projects
+cargo install --locked carwash
 ```
 
-## Quick Start
+Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rust 1.88 or newer.
 
-```bash
-# Run in current directory
-carwash
+## The TUI
 
-# Run in specific directory
-carwash ~/my-rust-projects
+Run `carwash [PATH]`. Four tabs, switched with `1` to `4`:
 
-# Show help
-carwash --help
+1. **Reclaim**: every project and artifact as a tree (or flat by project or artifact, `Tab`),
+   sorted by size. Mark with `Space`, press `d` to review and clean. `/` filters with fuzzy text
+   plus facets: `eco:rust,node kind:deps size>1g age>30d is:ready`.
+2. **Tasks**: scripts and targets from `package.json`, `deno.json`, `justfile`, `Makefile`,
+   `Taskfile`, `mise`, Poe/PDM, Composer and Cargo aliases, plus standard commands per ecosystem.
+   `Enter` runs the task in a real terminal inside the TUI; mark several projects to run it in
+   all of them.
+3. **Updates**: outdated and vulnerable dependencies for Rust, JavaScript, Python and Go. `u`
+   updates within your requirements, `U` upgrades to latest (and edits manifests). Projects are
+   re-checked after the update finishes.
+4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
+   when it is installed, or deletes the directory when that is safe.
+
+`?` lists every key for the current tab. `t` cycles themes. The wheel scrolls every tab; in
+Reclaim, clicking selects a row and clicking it again expands it.
+
+## The CLI
+
+| Command | |
+|---|---|
+| `carwash scan [PATH]` | List reclaimable artifacts. `--json`, `--sort`, `--limit`, filters below |
+| `carwash clean [PATH]` | Show the plan, confirm, delete. `--dry-run`, `--yes`, `--trash`, `--include-review`, `--include-recent` |
+| `carwash tasks [PATH]` | Tasks per project. `--all` for every project's list |
+| `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
+| `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
+| `carwash caches` | Global caches and their sizes |
+| `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children |
+| `carwash ecosystems` | Recognised ecosystems |
+| `carwash history` | Space reclaimed so far |
+| `carwash completions SHELL` | Shell completions |
+
+Filters shared by `scan` and `clean`: `--min-size 500MB`, `--older-than 3mo`,
+`--kind build,deps,cache,env,other,leftover`, `-e rust,node`, `--exclude PATH`, `--max-depth N`,
+`--hidden`, `--cross-fs`. Every listing command takes `--json`.
+
+## Configuration
+
+`~/.config/carwash/config.toml` (or `$CARWASH_CONFIG`). Every key is optional:
+
+```toml
+[scan]
+exclude = ["~/work/archive"]   # never entered
+default_excludes = true        # also skip ~/Library, ~/Pictures, ~/go/pkg/mod...
+include_hidden = false         # hidden directories are entered inside projects either way
+same_filesystem = true
+threads = 0                    # 0: derived from the CPU count
+
+[clean]
+mode = "permanent"             # or "trash"
+recent_days = 7
+
+[updates]
+cache_hours = 6                # reuse registry lookups
+vulnerabilities = true         # query OSV
+
+[ui]
+theme = "gestalt"              # gestalt, latte, nord, dracula, ansi
+icons = "unicode"              # or ascii
 ```
 
-## Usage Guide
+Ecosystems and global caches are data, not code. Add your own, or replace a built-in by reusing
+its `id`, in `~/.config/carwash/ecosystems.toml` and `~/.config/carwash/caches.toml`. The
+built-in files document every field:
+[`builtin.toml`](crates/carwash-core/src/ecosystem/builtin.toml),
+[`caches.toml`](crates/carwash-core/src/caches.toml).
 
-### Navigation
+carwash keeps a size cache and registry cache in `~/.cache/carwash`, history in
+`~/.local/share/carwash`, and TUI logs in `~/.local/state/carwash/logs`. `CARWASH_HOME` puts all
+of it under one directory.
 
-| Key | Action |
-|-----|--------|
-| `↑`/`↓` or `j`/`k` | Navigate projects |
-| `←`/`→` | Switch output tabs |
-| `Space` | Toggle project selection |
-| `PgUp`/`PgDown` | Scroll output |
+## How it works
 
-### Commands
+The workspace has two crates. `carwash-core` is the engine and has no UI code: parallel
+discovery that reads names only and never descends into artifacts, batched git inspection
+(`git ls-files`, `git check-ignore --stdin`), parallel measurement, the safety policy, and the
+cleaner. `carwash` is the CLI and a ratatui TUI built as an Elm-style update loop, with tasks
+running in pseudo-terminals.
 
-| Key | Action |
-|-----|--------|
-| `:` | Open command palette |
-| `u` | Check for dependency updates |
-| `?` | Show help screen |
-| `q` | Quit application |
-| `Ctrl+C` | Force quit |
-
-### Command Palette
-
-1. Press `:` to open the command palette
-2. Type to filter commands (fuzzy search)
-3. Use `↑`/`↓` or `j`/`k` to select a command
-4. Press `Tab` to toggle between **Selected Projects** and **All Projects**
-5. Press `Enter` to execute the command
-6. Press `Esc` to cancel
-
-## Architecture
-
-CarWash is built with:
-
-- **[Ratatui](https://github.com/ratatui-org/ratatui)**: Modern TUI framework for Rust
-- **[Tokio](https://tokio.rs/)**: Async runtime for parallel command execution
-- **[crates.io API](https://crates.io/)**: For checking dependency versions
-- **Component-Based UI**: Modular, maintainable UI components
-- **Redux-style State Management**: Predictable state updates with reducer pattern
-
-### Project Structure
-
-```
-src/
-├── main.rs              # Entry point and main event loop
-├── app.rs               # Application state and reducer
-├── handlers.rs          # State transition logic
-├── project.rs           # Project discovery and parsing
-├── runner.rs            # Command execution and updates
-├── tree.rs              # Hierarchical navigation system
-├── cache.rs             # Dependency check caching
-├── settings.rs          # User preferences
-├── config/              # Unified configuration system
-│   ├── keybinding_config.rs
-│   └── theme_config.rs
-├── components/          # UI Components
-│   ├── dependencies.rs
-│   ├── output.rs
-│   ├── projects.rs
-│   └── ...
-└── ui/                  # Visual orchestration
-    ├── layout.rs
-    ├── modal.rs
-    └── theme.rs
-```
-
-## Customization
-
-CarWash uses a carefully chosen color scheme optimized for terminal visibility:
-
-- **Cyan**: Borders, titles, and interactive elements
-- **Green**: Success states and selected items
-- **Yellow**: Warnings and pending states
-- **Red**: Errors and critical information
-- **Magenta**: Special modes like update wizard
-- **Dark Gray**: Secondary information and help text
-
-## Contributing
-
-Contributions are welcome! Areas for improvement:
-
-- [ ] Custom command templates
-- [ ] Project favorites/bookmarks
-- [ ] Command history persistence
-- [ ] Export/save command outputs
-- [ ] Plugin system
-- [ ] Remote project support
-
-## 📝 License
+## License
 
 [MIT](./LICENSE)
-
-## Acknowledgments
-
-Built with:
-- [Ratatui](https://github.com/ratatui-org/ratatui) - Amazing TUI framework
-- [Tokio](https://tokio.rs/) - Powerful async runtime
-- [crates.io API](https://github.com/crates-io/crates.io) - Crate metadata
-
----
-
-**Made with ❤️ for the Rust community**
