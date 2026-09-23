@@ -39,6 +39,7 @@ pub enum Action {
     ShowReclaim,
     ShowTasks,
     ShowUpdates,
+    ShowCaches,
     Theme,
     Help,
     Quit,
@@ -50,16 +51,18 @@ pub enum Tab {
     Reclaim,
     Tasks,
     Updates,
+    Caches,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Reclaim, Tab::Tasks, Tab::Updates];
+    pub const ALL: [Tab; 4] = [Tab::Reclaim, Tab::Tasks, Tab::Updates, Tab::Caches];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Reclaim => "Reclaim",
             Tab::Tasks => "Tasks",
             Tab::Updates => "Updates",
+            Tab::Caches => "Caches",
         }
     }
 
@@ -68,6 +71,7 @@ impl Tab {
             Tab::Reclaim => RECLAIM,
             Tab::Tasks => TASKS,
             Tab::Updates => UPDATES,
+            Tab::Caches => CACHES,
         }
     }
 }
@@ -188,6 +192,13 @@ pub const GLOBAL: &[Binding] = &[
         A::ShowUpdates,
         S::General,
         "dependency updates",
+    ),
+    bind(
+        &[(Char('4'), NONE)],
+        "4",
+        A::ShowCaches,
+        S::General,
+        "global caches",
     ),
     bind(
         &[(Char('t'), NONE)],
@@ -500,6 +511,54 @@ pub const UPDATES: &[Binding] = &[
         A::Open,
         S::Updates,
         "reveal project in file manager",
+    ),
+];
+
+pub const CACHES: &[Binding] = &[
+    MOVE[0],
+    MOVE[1],
+    MOVE[2],
+    MOVE[3],
+    MOVE[4],
+    MOVE[5],
+    bind(
+        &[(Char(' '), NONE)],
+        "Space",
+        A::Mark,
+        S::Select,
+        "mark / unmark a cache",
+    ),
+    bind(
+        &[(Char('A'), NONE)],
+        "A",
+        A::Unmark,
+        S::Select,
+        "unmark everything",
+    ),
+    bind(
+        &[
+            (Char('d'), NONE),
+            (Char('x'), NONE),
+            (KeyCode::Delete, NONE),
+        ],
+        "d x",
+        A::Clean,
+        S::Select,
+        "clean marked (or selected) caches; press twice",
+    ),
+    bind(
+        &[(Char('r'), NONE)],
+        "r",
+        A::Rescan,
+        S::View,
+        "measure again",
+    ),
+    bind(
+        &[(Char('o'), NONE)],
+        "o",
+        A::Open,
+        S::View,
+        "reveal in file manager",
     ),
 ];
 

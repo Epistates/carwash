@@ -1,0 +1,266 @@
+# Built-in global (per-user) caches.
+#
+# Users can add or override entries in ~/.config/carwash/caches.toml using the same schema;
+# an entry with an existing `id` replaces the built-in.
+#
+# Fields:
+#   id, name            identity
+#   ecosystem           ecosystem id the cache belongs to (for badges), optional
+#   paths               candidates, first existing wins. `~` is the home directory, `$VAR/...`
+#                       is skipped when VAR is unset, `macos:`/`linux:`/`windows:` limit a candidate
+#                       to one platform
+#   delete              removing the directory is safe: tools recreate it (default false)
+#   prune               the tool's own cleanup command, preferred when the tool is installed
+#   children            list each subdirectory as its own entry (toolchains, OS versions)
+#   child_prune         command for one child; `{name}` is the child's directory name
+#   keep                children never offered: `rustup-default` keeps the default toolchain
+#   note                shown next to the entry
+
+schema = 1
+
+[[cache]]
+id = "cargo-registry"
+name = "Cargo registry (downloaded crates)"
+ecosystem = "rust"
+paths = ["$CARGO_HOME/registry", "~/.cargo/registry"]
+delete = true
+note = "Crates are downloaded again on the next build. Cargo 1.88+ also trims this automatically."
+
+[[cache]]
+id = "cargo-git"
+name = "Cargo git checkouts"
+ecosystem = "rust"
+paths = ["$CARGO_HOME/git", "~/.cargo/git"]
+delete = true
+
+[[cache]]
+id = "rustup-toolchains"
+name = "Rust toolchains"
+ecosystem = "rust"
+paths = ["$RUSTUP_HOME/toolchains", "~/.rustup/toolchains"]
+children = true
+child_prune = ["rustup", "toolchain", "uninstall", "{name}"]
+keep = "rustup-default"
+note = "Your default toolchain is not listed."
+
+[[cache]]
+id = "npm"
+name = "npm cache"
+ecosystem = "node"
+paths = ["~/.npm/_cacache"]
+delete = true
+prune = ["npm", "cache", "clean", "--force"]
+
+[[cache]]
+id = "pnpm-store"
+name = "pnpm store"
+ecosystem = "node"
+paths = ["$PNPM_HOME/store", "macos:~/Library/pnpm/store", "linux:~/.local/share/pnpm/store", "windows:~/AppData/Local/pnpm/store"]
+prune = ["pnpm", "store", "prune"]
+note = "Pruning removes packages no project uses; they are fetched again after a branch switch."
+
+[[cache]]
+id = "yarn"
+name = "Yarn cache"
+ecosystem = "node"
+paths = ["macos:~/Library/Caches/Yarn", "linux:~/.cache/yarn", "~/.yarn/berry/cache"]
+delete = true
+prune = ["yarn", "cache", "clean"]
+
+[[cache]]
+id = "bun"
+name = "Bun cache"
+ecosystem = "node"
+paths = ["$BUN_INSTALL_CACHE_DIR", "~/.bun/install/cache"]
+delete = true
+prune = ["bun", "pm", "cache", "rm"]
+
+[[cache]]
+id = "deno"
+name = "Deno cache"
+ecosystem = "deno"
+paths = ["$DENO_DIR", "macos:~/Library/Caches/deno", "linux:~/.cache/deno"]
+delete = true
+prune = ["deno", "clean"]
+
+[[cache]]
+id = "node-gyp"
+name = "node-gyp headers"
+ecosystem = "node"
+paths = ["macos:~/Library/Caches/node-gyp", "linux:~/.cache/node-gyp"]
+delete = true
+
+[[cache]]
+id = "electron"
+name = "Electron downloads"
+ecosystem = "node"
+paths = ["macos:~/Library/Caches/electron", "linux:~/.cache/electron"]
+delete = true
+
+[[cache]]
+id = "playwright"
+name = "Playwright browsers"
+ecosystem = "node"
+paths = ["$PLAYWRIGHT_BROWSERS_PATH", "macos:~/Library/Caches/ms-playwright", "linux:~/.cache/ms-playwright"]
+delete = true
+note = "Reinstall with `npx playwright install`."
+
+[[cache]]
+id = "pip"
+name = "pip cache"
+ecosystem = "python"
+paths = ["$PIP_CACHE_DIR", "macos:~/Library/Caches/pip", "linux:~/.cache/pip"]
+delete = true
+
+[[cache]]
+id = "uv"
+name = "uv cache"
+ecosystem = "python"
+paths = ["$UV_CACHE_DIR", "~/.cache/uv", "macos:~/Library/Caches/uv"]
+delete = true
+prune = ["uv", "cache", "prune"]
+note = "Pruning keeps what current environments use; deleting everything is also safe."
+
+[[cache]]
+id = "poetry"
+name = "Poetry cache"
+ecosystem = "python"
+paths = ["$POETRY_CACHE_DIR", "macos:~/Library/Caches/pypoetry", "linux:~/.cache/pypoetry"]
+delete = true
+
+[[cache]]
+id = "huggingface"
+name = "Hugging Face models and datasets"
+ecosystem = "python"
+paths = ["$HF_HOME", "~/.cache/huggingface"]
+delete = true
+note = "Downloaded models: large, and slow to fetch again."
+
+[[cache]]
+id = "pre-commit"
+name = "pre-commit environments"
+paths = ["$PRE_COMMIT_HOME", "~/.cache/pre-commit"]
+delete = true
+prune = ["pre-commit", "gc"]
+
+[[cache]]
+id = "go-build"
+name = "Go build cache"
+ecosystem = "go"
+paths = ["$GOCACHE", "macos:~/Library/Caches/go-build", "linux:~/.cache/go-build"]
+delete = true
+prune = ["go", "clean", "-cache"]
+
+[[cache]]
+id = "go-mod"
+name = "Go module cache"
+ecosystem = "go"
+paths = ["$GOMODCACHE", "$GOPATH/pkg/mod", "~/go/pkg/mod"]
+prune = ["go", "clean", "-modcache"]
+note = "Files are read-only on disk, so only `go clean -modcache` removes them."
+
+[[cache]]
+id = "gradle"
+name = "Gradle caches"
+ecosystem = "gradle"
+paths = ["$GRADLE_USER_HOME/caches", "~/.gradle/caches"]
+delete = true
+note = "Stop Gradle daemons first (`gradle --stop`)."
+
+[[cache]]
+id = "gradle-wrapper"
+name = "Gradle wrapper distributions"
+ecosystem = "gradle"
+paths = ["$GRADLE_USER_HOME/wrapper/dists", "~/.gradle/wrapper/dists"]
+delete = true
+
+[[cache]]
+id = "maven"
+name = "Maven local repository"
+ecosystem = "maven"
+paths = ["~/.m2/repository"]
+delete = true
+
+[[cache]]
+id = "nuget"
+name = "NuGet packages"
+ecosystem = "dotnet"
+paths = ["$NUGET_PACKAGES", "~/.nuget/packages"]
+delete = true
+prune = ["dotnet", "nuget", "locals", "all", "--clear"]
+
+[[cache]]
+id = "xcode-derived-data"
+name = "Xcode DerivedData"
+ecosystem = "xcode"
+paths = ["macos:~/Library/Developer/Xcode/DerivedData"]
+delete = true
+note = "Build products and indexes; Xcode rebuilds them."
+
+[[cache]]
+id = "xcode-device-support"
+name = "iOS device support"
+ecosystem = "xcode"
+paths = ["macos:~/Library/Developer/Xcode/iOS DeviceSupport"]
+children = true
+delete = true
+note = "Copied again when a device running that OS version is connected."
+
+[[cache]]
+id = "xcode-watch-device-support"
+name = "watchOS device support"
+ecosystem = "xcode"
+paths = ["macos:~/Library/Developer/Xcode/watchOS DeviceSupport"]
+children = true
+delete = true
+
+[[cache]]
+id = "simulators"
+name = "iOS simulators"
+ecosystem = "xcode"
+paths = ["macos:~/Library/Developer/CoreSimulator"]
+prune = ["xcrun", "simctl", "delete", "unavailable"]
+note = "Removes simulators for runtimes no longer installed. Old runtimes: `xcrun simctl runtime list`."
+
+[[cache]]
+id = "cocoapods"
+name = "CocoaPods cache"
+ecosystem = "cocoapods"
+paths = ["macos:~/Library/Caches/CocoaPods"]
+delete = true
+prune = ["pod", "cache", "clean", "--all"]
+
+[[cache]]
+id = "swiftpm"
+name = "SwiftPM cache"
+ecosystem = "swift"
+paths = ["macos:~/Library/Caches/org.swift.swiftpm", "linux:~/.cache/org.swift.swiftpm"]
+delete = true
+
+[[cache]]
+id = "pub"
+name = "Dart pub cache"
+ecosystem = "dart"
+paths = ["$PUB_CACHE", "~/.pub-cache"]
+prune = ["dart", "pub", "cache", "clean"]
+
+[[cache]]
+id = "homebrew"
+name = "Homebrew downloads"
+paths = ["$HOMEBREW_CACHE", "macos:~/Library/Caches/Homebrew", "linux:~/.cache/Homebrew"]
+delete = true
+prune = ["brew", "cleanup", "--prune=all"]
+
+[[cache]]
+id = "jetbrains"
+name = "JetBrains IDE caches"
+paths = ["macos:~/Library/Caches/JetBrains", "linux:~/.cache/JetBrains"]
+delete = true
+note = "IDEs rebuild their indexes on next start."
+
+[[cache]]
+id = "sccache"
+name = "sccache"
+ecosystem = "rust"
+paths = ["$SCCACHE_DIR", "macos:~/Library/Caches/Mozilla.sccache", "linux:~/.cache/sccache"]
+delete = true

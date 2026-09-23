@@ -645,7 +645,7 @@ impl<'a> Walker<'a> {
     /// Walks from the root's parent upwards (to the enclosing repository root, stopping
     /// below the home directory) so a scan started inside a project knows about it.
     fn enclosing_context(&self, root: &Path) -> Ctx {
-        let home = etcetera::home_dir().ok();
+        let home = crate::paths::home();
         let mut chain = Vec::new();
         let mut current = root.parent();
         while let Some(dir) = current {

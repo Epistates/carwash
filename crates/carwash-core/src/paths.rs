@@ -60,6 +60,11 @@ impl Dirs {
     }
 }
 
+/// The user's home directory.
+pub fn home() -> Option<PathBuf> {
+    etcetera::home_dir().ok()
+}
+
 /// Writes `contents` to `path` atomically (temporary file in the same directory, then rename).
 pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     let dir = path

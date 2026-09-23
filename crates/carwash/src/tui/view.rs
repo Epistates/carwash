@@ -36,6 +36,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         super::tasks::render(frame, app, body);
     } else if app.tab == Tab::Updates {
         super::updates::render(frame, app, body);
+    } else if app.tab == Tab::Caches {
+        super::caches::render(frame, app, body);
     } else if details {
         let [table, side] =
             Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAILS_WIDTH)])
@@ -145,6 +147,14 @@ fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
             right.push(Span::raw(" "));
         }
         split_line(frame, area, Line::from(left), Line::from(right));
+        return;
+    }
+    if app.tab == Tab::Caches {
+        let right = Line::from(vec![
+            Span::styled(fmt::bytes(app.caches.total()), t.bold(t.text)),
+            Span::styled(" in caches ", t.muted()),
+        ]);
+        split_line(frame, area, Line::from(left), right);
         return;
     }
     if app.tab == Tab::Updates {
@@ -745,6 +755,15 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ("U", "upgrade"),
             ("tab", "pane"),
             ("/", "filter"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Caches => &[
+            ("space", "mark"),
+            ("d", "clean"),
+            ("r", "measure"),
+            ("o", "reveal"),
+            ("1", "reclaim"),
             ("?", "help"),
             ("q", "quit"),
         ],

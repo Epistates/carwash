@@ -1,5 +1,6 @@
 //! Non-interactive subcommands.
 
+pub mod caches;
 pub mod clean;
 pub mod info;
 pub mod outdated;

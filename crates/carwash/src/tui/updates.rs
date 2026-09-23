@@ -788,7 +788,7 @@ mod tests {
                 cwd: PathBuf::from("/w/a"),
                 standard: true,
             },
-            recheck: Some(PathBuf::from("/w/a")),
+            after: crate::tui::tasks::After::Recheck(PathBuf::from("/w/a")),
         });
         let effects = app.update(Msg::JobExited(3, Ok(0)));
         assert!(matches!(effects.first(), Some(Effect::CheckDeps { .. })));

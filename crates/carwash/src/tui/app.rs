@@ -1,18 +1,20 @@
 //! Application state and the update function (Elm architecture: messages in, effects out).
 
+use super::caches::CachesState;
 use super::keymap::{self, Action, Tab};
 use super::query::{Fuzzy, Query};
 use super::store::{self, EntryStatus, Grouping, RowKey, Rows, SortKey, Store, View};
-use super::tasks::{JobStatus, RunTarget, TasksState};
+use super::tasks::{After, JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use super::updates::UpdatesState;
 use carwash_core::cache::SizeCache;
+use carwash_core::caches::GlobalCache;
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
 use carwash_core::history::Record;
 use carwash_core::select::{Hold, Policy};
 use carwash_core::tasks::Task;
-use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, fmt};
+use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, Size, fmt};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
 };
@@ -44,8 +46,8 @@ pub enum Msg {
         id: u64,
         label: String,
         task: Task,
-        /// Project whose dependencies to check again when the job ends.
-        recheck: Option<PathBuf>,
+        /// What to refresh when the job ends.
+        after: After,
     },
     JobOutput(u64, Vec<u8>),
     JobExited(u64, Result<i32, String>),
@@ -53,6 +55,8 @@ pub enum Msg {
     DepsChecked(Vec<ProjectDeps>),
     /// Applying updates to the project at the path could not start.
     UpdateFailed(PathBuf, String),
+    CachesDiscovered(Vec<GlobalCache>),
+    CacheMeasured(String, Size),
 }
 
 #[derive(Debug)]
@@ -90,6 +94,16 @@ pub enum Effect {
         deps: Vec<Dependency>,
         latest: bool,
         size: (u16, u16),
+    },
+    DiscoverCaches,
+    /// Prunes (as jobs) or deletes each cache, then measures it again.
+    CleanCaches {
+        caches: Vec<GlobalCache>,
+        size: (u16, u16),
+    },
+    MeasureCache {
+        id: String,
+        path: PathBuf,
     },
 }
 
@@ -191,6 +205,7 @@ pub struct App {
     pub tab: Tab,
     pub tasks: TasksState,
     pub updates: UpdatesState,
+    pub caches: CachesState,
     /// Quit was pressed once while jobs were running.
     quit_armed: bool,
     pub quit: bool,
@@ -251,6 +266,7 @@ impl App {
             tab: Tab::Reclaim,
             tasks: TasksState::default(),
             updates: UpdatesState::default(),
+            caches: CachesState::default(),
             quit_armed: false,
             quit: false,
             dirty: true,
@@ -264,6 +280,7 @@ impl App {
             || self.toast.is_some()
             || self.tasks.running() > 0
             || !self.updates.checking.is_empty()
+            || !self.caches.busy.is_empty()
     }
 
     pub(crate) fn toast(&mut self, text: impl Into<String>, level: Level) {
@@ -368,9 +385,17 @@ impl App {
                 id,
                 label,
                 task,
-                recheck,
+                after,
             } => {
-                self.tasks.add_job(id, label, task, recheck);
+                self.tasks.add_job(id, label, task, after);
+                Vec::new()
+            }
+            Msg::CachesDiscovered(caches) => {
+                self.caches.set(caches);
+                Vec::new()
+            }
+            Msg::CacheMeasured(id, size) => {
+                self.caches.measured(&id, size);
                 Vec::new()
             }
             Msg::DepsProgress(progress) => {
@@ -414,21 +439,26 @@ impl App {
                         self.toast(text, level);
                     }
                 }
-                let recheck = self
+                let after = self
                     .tasks
                     .jobs
                     .iter()
                     .find(|j| j.id == id)
-                    .and_then(|j| j.recheck.clone());
-                // Once every job for the project has finished, look at its dependencies again.
-                if let Some(path) = recheck
-                    && !self.tasks.jobs.iter().any(|j| {
-                        j.status == JobStatus::Running && j.recheck.as_ref() == Some(&path)
-                    })
-                {
-                    return self.recheck(&path);
+                    .map(|j| j.after.clone())
+                    .unwrap_or_default();
+                // Refresh once every job with the same follow-up has finished.
+                let pending = self
+                    .tasks
+                    .jobs
+                    .iter()
+                    .any(|j| j.status == JobStatus::Running && j.after == after);
+                match after {
+                    After::Recheck(path) if !pending => self.recheck(&path),
+                    After::Remeasure { id, path } if !pending => {
+                        vec![Effect::MeasureCache { id, path }]
+                    }
+                    _ => Vec::new(),
                 }
-                Vec::new()
             }
         }
     }
@@ -490,11 +520,17 @@ impl App {
                 self.tab = Tab::Updates;
                 return self.updates_effects();
             }
+            Action::ShowCaches => {
+                self.tab = Tab::Caches;
+                return self.caches_effects();
+            }
+            Action::Search if self.tab == Tab::Caches => self.dirty = false,
             Action::Search => {
                 let current = match self.tab {
                     Tab::Reclaim => self.query.raw.clone(),
                     Tab::Tasks => self.tasks.filter.clone(),
                     Tab::Updates => self.updates.filter.clone(),
+                    Tab::Caches => String::new(),
                 };
                 self.input = Input::new(current);
                 self.mode = Mode::Search;
@@ -522,6 +558,7 @@ impl App {
             Tab::Reclaim => self.on_action(action),
             Tab::Tasks => self.on_tasks_action(action),
             Tab::Updates => self.on_updates_action(action),
+            Tab::Caches => self.on_caches_action(action),
         }
     }
 
@@ -552,6 +589,7 @@ impl App {
             Tab::Reclaim => Vec::new(),
             Tab::Tasks => self.tasks_effects(),
             Tab::Updates => self.updates_effects(),
+            Tab::Caches => Vec::new(),
         }
     }
 
@@ -560,6 +598,7 @@ impl App {
             Tab::Reclaim => self.set_query(value),
             Tab::Tasks => self.tasks.set_filter(value),
             Tab::Updates => self.updates.set_filter(value),
+            Tab::Caches => {}
         }
     }
 

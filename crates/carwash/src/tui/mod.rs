@@ -4,6 +4,7 @@
 //! place with side effects: terminal I/O, engine threads, the filesystem.
 
 mod app;
+mod caches;
 mod keymap;
 mod pty;
 mod query;
@@ -181,14 +182,14 @@ impl Runtime<'_> {
     }
 
     /// Runs `task` on a new terminal; its output streams into the Tasks tab.
-    fn start_job(&mut self, label: String, task: Task, size: (u16, u16), recheck: Option<PathBuf>) {
+    fn start_job(&mut self, label: String, task: Task, size: (u16, u16), after: tasks::After) {
         let id = self.next_job;
         self.next_job += 1;
         let _ = self.tx.send(Msg::JobStarted {
             id,
             label,
             task: task.clone(),
-            recheck,
+            after,
         });
         match pty::spawn(id, &task, size, self.tx.clone()) {
             Ok(job) => {
@@ -289,7 +290,7 @@ impl Runtime<'_> {
                     else {
                         continue;
                     };
-                    self.start_job(target.label, task, size, None);
+                    self.start_job(target.label, task, size, tasks::After::Nothing);
                 }
             }
             Effect::CheckDeps { specs, refresh } => {
@@ -321,7 +322,12 @@ impl Runtime<'_> {
                 match carwash_core::deps::update_tasks(&dir, &refs, latest) {
                     Ok(tasks) => {
                         for task in tasks {
-                            self.start_job(label.clone(), task, size, Some(dir.clone()));
+                            self.start_job(
+                                label.clone(),
+                                task,
+                                size,
+                                tasks::After::Recheck(dir.clone()),
+                            );
                         }
                     }
                     Err(error) => {
@@ -330,6 +336,82 @@ impl Runtime<'_> {
                             format!("Cannot update {label}: {error}"),
                         ));
                     }
+                }
+            }
+            Effect::DiscoverCaches => match crate::commands::caches::present(self.ctx) {
+                Ok(caches) => {
+                    let _ = self.tx.send(Msg::CachesDiscovered(caches.clone()));
+                    let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
+                    std::thread::spawn(move || {
+                        for cache in caches {
+                            let size = engine.measure_path(&cache.path, &Cancel::new());
+                            let _ = tx.send(Msg::CacheMeasured(cache.id, size));
+                        }
+                    });
+                }
+                Err(error) => {
+                    let _ = self.tx.send(Msg::CachesDiscovered(Vec::new()));
+                    tracing::warn!(%error, "cannot list caches");
+                }
+            },
+            Effect::MeasureCache { id, path } => {
+                let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let size = engine.measure_path(&path, &Cancel::new());
+                    let _ = tx.send(Msg::CacheMeasured(id, size));
+                });
+            }
+            Effect::CleanCaches { caches, size } => {
+                for cache in caches {
+                    if let Some(task) = cache.prune_task() {
+                        let after = tasks::After::Remeasure {
+                            id: cache.id.clone(),
+                            path: cache.path.clone(),
+                        };
+                        self.start_job(cache.name.clone(), task, size, after);
+                        continue;
+                    }
+                    let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
+                    let history = self.ctx.dirs.as_ref().map(|d| d.history_file());
+                    std::thread::spawn(move || {
+                        let before = cache.size.map_or(0, |s| s.on_disk);
+                        if cache.deletable
+                            && let Some(parent) = cache.path.parent()
+                        {
+                            let report = engine.clean(
+                                &[carwash_core::clean::CleanItem {
+                                    id: carwash_core::ArtifactId(0),
+                                    path: cache.path.clone(),
+                                    expected_bytes: before,
+                                }],
+                                &CleanOptions {
+                                    mode: carwash_core::clean::DeleteMode::Permanent,
+                                    allowed_roots: vec![parent.to_path_buf()],
+                                    dry_run: false,
+                                },
+                                &Cancel::new(),
+                                &|_| {},
+                            );
+                            if report.removed == 1
+                                && let Some(file) = history
+                            {
+                                let record = carwash_core::history::Record::now(
+                                    cache.path.clone(),
+                                    before,
+                                    carwash_core::ArtifactKind::Cache,
+                                    cache.ecosystem.clone(),
+                                    carwash_core::clean::DeleteMode::Permanent,
+                                );
+                                let _ = history::append(&file, &[record]);
+                            }
+                        }
+                        let size = if cache.path.exists() {
+                            engine.measure_path(&cache.path, &Cancel::new())
+                        } else {
+                            carwash_core::Size::default()
+                        };
+                        let _ = tx.send(Msg::CacheMeasured(cache.id, size));
+                    });
                 }
             }
             Effect::KillJob(id) => {

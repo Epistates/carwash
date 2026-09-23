@@ -166,6 +166,11 @@ impl Engine {
             .install(|| measure_all(targets, counters, cancel, sink));
     }
 
+    /// Measures one directory tree on the engine's pool.
+    pub fn measure_path(&self, path: &Path, cancel: &Cancel) -> Size {
+        self.pool.install(|| measure::measure(path, cancel))
+    }
+
     /// Deletes artifacts; see [`clean::clean`].
     pub fn clean(
         &self,

@@ -42,8 +42,19 @@ pub struct Job {
     pub status: JobStatus,
     started: Instant,
     pub elapsed: Option<Duration>,
-    /// Project whose dependencies are checked again when this job ends.
-    pub recheck: Option<PathBuf>,
+    /// What to refresh when this job ends.
+    pub after: After,
+}
+
+/// Follow-up work once a job ends.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum After {
+    #[default]
+    Nothing,
+    /// Check the dependencies of the project at this path again.
+    Recheck(PathBuf),
+    /// Measure a cache again.
+    Remeasure { id: String, path: PathBuf },
 }
 
 impl std::fmt::Debug for Job {
@@ -122,7 +133,7 @@ impl TasksState {
         self.jobs.iter_mut().find(|j| j.id == id)
     }
 
-    pub fn add_job(&mut self, id: u64, label: String, task: Task, recheck: Option<PathBuf>) {
+    pub fn add_job(&mut self, id: u64, label: String, task: Task, after: After) {
         let (rows, cols) = self.pty_size;
         self.jobs.push(Job {
             id,
@@ -132,7 +143,7 @@ impl TasksState {
             status: JobStatus::Running,
             started: Instant::now(),
             elapsed: None,
-            recheck,
+            after,
         });
         self.active = self.jobs.len() - 1;
     }
@@ -684,7 +695,7 @@ mod tests {
             id: 7,
             label: "a".into(),
             task: task("test", "/w/a"),
-            recheck: None,
+            after: After::Nothing,
         });
         assert_eq!(app.tasks.running(), 1);
         assert!(app.animating());
@@ -707,7 +718,7 @@ mod tests {
             id: 8,
             label: "b".into(),
             task: task("x", "/w/b"),
-            recheck: None,
+            after: After::Nothing,
         });
         app.update(Msg::JobExited(8, Err("`just` not found".into())));
         assert!(
@@ -729,7 +740,7 @@ mod tests {
             id: 1,
             label: "a".into(),
             task: task("dev", "/w/a"),
-            recheck: None,
+            after: After::Nothing,
         });
         press(&mut app, KeyCode::Char('q'));
         assert!(!app.quit);

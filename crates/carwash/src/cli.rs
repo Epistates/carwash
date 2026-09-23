@@ -60,6 +60,8 @@ pub enum Command {
     Run(RunArgs),
     /// Show outdated and vulnerable dependencies (Rust, JavaScript, Python, Go).
     Outdated(OutdatedArgs),
+    /// List and clean per-user caches (package stores, toolchains, SDK and IDE caches).
+    Caches(CachesArgs),
     /// List the ecosystems carwash recognises.
     Ecosystems(JsonArgs),
     /// Show how much space carwash has reclaimed.
@@ -297,6 +299,37 @@ pub struct OutdatedArgs {
     /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CachesArgs {
+    #[command(subcommand)]
+    pub action: Option<CachesAction>,
+
+    /// Machine-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CachesAction {
+    /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children.
+    Clean {
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Show what would be done, then stop.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Delete the directory even when the tool's own prune command is available.
+        #[arg(long)]
+        delete: bool,
+    },
 }
 
 #[derive(Debug, Args)]

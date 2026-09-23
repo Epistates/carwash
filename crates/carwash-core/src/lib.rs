@@ -14,6 +14,7 @@
 //! TOML file in the same format.
 
 pub mod cache;
+pub mod caches;
 pub mod clean;
 pub mod deps;
 pub mod discover;
