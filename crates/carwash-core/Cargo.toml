@@ -13,7 +13,6 @@ categories = ["development-tools", "filesystem"]
 
 [dependencies]
 rayon.workspace = true
-crossbeam-channel.workspace = true
 dashmap.workspace = true
 globset.workspace = true
 remove_dir_all.workspace = true
@@ -30,7 +29,6 @@ nodejs-semver.workspace = true
 pep440_rs.workspace = true
 ureq.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
