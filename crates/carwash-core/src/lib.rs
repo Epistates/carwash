@@ -26,6 +26,7 @@ pub mod paths;
 pub mod safety;
 pub mod scan;
 pub mod select;
+pub mod tasks;
 
 pub use discover::{Counters, DiscoverOptions};
 pub use ecosystem::{EcoId, Registry, RuleId};

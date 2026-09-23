@@ -21,6 +21,10 @@
 #   confirm             globs; if any child entry matches, the directory is confirmed as an artifact
 #   require_confirm     without a confirming child the directory is not treated as an artifact
 #   regenerate          hint shown to the user about how the artifact comes back
+#
+# Task fields (standard commands offered for every project of the ecosystem):
+#   name, run           task name and program + arguments; `{pm}` is the JS package manager
+#   when / unless       only offer the task when a path exists / does not exist
 
 schema = 1
 
@@ -33,6 +37,16 @@ lockfiles = ["Cargo.lock"]
 adapter = "cargo"
 artifacts = [
   { path = "target", kind = "build", confirm = ["CACHEDIR.TAG", ".rustc_info.json", "debug", "release"], regenerate = "cargo build" },
+]
+tasks = [
+  { name = "build", run = ["cargo", "build"] },
+  { name = "test", run = ["cargo", "test"] },
+  { name = "check", run = ["cargo", "check", "--all-targets"] },
+  { name = "clippy", run = ["cargo", "clippy", "--all-targets"] },
+  { name = "fmt", run = ["cargo", "fmt"] },
+  { name = "doc", run = ["cargo", "doc"] },
+  { name = "update", run = ["cargo", "update"], description = "update Cargo.lock within semver" },
+  { name = "clean", run = ["cargo", "clean"] },
 ]
 
 [[ecosystem]]
@@ -67,6 +81,10 @@ artifacts = [
   { path = "out", kind = "build", ambiguous = true, regenerate = "your build script" },
   { path = "coverage", kind = "other", ambiguous = true, regenerate = "your test script" },
 ]
+tasks = [
+  { name = "install", run = ["{pm}", "install"] },
+  { name = "outdated", run = ["{pm}", "outdated"] },
+]
 
 [[ecosystem]]
 id = "deno"
@@ -76,6 +94,13 @@ markers = ["deno.json", "deno.jsonc"]
 lockfiles = ["deno.lock"]
 artifacts = [
   { path = "node_modules", kind = "dependencies", regenerate = "deno install" },
+]
+tasks = [
+  { name = "test", run = ["deno", "test"] },
+  { name = "check", run = ["deno", "check", "."] },
+  { name = "lint", run = ["deno", "lint"] },
+  { name = "fmt", run = ["deno", "fmt"] },
+  { name = "outdated", run = ["deno", "outdated"] },
 ]
 
 [[ecosystem]]
@@ -106,6 +131,13 @@ artifacts = [
   { path = "build", kind = "build", ambiguous = true, confirm = ["lib", "lib.*", "bdist.*", "temp.*"], regenerate = "python -m build" },
   { path = "dist", kind = "build", ambiguous = true, confirm = ["*.whl", "*.tar.gz"], regenerate = "python -m build" },
 ]
+tasks = [
+  { name = "sync", run = ["uv", "sync"], when = "uv.lock" },
+  { name = "test", run = ["uv", "run", "pytest"], when = "uv.lock" },
+  { name = "install", run = ["poetry", "install"], when = "poetry.lock" },
+  { name = "test", run = ["poetry", "run", "pytest"], when = "poetry.lock" },
+  { name = "install", run = ["pdm", "install"], when = "pdm.lock" },
+]
 
 [[ecosystem]]
 id = "go"
@@ -117,6 +149,13 @@ adapter = "go"
 artifacts = [
   { path = "vendor", kind = "dependencies", ambiguous = true, confirm = ["modules.txt"], regenerate = "go mod vendor" },
 ]
+tasks = [
+  { name = "build", run = ["go", "build", "./..."] },
+  { name = "test", run = ["go", "test", "./..."] },
+  { name = "vet", run = ["go", "vet", "./..."] },
+  { name = "tidy", run = ["go", "mod", "tidy"] },
+  { name = "update", run = ["go", "get", "-u", "./..."], description = "update module dependencies" },
+]
 
 [[ecosystem]]
 id = "maven"
@@ -125,6 +164,14 @@ badge = "mv"
 markers = ["pom.xml"]
 artifacts = [
   { path = "target", kind = "build", ambiguous = true, confirm = ["classes", "maven-status", "maven-archiver", "surefire-reports", "generated-sources", "*.jar"], regenerate = "mvn package" },
+]
+tasks = [
+  { name = "package", run = ["./mvnw", "package"], when = "mvnw" },
+  { name = "test", run = ["./mvnw", "test"], when = "mvnw" },
+  { name = "clean", run = ["./mvnw", "clean"], when = "mvnw" },
+  { name = "package", run = ["mvn", "package"], unless = "mvnw" },
+  { name = "test", run = ["mvn", "test"], unless = "mvnw" },
+  { name = "clean", run = ["mvn", "clean"], unless = "mvnw" },
 ]
 
 [[ecosystem]]
@@ -142,6 +189,14 @@ artifacts = [
   { path = ".externalNativeBuild", kind = "build", regenerate = "gradle build" },
   { path = "out", kind = "build", ambiguous = true, confirm = ["production", "test"], regenerate = "IntelliJ build" },
 ]
+tasks = [
+  { name = "build", run = ["./gradlew", "build"], when = "gradlew" },
+  { name = "test", run = ["./gradlew", "test"], when = "gradlew" },
+  { name = "clean", run = ["./gradlew", "clean"], when = "gradlew" },
+  { name = "build", run = ["gradle", "build"], unless = "gradlew" },
+  { name = "test", run = ["gradle", "test"], unless = "gradlew" },
+  { name = "clean", run = ["gradle", "clean"], unless = "gradlew" },
+]
 
 [[ecosystem]]
 id = "scala"
@@ -157,6 +212,10 @@ artifacts = [
   { path = ".bsp", kind = "cache", regenerate = "sbt bspConfig" },
   { path = ".scala-build", kind = "build", regenerate = "scala-cli" },
   { path = "out", kind = "build", ambiguous = true, confirm = ["mill-*"], regenerate = "mill" },
+]
+tasks = [
+  { name = "compile", run = ["sbt", "compile"], when = "build.sbt" },
+  { name = "test", run = ["sbt", "test"], when = "build.sbt" },
 ]
 
 [[ecosystem]]
@@ -179,6 +238,12 @@ artifacts = [
   { path = "TestResults", kind = "other", regenerate = "dotnet test" },
   { path = ".vs", kind = "cache", ambiguous = true, regenerate = "Visual Studio" },
 ]
+tasks = [
+  { name = "build", run = ["dotnet", "build"] },
+  { name = "test", run = ["dotnet", "test"] },
+  { name = "restore", run = ["dotnet", "restore"] },
+  { name = "clean", run = ["dotnet", "clean"] },
+]
 
 [[ecosystem]]
 id = "swift"
@@ -189,6 +254,11 @@ lockfiles = ["Package.resolved"]
 artifacts = [
   { path = ".build", kind = "build", regenerate = "swift build" },
   { path = ".swiftpm", kind = "cache", ambiguous = true, regenerate = "swift package" },
+]
+tasks = [
+  { name = "build", run = ["swift", "build"] },
+  { name = "test", run = ["swift", "test"] },
+  { name = "update", run = ["swift", "package", "update"] },
 ]
 
 [[ecosystem]]
@@ -238,6 +308,11 @@ artifacts = [
   { path = "linux/flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
   { path = "windows/flutter/ephemeral", kind = "build", regenerate = "flutter pub get" },
 ]
+tasks = [
+  { name = "get", run = ["dart", "pub", "get"] },
+  { name = "test", run = ["dart", "test"] },
+  { name = "outdated", run = ["dart", "pub", "outdated"] },
+]
 
 [[ecosystem]]
 id = "elixir"
@@ -253,6 +328,12 @@ artifacts = [
   { path = ".lexical", kind = "cache", regenerate = "Lexical" },
   { path = "cover", kind = "other", ambiguous = true, regenerate = "mix test --cover" },
 ]
+tasks = [
+  { name = "deps", run = ["mix", "deps.get"] },
+  { name = "compile", run = ["mix", "compile"] },
+  { name = "test", run = ["mix", "test"] },
+  { name = "format", run = ["mix", "format"] },
+]
 
 [[ecosystem]]
 id = "erlang"
@@ -263,6 +344,10 @@ lockfiles = ["rebar.lock"]
 artifacts = [
   { path = "_build", kind = "build", regenerate = "rebar3 compile" },
 ]
+tasks = [
+  { name = "compile", run = ["rebar3", "compile"] },
+  { name = "test", run = ["rebar3", "eunit"] },
+]
 
 [[ecosystem]]
 id = "gleam"
@@ -272,6 +357,10 @@ markers = ["gleam.toml"]
 lockfiles = ["manifest.toml"]
 artifacts = [
   { path = "build", kind = "build", ambiguous = true, confirm = ["packages", "dev", "prod", "lsp"], regenerate = "gleam build" },
+]
+tasks = [
+  { name = "build", run = ["gleam", "build"] },
+  { name = "test", run = ["gleam", "test"] },
 ]
 
 [[ecosystem]]
@@ -285,6 +374,12 @@ artifacts = [
   { path = ".stack-work", kind = "build", regenerate = "stack build" },
   { path = "dist", kind = "build", ambiguous = true, confirm = ["setup-config", "build"], regenerate = "cabal build" },
 ]
+tasks = [
+  { name = "build", run = ["stack", "build"], when = "stack.yaml" },
+  { name = "test", run = ["stack", "test"], when = "stack.yaml" },
+  { name = "build", run = ["cabal", "build"], unless = "stack.yaml" },
+  { name = "test", run = ["cabal", "test"], unless = "stack.yaml" },
+]
 
 [[ecosystem]]
 id = "ocaml"
@@ -294,6 +389,10 @@ markers = ["dune-project", "*.opam"]
 artifacts = [
   { path = "_build", kind = "build", regenerate = "dune build" },
   { path = "_opam", kind = "environment", regenerate = "opam switch create ." },
+]
+tasks = [
+  { name = "build", run = ["dune", "build"] },
+  { name = "test", run = ["dune", "test"] },
 ]
 
 [[ecosystem]]
@@ -305,6 +404,10 @@ artifacts = [
   { path = ".zig-cache", kind = "cache", regenerate = "zig build" },
   { path = "zig-cache", kind = "cache", regenerate = "zig build" },
   { path = "zig-out", kind = "build", regenerate = "zig build" },
+]
+tasks = [
+  { name = "build", run = ["zig", "build"] },
+  { name = "test", run = ["zig", "build", "test"] },
 ]
 
 [[ecosystem]]
@@ -318,6 +421,10 @@ artifacts = [
   { path = "out", kind = "build", ambiguous = true, confirm = ["build", "CMakeCache.txt"], regenerate = "cmake --build" },
   { path = ".cache/clangd", kind = "cache", regenerate = "clangd" },
   { path = "vcpkg_installed", kind = "dependencies", regenerate = "vcpkg install" },
+]
+tasks = [
+  { name = "configure", run = ["cmake", "-B", "build"] },
+  { name = "build", run = ["cmake", "--build", "build"] },
 ]
 
 [[ecosystem]]
@@ -349,6 +456,10 @@ lockfiles = ["composer.lock"]
 artifacts = [
   { path = "vendor", kind = "dependencies", ambiguous = true, confirm = ["autoload.php", "composer"], regenerate = "composer install" },
 ]
+tasks = [
+  { name = "install", run = ["composer", "install"] },
+  { name = "outdated", run = ["composer", "outdated", "--direct"] },
+]
 
 [[ecosystem]]
 id = "ruby"
@@ -362,6 +473,10 @@ artifacts = [
   { path = "tmp", kind = "cache", ambiguous = true, confirm = ["cache", "pids", "sockets"], regenerate = "rails tmp:create" },
   { path = "coverage", kind = "other", ambiguous = true, regenerate = "your test suite" },
 ]
+tasks = [
+  { name = "install", run = ["bundle", "install"] },
+  { name = "outdated", run = ["bundle", "outdated"] },
+]
 
 [[ecosystem]]
 id = "terraform"
@@ -372,6 +487,11 @@ lockfiles = [".terraform.lock.hcl"]
 artifacts = [
   { path = ".terraform", kind = "dependencies", regenerate = "terraform init" },
   { path = ".terragrunt-cache", kind = "cache", regenerate = "terragrunt init" },
+]
+tasks = [
+  { name = "init", run = ["terraform", "init"] },
+  { name = "validate", run = ["terraform", "validate"] },
+  { name = "plan", run = ["terraform", "plan"] },
 ]
 
 [[ecosystem]]

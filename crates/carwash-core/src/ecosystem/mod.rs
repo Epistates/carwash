@@ -67,6 +67,25 @@ pub struct EcosystemSpec {
     pub adapter: Option<String>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactSpec>,
+    #[serde(default)]
+    pub tasks: Vec<TaskSpec>,
+}
+
+/// A standard command every project of an ecosystem supports (`cargo test`, `go vet ./...`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSpec {
+    pub name: String,
+    /// Program and arguments. `{pm}` is replaced by the project's JavaScript package manager.
+    pub run: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Only offered when this path exists in the project (e.g. `gradlew`).
+    #[serde(default)]
+    pub when: Option<String>,
+    /// Not offered when this path exists.
+    #[serde(default)]
+    pub unless: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -149,6 +168,7 @@ pub struct Ecosystem {
     pub lockfiles: Vec<String>,
     pub adapter: Option<Adapter>,
     pub rules: Vec<RuleId>,
+    pub tasks: Vec<TaskSpec>,
     /// Marker and lockfile names checked for activity timestamps.
     pub(crate) activity_files: Vec<String>,
 }
@@ -308,6 +328,16 @@ impl Registry {
                     message: "duplicate id".into(),
                 });
             }
+            if let Some(task) = spec
+                .tasks
+                .iter()
+                .find(|t| t.run.is_empty() || t.name.is_empty())
+            {
+                return Err(RulesError::Invalid {
+                    ecosystem: spec.id,
+                    message: format!("task `{}` needs a name and a command", task.name),
+                });
+            }
             if spec.markers.is_empty() && spec.weak_markers.is_empty() {
                 return Err(RulesError::Invalid {
                     ecosystem: spec.id,
@@ -441,6 +471,7 @@ impl Registry {
                 lockfiles: spec.lockfiles,
                 adapter,
                 rules: eco_rules,
+                tasks: spec.tasks,
                 activity_files,
             });
         }

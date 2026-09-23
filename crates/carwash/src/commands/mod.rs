@@ -3,6 +3,7 @@
 pub mod clean;
 pub mod info;
 pub mod scan;
+pub mod tasks;
 
 use anstyle::{AnsiColor, Style};
 use carwash_core::select::Hold;

@@ -54,6 +54,10 @@ pub enum Command {
     Scan(ScanArgs),
     /// Delete artifacts, after showing the plan and asking for confirmation.
     Clean(CleanArgs),
+    /// List project tasks: package.json scripts, just/make/Taskfile/mise targets, standard commands.
+    Tasks(TasksArgs),
+    /// Run a task in every project that has it.
+    Run(RunArgs),
     /// List the ecosystems carwash recognises.
     Ecosystems(JsonArgs),
     /// Show how much space carwash has reclaimed.
@@ -199,6 +203,63 @@ pub struct CleanArgs {
     /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TasksArgs {
+    #[command(flatten)]
+    pub walk: WalkArgs,
+
+    /// Only projects of these ecosystems.
+    #[arg(
+        long = "ecosystem",
+        short = 'e',
+        value_name = "ID",
+        value_delimiter = ','
+    )]
+    pub ecosystems: Vec<String>,
+
+    /// List every project's tasks instead of a summary.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Machine-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Task name, e.g. `test` or `build`.
+    pub task: String,
+
+    #[command(flatten)]
+    pub walk: WalkArgs,
+
+    /// Only projects of these ecosystems.
+    #[arg(
+        long = "ecosystem",
+        short = 'e',
+        value_name = "ID",
+        value_delimiter = ','
+    )]
+    pub ecosystems: Vec<String>,
+
+    /// Only projects whose path (relative to PATH) matches this glob (repeatable).
+    #[arg(long, value_name = "GLOB")]
+    pub filter: Vec<String>,
+
+    /// Projects to run at once; output is prefixed when above 1.
+    #[arg(long, short = 'j', value_name = "N", default_value_t = 1)]
+    pub jobs: usize,
+
+    /// Stop starting new projects after the first failure.
+    #[arg(long)]
+    pub fail_fast: bool,
+
+    /// Print the commands without running them.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]

@@ -76,6 +76,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match &cli.command {
         Some(Command::Scan(args)) => commands::scan::run(&ctx, args),
         Some(Command::Clean(args)) => commands::clean::run(&ctx, args),
+        Some(Command::Tasks(args)) => commands::tasks::list(&ctx, args),
+        Some(Command::Run(args)) => commands::tasks::run(&ctx, args),
         Some(Command::Ecosystems(args)) => commands::info::ecosystems(&ctx, args),
         Some(Command::History(args)) => commands::info::history(&ctx, args),
         Some(Command::Completions { .. }) => unreachable!("handled above"),
