@@ -79,8 +79,12 @@ Run `carwash [PATH]`. Four tabs, switched with `1` to `4`:
    updates within your requirements, `U` upgrades to latest (and edits manifests). Projects are
    re-checked after the update finishes.
 4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
-   when it is installed, or deletes the directory when that is safe. Sizes are remembered for a
-   day, so the tab opens instantly; `r` measures again.
+   when it is installed, or deletes the directory when that is safe. Sizes are remembered, so
+   the tab opens instantly. A cache is measured again when the top of its tree has changed
+   (entries added or removed there), after a week otherwise, or when you press `r`.
+
+`p` scans another folder without restarting: type a path (Tab completes, `~` and relative
+paths work) and press Enter. Running tasks keep running.
 
 The footer shows the current tab's keys on the left and the keys that work in any tab on the
 right. Hover over a key for what it does (for `d`, exactly what it will delete or run), click it

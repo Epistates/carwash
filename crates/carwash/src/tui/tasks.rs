@@ -122,6 +122,16 @@ impl Default for TasksState {
 }
 
 impl TasksState {
+    /// Drops what refers to the previous scan's projects; jobs keep running.
+    pub fn forget_projects(&mut self) {
+        self.projects.clear();
+        self.built_for = None;
+        self.project_cursor = 0;
+        self.project_key = None;
+        self.marked.clear();
+        self.task_cursor = 0;
+    }
+
     pub fn running(&self) -> usize {
         self.jobs
             .iter()

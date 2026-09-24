@@ -3,19 +3,21 @@
 use super::app::{App, Effect, Level};
 use super::keymap::Action;
 use super::widgets::{pane, spinner};
-use carwash_core::cache::SizeCache;
+use carwash_core::cache::{CachedSize, Fingerprint, SizeCache};
 use carwash_core::caches::GlobalCache;
 use carwash_core::{Size, fmt};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
-/// Remembered sizes younger than this are shown without measuring again.
+/// Remembered sizes younger than this are shown without measuring again...
 const SIZES_FRESH_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+/// ...or younger than this when the cache's fingerprint shows no change.
+const UNCHANGED_FRESH_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Debug, Default)]
 pub struct CachesState {
@@ -25,8 +27,6 @@ pub struct CachesState {
     pub marked: HashSet<String>,
     /// Being cleaned or measured.
     pub busy: HashSet<String>,
-    /// When each cache's size was measured, in this session or an earlier one.
-    measured_at: HashMap<String, SystemTime>,
     clean_armed: bool,
     requested: bool,
     /// The tab has been shown; stale sizes are measured from then on.
@@ -41,47 +41,29 @@ impl CachesState {
     /// Installs discovered caches with their remembered sizes.
     fn set(&mut self, mut caches: Vec<GlobalCache>, sizes: &SizeCache) {
         for cache in &mut caches {
-            if let Some(cached) = sizes.get(&cache.path) {
-                cache.size = Some(cached.size);
-                self.measured_at.insert(
-                    cache.id.clone(),
-                    UNIX_EPOCH + Duration::from_secs(cached.measured_at),
-                );
-            }
+            cache.size = sizes.get(&cache.path).map(|c| c.size);
         }
         self.caches = Some(caches);
         self.sort();
     }
 
     /// Records a measurement; returns the cache's path.
-    fn measured(&mut self, id: &str, size: Size, now: SystemTime) -> Option<PathBuf> {
+    fn measured(
+        &mut self,
+        id: &str,
+        size: Size,
+        fingerprint: Option<Fingerprint>,
+    ) -> Option<PathBuf> {
         self.busy.remove(id);
         let cache = self
             .caches
             .as_mut()
             .and_then(|c| c.iter_mut().find(|c| c.id == id))?;
         cache.size = Some(size);
+        cache.fingerprint = fingerprint;
         let path = cache.path.clone();
-        self.measured_at.insert(id.to_owned(), now);
         self.sort();
         Some(path)
-    }
-
-    pub fn measured_age(&self, id: &str, now: SystemTime) -> Option<Duration> {
-        self.measured_at
-            .get(id)
-            .map(|at| now.duration_since(*at).unwrap_or_default())
-    }
-
-    /// Age of the oldest size shown, when it is not from this session's measuring.
-    pub fn oldest_age(&self, now: SystemTime) -> Option<Duration> {
-        self.caches
-            .iter()
-            .flatten()
-            .filter(|c| !self.busy.contains(&c.id))
-            .filter_map(|c| self.measured_age(&c.id, now))
-            .max()
-            .filter(|age| *age >= Duration::from_secs(60))
     }
 
     /// Largest first. Once the user has moved, the cursor stays on the same cache; until
@@ -110,7 +92,37 @@ impl CachesState {
     }
 }
 
+/// Whether `cache` must be measured again, given what was remembered about it.
+fn is_stale(cache: &GlobalCache, remembered: Option<&CachedSize>, now: SystemTime) -> bool {
+    let Some(remembered) = remembered else {
+        return true;
+    };
+    let age = remembered.age_at(now);
+    match (remembered.fingerprint, cache.fingerprint) {
+        (Some(then), Some(current)) if then == current => age > UNCHANGED_FRESH_FOR,
+        (Some(_), Some(_)) => true,
+        _ => age > SIZES_FRESH_FOR,
+    }
+}
+
 impl App {
+    /// How long ago `cache`'s size was measured, in this session or an earlier one.
+    pub fn cache_measured_age(&self, cache: &GlobalCache) -> Option<Duration> {
+        self.cache.get(&cache.path).map(|c| c.age_at(self.now))
+    }
+
+    /// Age of the oldest size shown, when it is not from the last minute.
+    pub fn caches_oldest_age(&self) -> Option<Duration> {
+        self.caches
+            .caches
+            .iter()
+            .flatten()
+            .filter(|c| !self.caches.busy.contains(&c.id))
+            .filter_map(|c| self.cache_measured_age(c))
+            .max()
+            .filter(|age| *age >= Duration::from_secs(60))
+    }
+
     /// Discovery is cheap (a few dozen known paths), so it runs at startup; measuring waits
     /// until the tab is shown.
     pub fn discover_caches(&mut self) -> Vec<Effect> {
@@ -132,9 +144,21 @@ impl App {
         self.measure_caches()
     }
 
-    pub fn on_cache_measured(&mut self, id: &str, size: Size) {
-        if let Some(path) = self.caches.measured(id, size, self.now) {
-            self.cache.insert(path, size);
+    /// Remembers the size; once nothing is left to measure, saves the size cache so the
+    /// next start has it even if this session does not end cleanly.
+    pub fn on_cache_measured(
+        &mut self,
+        id: &str,
+        size: Size,
+        fingerprint: Option<Fingerprint>,
+    ) -> Vec<Effect> {
+        if let Some(path) = self.caches.measured(id, size, fingerprint) {
+            self.cache.insert_with(path, size, fingerprint);
+        }
+        if self.caches.busy.is_empty() {
+            vec![Effect::SaveSizes(self.cache.clone())]
+        } else {
+            Vec::new()
         }
     }
 
@@ -149,11 +173,7 @@ impl App {
             .iter()
             .flatten()
             .filter(|c| !state.busy.contains(&c.id))
-            .filter(|c| {
-                all || state
-                    .measured_age(&c.id, self.now)
-                    .is_none_or(|age| age > SIZES_FRESH_FOR)
-            })
+            .filter(|c| all || is_stale(c, self.cache.get(&c.path), self.now))
             .map(|c| (c.id.clone(), c.path.clone()))
             .collect();
         if targets.is_empty() {
@@ -366,7 +386,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if !app.caches.marked.is_empty() {
         title.push_str(&format!(" · {} marked", app.caches.marked.len()));
     }
-    if let Some(age) = app.caches.oldest_age(app.now) {
+    if let Some(age) = app.caches_oldest_age() {
         title.push_str(&format!(
             " · sizes up to {} old (r to measure)",
             fmt::age(age)
@@ -400,7 +420,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         let measured = if app.caches.busy.contains(&cache.id) {
             "measuring…".to_owned()
         } else {
-            match app.caches.measured_age(&cache.id, app.now) {
+            match app.cache_measured_age(cache) {
                 Some(age) if age < Duration::from_secs(60) => "measured just now".to_owned(),
                 Some(age) => format!("measured {} ago", fmt::age(age)),
                 None => String::new(),
@@ -446,7 +466,64 @@ mod tests {
             prune: None,
             note: None,
             size: None,
+            fingerprint: None,
         }
+    }
+
+    fn measured(id: &str, size: Size) -> Msg {
+        Msg::CacheMeasured {
+            id: id.into(),
+            size,
+            fingerprint: None,
+        }
+    }
+
+    fn fingerprint(newest: u64) -> Option<Fingerprint> {
+        Some(Fingerprint { newest, entries: 3 })
+    }
+
+    #[test]
+    fn fingerprints_decide_how_long_a_remembered_size_holds() {
+        let now = SystemTime::now();
+        let mut sizes = SizeCache::default();
+        sizes.insert_with(PathBuf::from("/home/a"), Size::default(), fingerprint(1));
+        let remembered = sizes.get(Path::new("/home/a"));
+        let two_days = now + Duration::from_secs(2 * 24 * 60 * 60);
+        let two_weeks = now + Duration::from_secs(14 * 24 * 60 * 60);
+        let with = |fp| GlobalCache {
+            fingerprint: fp,
+            ..cache("a")
+        };
+        // Unchanged: trusted for a week.
+        assert!(!is_stale(&with(fingerprint(1)), remembered, two_days));
+        assert!(is_stale(&with(fingerprint(1)), remembered, two_weeks));
+        // Changed near the top: measured now.
+        assert!(is_stale(&with(fingerprint(2)), remembered, now));
+        // Unknown: a day.
+        assert!(!is_stale(&with(None), remembered, now));
+        assert!(is_stale(&with(None), remembered, two_days));
+        assert!(is_stale(&with(fingerprint(1)), None, now));
+    }
+
+    #[test]
+    fn finishing_the_measurements_saves_the_sizes() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(Msg::CachesDiscovered(vec![cache("a"), cache("b")]));
+        let first = app.update(measured("a", Size::default()));
+        assert!(!first.iter().any(|e| matches!(e, Effect::SaveSizes(_))));
+        let last = app.update(Msg::CacheMeasured {
+            id: "b".into(),
+            size: Size::default(),
+            fingerprint: fingerprint(9),
+        });
+        let Some(Effect::SaveSizes(sizes)) = last.first() else {
+            panic!("expected a save, got {last:?}");
+        };
+        assert_eq!(
+            sizes.get(Path::new("/home/b")).unwrap().fingerprint,
+            fingerprint(9)
+        );
     }
 
     #[test]
@@ -461,8 +538,8 @@ mod tests {
             reclaimable: bytes,
             ..Size::default()
         };
-        app.update(Msg::CacheMeasured("small".into(), size(10)));
-        app.update(Msg::CacheMeasured("big".into(), size(1_000)));
+        app.update(measured("small", size(10)));
+        app.update(measured("big", size(1_000)));
         let ids: Vec<&str> = app
             .caches
             .caches
@@ -476,7 +553,7 @@ mod tests {
         assert!(app.caches.busy.is_empty());
         assert_eq!(app.caches.cursor, 0, "the largest cache is selected first");
         press(&mut app, KeyCode::Char('j'));
-        app.update(Msg::CacheMeasured("small".into(), size(5_000)));
+        app.update(measured("small", size(5_000)));
         assert_eq!(
             app.caches.cursor, 0,
             "after moving, the cursor follows its cache"
@@ -533,7 +610,7 @@ mod tests {
         let effects = later.update(Msg::CachesDiscovered(vec![cache("fresh")]));
         assert_eq!(measured_ids(&effects), ["fresh"]);
 
-        app.update(Msg::CacheMeasured("new".into(), size));
+        app.update(measured("new", size));
         assert!(
             press(&mut app, KeyCode::Char('r'))
                 .iter()
@@ -552,7 +629,7 @@ mod tests {
             on_disk: 7,
             ..Size::default()
         };
-        app.update(Msg::CacheMeasured("a".into(), size));
+        app.update(measured("a", size));
         assert_eq!(app.cache.get(Path::new("/home/a")).unwrap().size, size);
     }
 

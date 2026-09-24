@@ -66,6 +66,17 @@ impl Default for UpdatesState {
 }
 
 impl UpdatesState {
+    /// Drops what refers to the previous scan's projects; results are kept by path.
+    pub fn forget_projects(&mut self) {
+        self.projects.clear();
+        self.built_for = None;
+        self.project_cursor = 0;
+        self.project_key = None;
+        self.marked_projects.clear();
+        self.marked.clear();
+        self.dep_cursor = 0;
+    }
+
     pub fn set_filter(&mut self, filter: String) {
         self.filter = filter;
         self.project_cursor = 0;

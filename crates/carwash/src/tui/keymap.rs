@@ -40,6 +40,7 @@ pub enum Action {
     ShowTasks,
     ShowUpdates,
     ShowCaches,
+    ChangeRoot,
     Theme,
     Help,
     Quit,
@@ -237,6 +238,14 @@ pub const GLOBAL: &[Binding] = &[
         S::General,
         "global caches",
     ),
+    bind(
+        &[(Char('p'), NONE)],
+        "p",
+        A::ChangeRoot,
+        S::General,
+        "scan another folder (Tab completes)",
+    )
+    .hint("folder"),
     bind(
         &[(Char('t'), NONE)],
         "t",

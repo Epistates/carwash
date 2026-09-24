@@ -5,6 +5,7 @@
 
 mod app;
 mod caches;
+mod folder;
 mod keymap;
 mod pty;
 mod query;
@@ -69,6 +70,7 @@ pub fn run(ctx: &Context, root: PathBuf, options: ScanOptions) -> Result<()> {
         options,
         tx,
         scan_cancel: None,
+        scan_generation: 0,
         clean_cancel: None,
         jobs: HashMap::new(),
         next_job: 0,
@@ -162,6 +164,8 @@ struct Runtime<'a> {
     options: ScanOptions,
     tx: Sender<Msg>,
     scan_cancel: Option<Cancel>,
+    /// Numbers scans, so events of a superseded one can be told apart.
+    scan_generation: u64,
     clean_cancel: Option<Cancel>,
     jobs: HashMap<u64, pty::PtyJob>,
     next_job: u64,
@@ -221,15 +225,42 @@ impl Runtime<'_> {
                 let cancel = Cancel::new();
                 self.scan_cancel = Some(cancel.clone());
                 let counters = Arc::new(Counters::default());
-                let _ = self.tx.send(Msg::ScanStarted(counters.clone()));
+                self.scan_generation += 1;
+                let generation = self.scan_generation;
+                let _ = self.tx.send(Msg::ScanStarted(generation, counters.clone()));
                 let engine = self.ctx.engine.clone();
                 let (root, options, tx) =
                     (self.root.clone(), self.options.clone(), self.tx.clone());
                 std::thread::spawn(move || {
                     engine.scan(&root, &options, &counters, &cancel, &|event| {
-                        let _ = tx.send(Msg::Scan(event));
+                        let _ = tx.send(Msg::Scan(generation, event));
                     });
                 });
+            }
+            Effect::CompletePath(input) => {
+                let (base, tx) = (self.root.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let home = carwash_core::paths::home();
+                    let candidates = folder::complete_dirs(&input, &base, home.as_deref());
+                    let _ = tx.send(Msg::PathCompletions { input, candidates });
+                });
+            }
+            Effect::ChangeRoot(raw) => {
+                let home = carwash_core::paths::home();
+                let path = folder::resolve(&raw, &self.root, home.as_deref());
+                let walk = crate::cli::WalkArgs::for_path(path);
+                let result = match self.ctx.scan_options(&walk, true, true) {
+                    Ok((root, options)) => {
+                        if let Some(cancel) = self.scan_cancel.take() {
+                            cancel.cancel();
+                        }
+                        self.root = root.clone();
+                        self.options = options;
+                        Ok(root)
+                    }
+                    Err(error) => Err(format!("{error:#}")),
+                };
+                let _ = self.tx.send(Msg::RootChanged(result));
             }
             Effect::CancelScan => {
                 if let Some(cancel) = self.scan_cancel.take() {
@@ -340,20 +371,32 @@ impl Runtime<'_> {
                 }
             }
             Effect::DiscoverCaches => {
-                let caches = crate::commands::caches::present(self.ctx).unwrap_or_else(|error| {
-                    tracing::warn!(%error, "cannot list caches");
-                    Vec::new()
+                // Fingerprinting reads the top of each cache: keep it off the event loop.
+                let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let caches =
+                        crate::commands::caches::present(dirs.as_ref()).unwrap_or_else(|error| {
+                            tracing::warn!(%error, "cannot list caches");
+                            Vec::new()
+                        });
+                    let _ = tx.send(Msg::CachesDiscovered(caches));
                 });
-                let _ = self.tx.send(Msg::CachesDiscovered(caches));
             }
             Effect::MeasureCaches(targets) => {
                 let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                 std::thread::spawn(move || {
                     for (id, path) in targets {
-                        let size = engine.measure_path(&path, &Cancel::new());
-                        let _ = tx.send(Msg::CacheMeasured(id, size));
+                        let _ = tx.send(measure_cache(&engine, id, &path));
                     }
                 });
+            }
+            Effect::SaveSizes(sizes) => {
+                if let Some(dirs) = &self.ctx.dirs {
+                    let mut sizes = sizes;
+                    if let Err(error) = sizes.save(&dirs.size_cache_file()) {
+                        tracing::warn!(%error, "cannot save size cache");
+                    }
+                }
             }
             Effect::CleanCaches { caches, size } => {
                 for cache in caches {
@@ -399,12 +442,7 @@ impl Runtime<'_> {
                                 let _ = history::append(&file, &[record]);
                             }
                         }
-                        let size = if cache.path.exists() {
-                            engine.measure_path(&cache.path, &Cancel::new())
-                        } else {
-                            carwash_core::Size::default()
-                        };
-                        let _ = tx.send(Msg::CacheMeasured(cache.id, size));
+                        let _ = tx.send(measure_cache(&engine, cache.id, &cache.path));
                     });
                 }
             }
@@ -428,6 +466,21 @@ impl Runtime<'_> {
 }
 
 /// Shows `path` in the platform file manager, detached from the terminal.
+/// Fingerprints then measures one global cache (a missing directory measures as empty).
+fn measure_cache(engine: &carwash_core::Engine, id: String, path: &Path) -> Msg {
+    let fingerprint = carwash_core::cache::Fingerprint::of(path);
+    let size = if path.exists() {
+        engine.measure_path(path, &Cancel::new())
+    } else {
+        carwash_core::Size::default()
+    };
+    Msg::CacheMeasured {
+        id,
+        size,
+        fingerprint,
+    }
+}
+
 fn reveal(path: &Path) {
     use std::process::{Command, Stdio};
     let mut command = if cfg!(target_os = "macos") {

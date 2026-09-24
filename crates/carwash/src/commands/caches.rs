@@ -6,9 +6,11 @@ use crate::context::Context;
 use crate::table::{Align, Cell, Table};
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context as _, Result, bail};
+use carwash_core::cache::Fingerprint;
 use carwash_core::caches::{self, GlobalCache};
 use carwash_core::clean::{CleanItem, CleanOptions, DeleteMode};
 use carwash_core::history::{self, Record};
+use carwash_core::paths::Dirs;
 use carwash_core::{ArtifactId, ArtifactKind, Cancel, fmt};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{BufRead, IsTerminal, Write};
@@ -18,8 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Caches present on this machine, with user overrides from `caches.toml`.
-pub fn present(ctx: &Context) -> Result<Vec<GlobalCache>> {
-    let specs = match ctx.dirs.as_ref().map(|d| d.caches_file()) {
+pub fn present(dirs: Option<&Dirs>) -> Result<Vec<GlobalCache>> {
+    let specs = match dirs.map(Dirs::caches_file) {
         Some(path) if path.exists() => {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("cannot read {}", path.display()))?;
@@ -54,6 +56,7 @@ pub fn measure(ctx: &Context, caches: &mut [GlobalCache], show_progress: bool) {
             scope.spawn(|| {
                 while let Some(slot) = slots.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let mut cache = slot.lock().expect("cache slot");
+                    cache.fingerprint = Fingerprint::of(&cache.path);
                     cache.size = Some(ctx.engine.measure_path(&cache.path, &Cancel::new()));
                     done.fetch_add(1, Ordering::Relaxed);
                 }
@@ -76,7 +79,7 @@ fn remember(ctx: &Context, caches: &[GlobalCache]) {
     ctx.update_size_cache(|sizes| {
         for cache in caches {
             if let Some(size) = cache.size {
-                sizes.insert(cache.path.clone(), size);
+                sizes.insert_with(cache.path.clone(), size, cache.fingerprint);
             }
         }
     });
@@ -97,7 +100,7 @@ fn action(cache: &GlobalCache) -> (String, Style) {
 }
 
 pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
-    let mut caches = present(ctx)?;
+    let mut caches = present(ctx.dirs.as_ref())?;
     match &args.action {
         None => list(ctx, &mut caches, args.json),
         Some(CachesAction::Clean {
@@ -260,6 +263,7 @@ fn clean(
             }
         };
         if ok {
+            cache.fingerprint = Fingerprint::of(&cache.path);
             let after = if cache.path.exists() {
                 ctx.engine.measure_path(&cache.path, &Cancel::new())
             } else {

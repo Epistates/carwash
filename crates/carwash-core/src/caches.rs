@@ -3,6 +3,7 @@
 //! Entries are data (`caches.toml`), resolved against the environment and platform. Each says
 //! whether deleting the directory is safe and which command the tool offers to prune it.
 
+use crate::cache::Fingerprint;
 use crate::model::Size;
 use crate::tasks::Task;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,9 @@ pub struct GlobalCache {
     pub prune: Option<Vec<String>>,
     pub note: Option<String>,
     pub size: Option<Size>,
+    /// Taken at discovery, to tell whether a remembered size is still current.
+    #[serde(skip)]
+    pub fingerprint: Option<Fingerprint>,
 }
 
 impl GlobalCache {
@@ -182,6 +186,7 @@ fn discover_with(
             out.push(GlobalCache {
                 id: spec.id.clone(),
                 name: spec.name.clone(),
+                fingerprint: Fingerprint::of(&path),
                 path,
                 ecosystem: spec.ecosystem.clone(),
                 deletable: spec.delete,
@@ -213,6 +218,7 @@ fn discover_with(
             out.push(GlobalCache {
                 id: format!("{}/{child}", spec.id),
                 name: format!("{}: {child}", spec.name),
+                fingerprint: Fingerprint::of(&child_path),
                 path: child_path,
                 ecosystem: spec.ecosystem.clone(),
                 deletable: spec.delete,

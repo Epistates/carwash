@@ -56,11 +56,59 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Mode::Review(review) => render_review(frame, app, review),
         Mode::Help => render_help(frame, app),
         Mode::Browse => render_tooltip(frame, app),
+        Mode::Folder => render_folder_candidates(frame, app, footer),
         Mode::Search => {}
     }
 }
 
-fn home_relative(path: &std::path::Path) -> String {
+/// Folders matching the prompt, just above it.
+fn render_folder_candidates(frame: &mut Frame, app: &App, footer: Rect) {
+    const SHOWN: usize = 12;
+    let t = &app.theme;
+    let input = app.input.value();
+    let candidates = app.folder.for_input(input);
+    if candidates.is_empty() {
+        return;
+    }
+    let parent_len = input.rfind('/').map_or(0, |i| i + 1);
+    let mut lines: Vec<Line> = candidates
+        .iter()
+        .take(SHOWN)
+        .map(|c| {
+            let name = c.get(parent_len..).unwrap_or(c);
+            Line::from(Span::styled(name.to_owned(), t.text()))
+        })
+        .collect();
+    if candidates.len() > SHOWN {
+        lines.push(Line::from(Span::styled(
+            format!("+{} more, keep typing", candidates.len() - SHOWN),
+            t.muted(),
+        )));
+    }
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
+    let height = lines.len() as u16 + 2;
+    let x = footer.x + " folder ".len() as u16 + parent_len as u16;
+    let popup = Rect::new(
+        x.min(footer.right().saturating_sub(width)),
+        footer.y.saturating_sub(height),
+        width,
+        height,
+    )
+    .intersection(frame.area());
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(t.fg(t.accent))
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        ),
+        popup,
+    );
+}
+
+pub(super) fn home_relative(path: &std::path::Path) -> String {
     if let Some(home) = carwash_core::paths::home()
         && let Ok(rest) = path.strip_prefix(&home)
     {
@@ -714,9 +762,16 @@ fn git_state(state: GitState) -> String {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
     let t = &app.theme;
-    if matches!(app.mode, Mode::Search) {
-        let prompt = "/ ";
-        let width = area.width.saturating_sub(prompt.len() as u16 + 1) as usize;
+    let prompt = match app.mode {
+        Mode::Search => Some(("/ ", "")),
+        Mode::Folder => Some((" folder ", "Tab completes · Enter scans · Esc cancels ")),
+        _ => None,
+    };
+    if let Some((prompt, help)) = prompt {
+        let help_width = (help.width() as u16).min(area.width / 2);
+        let [input_area, help_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(help_width)]).areas(area);
+        let width = input_area.width.saturating_sub(prompt.width() as u16 + 1) as usize;
         let scroll = app.input.visual_scroll(width);
         let line = Line::from(vec![
             Span::styled(prompt, t.bold(t.accent)),
@@ -725,9 +780,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
                 t.text(),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(line), input_area);
+        frame.render_widget(Paragraph::new(Span::styled(help, t.muted())), help_area);
         let cursor = (app.input.visual_cursor().saturating_sub(scroll)) as u16;
-        frame.set_cursor_position((area.x + prompt.len() as u16 + cursor, area.y));
+        frame.set_cursor_position((area.x + prompt.width() as u16 + cursor, area.y));
         return Vec::new();
     }
     if let Some(toast) = &app.toast {
@@ -747,8 +803,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
     // This tab's actions on the left, as many as fit; the keys that work everywhere on the
     // right, labelled as such.
     const GAP: u16 = 2;
-    const GLOBAL_LABEL: &str = "│ any tab  ";
-    let (local, global) = keymap::footer(app.tab);
+    /// Room left for this tab's keys, at the least.
+    const MIN_LOCAL: u16 = 20;
+    let (local, mut global) = keymap::footer(app.tab);
     let width = |b: &Binding| (b.key().width() + 1 + b.hint.unwrap_or_default().width()) as u16;
     let item = |b: &'static Binding, key_style: Style| {
         [
@@ -756,11 +813,22 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
             Span::styled(format!(" {}", b.hint.unwrap_or_default()), t.muted()),
         ]
     };
-    let global_width = GLOBAL_LABEL.width() as u16
-        + global.iter().map(|b| width(b)).sum::<u16>()
-        + GAP * (global.len() as u16).saturating_sub(1)
-        + 1;
-    let show_global = global_width + 20 <= area.width;
+    let group_width = |global: &[&'static Binding], label: &str| {
+        label.width() as u16
+            + global.iter().map(|b| width(b)).sum::<u16>()
+            + GAP * (global.len() as u16).saturating_sub(1)
+            + 1
+    };
+    // When space runs short, help and quit outlast the other global keys, and the label goes.
+    let mut label = "│ any tab  ";
+    if group_width(&global, label) + MIN_LOCAL > area.width {
+        global.retain(|b| matches!(b.action, keymap::Action::Help | keymap::Action::Quit));
+    }
+    if group_width(&global, label) + MIN_LOCAL > area.width {
+        label = "│ ";
+    }
+    let global_width = group_width(&global, label);
+    let show_global = global_width + MIN_LOCAL <= area.width;
     let limit = if show_global {
         area.right().saturating_sub(global_width + GAP)
     } else {
@@ -789,8 +857,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
 
     if show_global {
         let right_area = Rect::new(area.right() - global_width, area.y, global_width, 1);
-        let mut spans = vec![Span::styled(GLOBAL_LABEL, t.muted())];
-        let mut x = right_area.x + GLOBAL_LABEL.width() as u16;
+        let mut spans = vec![Span::styled(label, t.muted())];
+        let mut x = right_area.x + label.width() as u16;
         for (i, b) in global.into_iter().enumerate() {
             if i > 0 {
                 spans.push(Span::raw("  "));
@@ -1305,9 +1373,15 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("Nothing marked yet"), "{screen}");
-        // Moving within the same hotspot does not redraw.
+        // Moving within the same hotspot does not redraw (the event loop clears `dirty`
+        // after drawing).
+        app.dirty = false;
         mouse(&mut app, MouseEventKind::Moved, clean.area);
         assert!(!app.dirty);
+        // ...but it does not cancel a redraw an earlier message of the batch asked for.
+        press(&mut app, KeyCode::Char('j'));
+        mouse(&mut app, MouseEventKind::Moved, clean.area);
+        assert!(app.dirty);
 
         let caches = app
             .hotspots

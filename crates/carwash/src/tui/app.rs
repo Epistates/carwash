@@ -1,13 +1,14 @@
 //! Application state and the update function (Elm architecture: messages in, effects out).
 
 use super::caches::CachesState;
+use super::folder::FolderPrompt;
 use super::keymap::{self, Action, Tab};
 use super::query::{Fuzzy, Query};
 use super::store::{self, EntryStatus, Grouping, RowKey, Rows, SortKey, Store, View};
 use super::tasks::{After, JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use super::updates::UpdatesState;
-use carwash_core::cache::SizeCache;
+use carwash_core::cache::{Fingerprint, SizeCache};
 use carwash_core::caches::GlobalCache;
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
@@ -33,8 +34,16 @@ pub enum Msg {
     Mouse(MouseEvent),
     Resize,
     Tick,
-    ScanStarted(Arc<Counters>),
-    Scan(ScanEvent),
+    /// Scan number `.0` started; its events carry the same number.
+    ScanStarted(u64, Arc<Counters>),
+    Scan(u64, ScanEvent),
+    /// Directories completing `input` in the folder prompt.
+    PathCompletions {
+        input: String,
+        candidates: Vec<String>,
+    },
+    /// The folder prompt's path, resolved and checked, or why it cannot be scanned.
+    RootChanged(Result<PathBuf, String>),
     Clean(CleanEvent),
     CleanFinished(CleanReport),
     Disk {
@@ -56,7 +65,12 @@ pub enum Msg {
     /// Applying updates to the project at the path could not start.
     UpdateFailed(PathBuf, String),
     CachesDiscovered(Vec<GlobalCache>),
-    CacheMeasured(String, Size),
+    CacheMeasured {
+        id: String,
+        size: Size,
+        /// Taken just before measuring.
+        fingerprint: Option<Fingerprint>,
+    },
 }
 
 #[derive(Debug)]
@@ -103,6 +117,12 @@ pub enum Effect {
     },
     /// Measures each `(id, path)` and reports it with [`Msg::CacheMeasured`].
     MeasureCaches(Vec<(String, PathBuf)>),
+    /// Writes the size cache now, rather than only when the UI exits.
+    SaveSizes(SizeCache),
+    /// Lists directories completing the folder prompt's input.
+    CompletePath(String),
+    /// Scans the folder typed in the prompt instead (relative to the current root).
+    ChangeRoot(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +171,8 @@ pub struct Review {
 pub enum Mode {
     Browse,
     Search,
+    /// Typing another folder to scan.
+    Folder,
     Review(Box<Review>),
     Help,
 }
@@ -161,6 +183,8 @@ pub struct ScanStatus {
     pub discovered: bool,
     pub counters: Option<Arc<Counters>>,
     pub elapsed: Option<Duration>,
+    /// Events of other scans are stale.
+    pub generation: u64,
 }
 
 /// Geometry of the last rendered table, for mouse hit-testing.
@@ -233,6 +257,7 @@ pub struct App {
     pub tasks: TasksState,
     pub updates: UpdatesState,
     pub caches: CachesState,
+    pub folder: FolderPrompt,
     /// Quit was pressed once while jobs were running.
     quit_armed: bool,
     pub quit: bool,
@@ -296,6 +321,7 @@ impl App {
             tasks: TasksState::default(),
             updates: UpdatesState::default(),
             caches: CachesState::default(),
+            folder: FolderPrompt::default(),
             quit_armed: false,
             quit: false,
             dirty: true,
@@ -401,7 +427,16 @@ impl App {
         self.rows.rows.get(self.selected)
     }
 
+    /// Handles one message. Handlers clear `dirty` when their message changed nothing; that
+    /// must not cancel a redraw an earlier message of the same batch asked for.
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
+        let pending = self.dirty;
+        let effects = self.handle(msg);
+        self.dirty |= pending;
+        effects
+    }
+
+    fn handle(&mut self, msg: Msg) -> Vec<Effect> {
         self.dirty = true;
         match msg {
             Msg::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
@@ -423,16 +458,29 @@ impl App {
                 }
                 Vec::new()
             }
-            Msg::ScanStarted(counters) => {
+            Msg::ScanStarted(generation, counters) => {
                 self.scan = ScanStatus {
                     running: true,
                     discovered: false,
                     counters: Some(counters),
                     elapsed: None,
+                    generation,
                 };
                 Vec::new()
             }
-            Msg::Scan(event) => self.on_scan(event),
+            Msg::Scan(generation, event) if generation == self.scan.generation => {
+                self.on_scan(event)
+            }
+            // A superseded scan (the folder changed) still draining its events.
+            Msg::Scan(..) => {
+                self.dirty = false;
+                Vec::new()
+            }
+            Msg::PathCompletions { input, candidates } => {
+                self.on_path_completions(input, candidates);
+                Vec::new()
+            }
+            Msg::RootChanged(result) => self.on_root_changed(result),
             Msg::Clean(event) => self.on_clean(event),
             Msg::CleanFinished(report) => self.on_clean_finished(report),
             Msg::Disk { free, total } => {
@@ -453,10 +501,11 @@ impl App {
                 Vec::new()
             }
             Msg::CachesDiscovered(caches) => self.on_caches_discovered(caches),
-            Msg::CacheMeasured(id, size) => {
-                self.on_cache_measured(&id, size);
-                Vec::new()
-            }
+            Msg::CacheMeasured {
+                id,
+                size,
+                fingerprint,
+            } => self.on_cache_measured(&id, size, fingerprint),
             Msg::DepsProgress(progress) => {
                 self.updates.progress = Some(progress);
                 Vec::new()
@@ -534,6 +583,8 @@ impl App {
             ScanEvent::Finished { elapsed } => {
                 self.scan.running = false;
                 self.scan.elapsed = Some(*elapsed);
+                self.store.apply(event, &self.cache);
+                return vec![Effect::SaveSizes(self.cache.clone())];
             }
             _ => {}
         }
@@ -549,6 +600,7 @@ impl App {
                 Vec::new()
             }
             Mode::Search => self.on_search_key(key),
+            Mode::Folder => self.on_folder_key(key),
             Mode::Review(_) => self.on_review_key(key),
             Mode::Browse => match keymap::action_for(self.tab, &key) {
                 Some(action) => self.on_global_action(action),
@@ -576,6 +628,7 @@ impl App {
                 self.toast(format!("Theme: {}", self.theme.name), Level::Info);
             }
             Action::Help => self.mode = Mode::Help,
+            Action::ChangeRoot => return self.open_folder_prompt(),
             Action::ShowUpdates => {
                 self.tab = Tab::Updates;
                 return self.updates_effects();
@@ -662,7 +715,7 @@ impl App {
         }
     }
 
-    fn set_query(&mut self, raw: String) {
+    pub(super) fn set_query(&mut self, raw: String) {
         self.query = Query::parse(&raw, &self.registry);
         self.selected = 0;
         self.selected_key = None;
@@ -1247,7 +1300,7 @@ pub(crate) mod tests {
                 GitState::Tracked(4),
             )),
         ] {
-            app.update(Msg::Scan(event));
+            app.update(Msg::Scan(0, event));
         }
         app.ensure_rows();
         app
@@ -1370,14 +1423,17 @@ pub(crate) mod tests {
         press(&mut app, KeyCode::Char('j'));
         assert_eq!(app.selected_row().unwrap().label, "b");
         // A size change that reorders rows keeps the cursor on "b".
-        app.update(Msg::Scan(ScanEvent::Measured {
-            id: ArtifactId(2),
-            size: Size {
-                reclaimable: 10_000,
-                on_disk: 10_000,
-                ..Size::default()
+        app.update(Msg::Scan(
+            0,
+            ScanEvent::Measured {
+                id: ArtifactId(2),
+                size: Size {
+                    reclaimable: 10_000,
+                    on_disk: 10_000,
+                    ..Size::default()
+                },
             },
-        }));
+        ));
         app.ensure_rows();
         assert_eq!(app.selected_row().unwrap().label, "b");
         assert_eq!(app.selected, 0);
