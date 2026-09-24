@@ -1,7 +1,7 @@
 //! Rendering. Pure functions of [`App`], except for recording table geometry for the mouse.
 
-use super::app::{App, Level, Mode, Review, ReviewPhase};
-use super::keymap::{self, Section, Tab};
+use super::app::{App, Hotspot, Level, Mode, Review, ReviewPhase, Target};
+use super::keymap::{self, Binding, Section, Tab};
 use super::store::{EntryStatus, Row, RowKey};
 use carwash_core::clean::DeleteMode;
 use carwash_core::select::Hold;
@@ -14,6 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row as TableRow, Table, TableState,
     Wrap,
 };
+use unicode_width::UnicodeWidthStr;
 
 const DETAILS_WIDTH: u16 = 46;
 const MIN_WIDTH_FOR_DETAILS: u16 = 112;
@@ -31,6 +32,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_header(frame, app, header);
     render_toolbar(frame, app, toolbar);
+    let mut hotspots = tab_hotspots(app, toolbar);
     let details = app.show_details && body.width >= MIN_WIDTH_FOR_DETAILS;
     if app.tab == Tab::Tasks {
         super::tasks::render(frame, app, body);
@@ -47,12 +49,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         render_table(frame, app, body);
     }
-    render_footer(frame, app, footer);
+    hotspots.extend(render_footer(frame, app, footer));
+    app.hotspots = hotspots;
 
     match &app.mode {
         Mode::Review(review) => render_review(frame, app, review),
         Mode::Help => render_help(frame, app),
-        _ => {}
+        Mode::Browse => render_tooltip(frame, app),
+        Mode::Search => {}
     }
 }
 
@@ -120,18 +124,40 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     split_line(frame, area, left, Line::from(right));
 }
 
-fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
+/// The tab titles, each followed by a space, after a leading space.
+fn tab_spans(app: &App) -> Vec<Span<'static>> {
     let t = &app.theme;
-    let mut left = vec![Span::raw(" ")];
+    let mut spans = vec![Span::raw(" ")];
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let style = if *tab == app.tab {
             t.bold(t.accent).add_modifier(Modifier::REVERSED)
         } else {
             t.muted()
         };
-        left.push(Span::styled(format!(" {} {} ", i + 1, tab.title()), style));
-        left.push(Span::raw(" "));
+        spans.push(Span::styled(format!(" {} {} ", i + 1, tab.title()), style));
+        spans.push(Span::raw(" "));
     }
+    spans
+}
+
+fn tab_hotspots(app: &App, area: Rect) -> Vec<Hotspot> {
+    let spans = tab_spans(app);
+    let mut x = area.x + spans[0].width() as u16;
+    let mut out = Vec::new();
+    for (tab, pair) in Tab::ALL.iter().zip(spans[1..].chunks(2)) {
+        let width = pair[0].width() as u16;
+        out.push(Hotspot {
+            area: Rect::new(x, area.y, width, 1).intersection(area),
+            target: Target::Tab(*tab),
+        });
+        x += width + pair.get(1).map_or(0, |s| s.width() as u16);
+    }
+    out
+}
+
+fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let mut left = tab_spans(app);
     if app.tab == Tab::Tasks {
         let running = app.tasks.running();
         let mut right = vec![Span::styled(
@@ -205,13 +231,7 @@ fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
         .filter_map(|e| e.size())
         .map(|s| s.reclaimable)
         .sum();
-    let marked_bytes: u64 = app
-        .marked
-        .iter()
-        .filter_map(|id| app.store.entry(*id))
-        .filter_map(|e| e.size())
-        .map(|s| s.reclaimable)
-        .sum();
+    let marked_bytes = app.marked_bytes();
     let mut right = vec![
         Span::styled(fmt::bytes(ready_bytes), t.fg(t.success)),
         Span::styled(" ready", t.muted()),
@@ -692,7 +712,7 @@ fn git_state(state: GitState) -> String {
     }
 }
 
-fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) -> Vec<Hotspot> {
     let t = &app.theme;
     if matches!(app.mode, Mode::Search) {
         let prompt = "/ ";
@@ -708,7 +728,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(line), area);
         let cursor = (app.input.visual_cursor().saturating_sub(scroll)) as u16;
         frame.set_cursor_position((area.x + prompt.len() as u16 + cursor, area.y));
-        return;
+        return Vec::new();
     }
     if let Some(toast) = &app.toast {
         let color = match toast.level {
@@ -722,61 +742,133 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ))),
             area,
         );
-        return;
+        return Vec::new();
     }
-    let hints: &[(&str, &str)] = match app.tab {
-        Tab::Reclaim => &[
-            ("space", "mark"),
-            ("a", "mark ready"),
-            ("d", "clean"),
-            ("/", "filter"),
-            ("tab", "group"),
-            ("s", "sort"),
-            ("2", "tasks"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Tab::Tasks => &[
-            ("enter", "run"),
-            ("space", "mark project"),
-            ("tab", "pane"),
-            ("x", "stop"),
-            ("[ ]", "jobs"),
-            ("/", "filter"),
-            ("1", "reclaim"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Tab::Updates => &[
-            ("enter", "check"),
-            ("C", "check all"),
-            ("space", "mark"),
-            ("u", "update"),
-            ("U", "upgrade"),
-            ("tab", "pane"),
-            ("/", "filter"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
-        Tab::Caches => &[
-            ("space", "mark"),
-            ("d", "clean"),
-            ("r", "measure"),
-            ("o", "reveal"),
-            ("1", "reclaim"),
-            ("?", "help"),
-            ("q", "quit"),
-        ],
+    // This tab's actions on the left, as many as fit; the keys that work everywhere on the
+    // right, labelled as such.
+    const GAP: u16 = 2;
+    const GLOBAL_LABEL: &str = "│ any tab  ";
+    let (local, global) = keymap::footer(app.tab);
+    let width = |b: &Binding| (b.key().width() + 1 + b.hint.unwrap_or_default().width()) as u16;
+    let item = |b: &'static Binding, key_style: Style| {
+        [
+            Span::styled(b.key(), key_style),
+            Span::styled(format!(" {}", b.hint.unwrap_or_default()), t.muted()),
+        ]
     };
+    let global_width = GLOBAL_LABEL.width() as u16
+        + global.iter().map(|b| width(b)).sum::<u16>()
+        + GAP * (global.len() as u16).saturating_sub(1)
+        + 1;
+    let show_global = global_width + 20 <= area.width;
+    let limit = if show_global {
+        area.right().saturating_sub(global_width + GAP)
+    } else {
+        area.right()
+    };
+
+    let mut hotspots = Vec::new();
     let mut spans = vec![Span::raw(" ")];
-    for (i, (key, label)) in hints.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled("  ", t.muted()));
+    let mut x = area.x + 1;
+    for b in local {
+        let start = if hotspots.is_empty() { x } else { x + GAP };
+        if start + width(b) > limit {
+            break;
         }
-        spans.push(Span::styled(*key, t.bold(t.accent)));
-        spans.push(Span::styled(format!(" {label}"), t.muted()));
+        if !hotspots.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.extend(item(b, t.bold(t.accent)));
+        hotspots.push(Hotspot {
+            area: Rect::new(start, area.y, width(b), 1),
+            target: Target::Binding(b),
+        });
+        x = start + width(b);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    if show_global {
+        let right_area = Rect::new(area.right() - global_width, area.y, global_width, 1);
+        let mut spans = vec![Span::styled(GLOBAL_LABEL, t.muted())];
+        let mut x = right_area.x + GLOBAL_LABEL.width() as u16;
+        for (i, b) in global.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+                x += GAP;
+            }
+            spans.extend(item(b, t.bold(t.subtle)));
+            hotspots.push(Hotspot {
+                area: Rect::new(x, area.y, width(b), 1),
+                target: Target::Binding(b),
+            });
+            x += width(b);
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), right_area);
+    }
+    hotspots
+}
+
+/// Explains the hovered tab or footer key, above the footer or below the tab bar.
+fn render_tooltip(frame: &mut Frame, app: &App) {
+    let t = &app.theme;
+    let Some(hover) = app.hover else {
+        return;
+    };
+    // The hotspot may have moved or gone since the mouse last moved.
+    let Some(spot) = app.hotspots.iter().find(|h| h.area == hover.area) else {
+        return;
+    };
+    let (title, mut lines) = match spot.target {
+        Target::Tab(tab) => {
+            let key = Tab::ALL.iter().position(|t| *t == tab).unwrap_or(0) + 1;
+            (
+                format!("{} · press {key}", tab.title()),
+                vec![Line::from(Span::styled(tab.about(), t.text()))],
+            )
+        }
+        Target::Binding(binding) => {
+            let mut lines = vec![Line::from(Span::styled(binding.description, t.text()))];
+            if let Some(context) = app.action_context(binding.action) {
+                lines.push(Line::from(Span::styled(context, t.fg(t.accent2))));
+            }
+            if binding.is_global() {
+                lines.push(Line::from(Span::styled("Works in any tab.", t.muted())));
+            }
+            (binding.label.to_owned(), lines)
+        }
+    };
+    lines.push(Line::from(Span::styled(
+        "click to run · ? for all keys",
+        t.muted(),
+    )));
+    let area = frame.area();
+    let inner = lines
+        .iter()
+        .map(Line::width)
+        .max()
+        .unwrap_or(0)
+        .max(title.width() + 2) as u16;
+    let width = (inner + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let y = if spot.area.y > area.height / 2 {
+        spot.area.y.saturating_sub(height)
+    } else {
+        spot.area.bottom()
+    };
+    let x = spot.area.x.min(area.right().saturating_sub(width));
+    let popup = Rect::new(x, y, width, height).intersection(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(t.fg(t.accent))
+                .padding(ratatui::widgets::Padding::horizontal(1))
+                .title(Span::styled(format!(" {title} "), t.bold(t.accent))),
+        ),
+        popup,
+    );
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -994,22 +1086,34 @@ fn recent_days(app: &App) -> u64 {
 fn render_help(frame: &mut Frame, app: &App) {
     let t = &app.theme;
     let area = frame.area();
-    let popup = centered(area, 84, 40);
-    frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(t.fg(t.accent))
-        .title(Span::styled(" Help ", t.bold(t.accent)));
-    let mut lines: Vec<Line> = Vec::new();
+        .title(Span::styled(
+            format!(" Help · {} ", app.tab.title()),
+            t.bold(t.accent),
+        ));
+    let header = vec![
+        Line::from(Span::styled(app.tab.about(), t.text())),
+        Line::default(),
+    ];
+    let closing = Line::from(Span::styled(
+        "Any key closes · hover a key in the footer for details, click it to run",
+        t.muted(),
+    ));
+
+    // This tab's keys, then the keys that work everywhere (and the legend).
     let mut sections: Vec<Section> = Vec::new();
     for binding in keymap::help(app.tab) {
         if !sections.contains(&binding.section) {
             sections.push(binding.section);
         }
     }
+    let mut local: Vec<Vec<Line>> = Vec::new();
+    let mut global: Vec<Line> = Vec::new();
     for section in sections {
-        lines.push(Line::from(Span::styled(section.title(), t.bold(t.accent2))));
+        let mut lines = vec![Line::from(Span::styled(section.title(), t.bold(t.accent2)))];
         for binding in keymap::help(app.tab).filter(|b| b.section == section) {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {:<10}", binding.label), t.bold(t.text)),
@@ -1017,47 +1121,100 @@ fn render_help(frame: &mut Frame, app: &App) {
             ]));
         }
         lines.push(Line::default());
+        if section == Section::General {
+            global.extend(lines);
+        } else {
+            local.push(lines);
+        }
     }
-    if app.tab != Tab::Reclaim {
-        lines.push(Line::from(Span::styled(
-            "Press any key to close",
-            t.muted(),
-        )));
+    if app.tab == Tab::Reclaim {
+        let g = &app.glyphs;
+        global.extend([
+            Line::from(Span::styled("Legend", t.bold(t.accent2))),
+            Line::from(vec![
+                Span::styled(format!("  {} ", g.marked), t.fg(t.accent2)),
+                Span::styled("marked  ", t.subtle()),
+                Span::styled(format!("{} ", g.partial), t.fg(t.accent2)),
+                Span::styled("partly  ", t.subtle()),
+                Span::styled(format!("{} ", g.unmarked), t.muted()),
+                Span::styled("unmarked", t.subtle()),
+            ]),
+            Line::from(vec![
+                Span::styled(format!("  {} ", g.locked), t.fg(t.error)),
+                Span::styled("protected: git tracks files inside", t.subtle()),
+            ]),
+            Line::from(vec![
+                Span::styled("  ready", t.fg(t.success)),
+                Span::styled(" safe to clean   ", t.subtle()),
+                Span::styled("recent", t.fg(t.info)),
+                Span::styled(" used lately", t.subtle()),
+            ]),
+            Line::from(vec![
+                Span::styled("  review", t.fg(t.warning)),
+                Span::styled(" generic name, not confirmed by git", t.subtle()),
+            ]),
+            Line::from(Span::styled("  ~ size from cache, refreshing", t.subtle())),
+            Line::from(Span::styled(
+                "  FREED counts only bytes deletion frees",
+                t.subtle(),
+            )),
+            Line::default(),
+        ]);
+    }
+
+    let width_of = |lines: &[Line]| lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let chrome = 4; // borders and padding
+    let local_height: usize = local.iter().map(Vec::len).sum();
+    let single_height = (header.len() + local_height + global.len() + 1) as u16 + 2;
+    let block = block.padding(ratatui::widgets::Padding::horizontal(1));
+    if single_height <= area.height {
+        let mut lines = header;
+        lines.extend(local.into_iter().flatten());
+        lines.extend(global);
+        lines.push(closing);
+        let popup = centered(area, width_of(&lines) + chrome, single_height);
+        frame.render_widget(Clear, popup);
         frame.render_widget(Paragraph::new(lines).block(block), popup);
         return;
     }
-    let g = &app.glyphs;
-    lines.push(Line::from(Span::styled("Legend", t.bold(t.accent2))));
-    lines.push(Line::from(vec![
-        Span::styled(format!("  {} ", g.marked), t.fg(t.accent2)),
-        Span::styled("marked  ", t.subtle()),
-        Span::styled(format!("{} ", g.partial), t.fg(t.accent2)),
-        Span::styled("partly  ", t.subtle()),
-        Span::styled(format!("{} ", g.unmarked), t.muted()),
-        Span::styled("unmarked  ", t.subtle()),
-        Span::styled(format!("{} ", g.locked), t.fg(t.error)),
-        Span::styled("protected", t.subtle()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  ready", t.fg(t.success)),
-        Span::styled(" safe to clean  ", t.subtle()),
-        Span::styled("recent", t.fg(t.info)),
-        Span::styled(" used lately  ", t.subtle()),
-        Span::styled("review", t.fg(t.warning)),
-        Span::styled(" generic name  ", t.subtle()),
-        Span::styled("protected", t.fg(t.error)),
-        Span::styled(" git-tracked", t.subtle()),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "  ~ size from cache, refreshing   FREED counts only bytes deletion frees",
-        t.subtle(),
-    )));
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "Press any key to close",
-        t.muted(),
-    )));
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    // Too tall for the terminal: this tab's keys beside the global ones. Trailing tab
+    // sections move to the right column while that makes the popup shorter.
+    let mut right_sections: Vec<Vec<Line>> = Vec::new();
+    let (mut left_height, mut right_height) = (local_height, global.len());
+    while local.len() > 1 {
+        let moved = local.last().map_or(0, Vec::len);
+        if left_height.max(right_height) <= (left_height - moved).max(right_height + moved) {
+            break;
+        }
+        right_sections.insert(0, local.pop().unwrap_or_default());
+        (left_height, right_height) = (left_height - moved, right_height + moved);
+    }
+    let local: Vec<Line> = local.into_iter().flatten().collect();
+    let global: Vec<Line> = right_sections.into_iter().flatten().chain(global).collect();
+    const GUTTER: u16 = 3;
+    let (left_width, right_width) = (width_of(&local), width_of(&global));
+    let body = local.len().max(global.len()) as u16;
+    let width = (left_width + GUTTER + right_width).max(width_of(&header)) + chrome;
+    let popup = centered(area, width, header.len() as u16 + body + 1 + 2);
+    frame.render_widget(Clear, popup);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [top, columns, bottom] = Layout::vertical([
+        Constraint::Length(header.len() as u16),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let [left, _, right] = Layout::horizontal([
+        Constraint::Length(left_width),
+        Constraint::Length(GUTTER),
+        Constraint::Fill(1),
+    ])
+    .areas(columns);
+    frame.render_widget(Paragraph::new(header).wrap(Wrap { trim: true }), top);
+    frame.render_widget(Paragraph::new(local), left);
+    frame.render_widget(Paragraph::new(global), right);
+    frame.render_widget(Paragraph::new(closing), bottom);
 }
 
 #[cfg(test)]
@@ -1101,6 +1258,80 @@ mod tests {
                 draw(&mut app, w, h);
             }
         }
+    }
+
+    fn mouse(app: &mut App, kind: ratatui::crossterm::event::MouseEventKind, area: Rect) {
+        app.update(crate::tui::app::Msg::Mouse(
+            ratatui::crossterm::event::MouseEvent {
+                kind,
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        ));
+    }
+
+    #[test]
+    fn footer_separates_tab_keys_from_global_ones() {
+        let mut app = app();
+        let screen = draw(&mut app, 140, 20);
+        let footer = screen.lines().last().unwrap();
+        let global = footer.find("any tab").expect(footer);
+        assert!(footer.find("d clean").unwrap() < global, "{footer}");
+        assert!(footer.find("? help").unwrap() > global, "{footer}");
+        assert!(footer.find("q quit").unwrap() > global, "{footer}");
+        // Narrow terminals keep the global keys and drop tab keys from the end.
+        let screen = draw(&mut app, 60, 20);
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("q quit"), "{footer}");
+    }
+
+    #[test]
+    fn hovering_explains_and_clicking_runs() {
+        use crate::tui::keymap::Action;
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        draw(&mut app, 140, 20);
+        let clean = app
+            .hotspots
+            .iter()
+            .find(|h| matches!(h.target, Target::Binding(b) if b.action == Action::Clean))
+            .copied()
+            .unwrap();
+        mouse(&mut app, MouseEventKind::Moved, clean.area);
+        let screen = draw(&mut app, 140, 20);
+        assert!(
+            screen.contains("review and clean marked artifacts"),
+            "{screen}"
+        );
+        assert!(screen.contains("Nothing marked yet"), "{screen}");
+        // Moving within the same hotspot does not redraw.
+        mouse(&mut app, MouseEventKind::Moved, clean.area);
+        assert!(!app.dirty);
+
+        let caches = app
+            .hotspots
+            .iter()
+            .find(|h| matches!(h.target, Target::Tab(Tab::Caches)))
+            .copied()
+            .unwrap();
+        mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            caches.area,
+        );
+        assert_eq!(app.tab, Tab::Caches);
+        assert!(app.hover.is_none());
+    }
+
+    #[test]
+    fn help_fits_short_terminals_in_two_columns() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('?'));
+        let screen = draw(&mut app, 160, 30);
+        assert!(screen.contains("Help · Reclaim"), "{screen}");
+        assert!(screen.contains("Any tab"), "{screen}");
+        assert!(screen.contains("Any key closes"), "{screen}");
     }
 
     #[test]

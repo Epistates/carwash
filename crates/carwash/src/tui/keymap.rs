@@ -66,6 +66,24 @@ impl Tab {
         }
     }
 
+    /// One sentence on what the tab is for (help screen, tab tooltip).
+    pub fn about(self) -> &'static str {
+        match self {
+            Tab::Reclaim => {
+                "Build outputs, dependency installs and caches inside the projects under this directory."
+            }
+            Tab::Tasks => {
+                "Scripts and targets from package.json, justfiles, Makefiles and more, run in real terminals."
+            }
+            Tab::Updates => {
+                "Outdated and vulnerable dependencies for Rust, JavaScript, Python and Go."
+            }
+            Tab::Caches => {
+                "Per-user caches outside your projects. Sizes are remembered for a day; r measures again."
+            }
+        }
+    }
+
     fn bindings(self) -> &'static [Binding] {
         match self {
             Tab::Reclaim => RECLAIM,
@@ -95,18 +113,36 @@ impl Section {
             Self::View => "View",
             Self::Jobs => "Tasks & jobs",
             Self::Updates => "Dependencies",
-            Self::General => "General",
+            Self::General => "Any tab",
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Binding {
     pub keys: &'static [(KeyCode, KeyModifiers)],
     pub label: &'static str,
     pub action: Action,
     pub section: Section,
     pub description: &'static str,
+    /// Short label when the binding is offered in the footer.
+    pub hint: Option<&'static str>,
+}
+
+impl Binding {
+    const fn hint(mut self, hint: &'static str) -> Self {
+        self.hint = Some(hint);
+        self
+    }
+
+    /// The first key of the label, for the footer.
+    pub fn key(&self) -> &'static str {
+        self.label.split(' ').next().unwrap_or(self.label)
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.section == Section::General
+    }
 }
 
 const NONE: KeyModifiers = KeyModifiers::NONE;
@@ -125,6 +161,7 @@ const fn bind(
         action,
         section,
         description,
+        hint: None,
     }
 }
 
@@ -206,21 +243,24 @@ pub const GLOBAL: &[Binding] = &[
         A::Theme,
         S::General,
         "next theme",
-    ),
+    )
+    .hint("theme"),
     bind(
         &[(Char('?'), NONE), (KeyCode::F(1), NONE)],
         "?",
         A::Help,
         S::General,
         "help",
-    ),
+    )
+    .hint("help"),
     bind(
         &[(Char('q'), NONE), (Char('c'), CTRL)],
         "q ^c",
         A::Quit,
         S::General,
         "quit",
-    ),
+    )
+    .hint("quit"),
 ];
 
 pub const RECLAIM: &[Binding] = &[
@@ -271,14 +311,16 @@ pub const RECLAIM: &[Binding] = &[
         A::Mark,
         S::Select,
         "mark / unmark (directories mark their ready artifacts)",
-    ),
+    )
+    .hint("mark"),
     bind(
         &[(Char('a'), NONE)],
         "a",
         A::MarkAll,
         S::Select,
         "mark every ready artifact shown",
-    ),
+    )
+    .hint("mark ready"),
     bind(
         &[(Char('A'), NONE)],
         "A",
@@ -296,35 +338,40 @@ pub const RECLAIM: &[Binding] = &[
         A::Clean,
         S::Select,
         "review and clean marked artifacts",
-    ),
+    )
+    .hint("clean"),
     bind(
         &[(Char('/'), NONE)],
         "/",
         A::Search,
         S::View,
         "filter: text, eco:rust kind:deps size>1g age>30d is:ready",
-    ),
+    )
+    .hint("filter"),
     bind(
         &[(Char('s'), NONE)],
         "s",
         A::Sort,
         S::View,
         "sort by size, age, name",
-    ),
+    )
+    .hint("sort"),
     bind(
         &[(TabKey, NONE)],
         "Tab",
         A::Group,
         S::View,
         "group as tree, projects, artifacts",
-    ),
+    )
+    .hint("group"),
     bind(
         &[(Char('i'), NONE)],
         "i",
         A::Details,
         S::View,
         "toggle details panel",
-    ),
+    )
+    .hint("details"),
     bind(&[(Char('r'), NONE)], "r", A::Rescan, S::View, "rescan"),
     bind(
         &[(Char('o'), NONE)],
@@ -348,7 +395,8 @@ pub const TASKS: &[Binding] = &[
         A::NextPane,
         S::Navigate,
         "next pane",
-    ),
+    )
+    .hint("pane"),
     bind(
         &[
             (KeyCode::BackTab, KeyModifiers::SHIFT),
@@ -367,14 +415,16 @@ pub const TASKS: &[Binding] = &[
         A::Search,
         S::Navigate,
         "filter projects",
-    ),
+    )
+    .hint("filter"),
     bind(
         &[(Char(' '), NONE)],
         "Space",
         A::Mark,
         S::Jobs,
         "mark project (run a task in all marked)",
-    ),
+    )
+    .hint("mark"),
     bind(
         &[(Char('A'), NONE)],
         "A",
@@ -388,15 +438,17 @@ pub const TASKS: &[Binding] = &[
         A::Run,
         S::Jobs,
         "run the selected task",
-    ),
+    )
+    .hint("run"),
     bind(
         &[(Char('x'), NONE)],
         "x",
         A::KillJob,
         S::Jobs,
         "stop the shown job",
-    ),
-    bind(&[(Char(']'), NONE)], "]", A::NextJob, S::Jobs, "next job"),
+    )
+    .hint("stop"),
+    bind(&[(Char(']'), NONE)], "]", A::NextJob, S::Jobs, "next job").hint("next job"),
     bind(
         &[(Char('['), NONE)],
         "[",
@@ -441,21 +493,24 @@ pub const UPDATES: &[Binding] = &[
         A::NextPane,
         S::Navigate,
         "switch pane",
-    ),
+    )
+    .hint("pane"),
     bind(
         &[(Char('/'), NONE)],
         "/",
         A::Search,
         S::Navigate,
         "filter projects",
-    ),
+    )
+    .hint("filter"),
     bind(
         &[(Enter, NONE)],
         "Enter",
         A::Run,
         S::Updates,
         "check the project (or marked projects)",
-    ),
+    )
+    .hint("check"),
     bind(
         &[(Char('c'), NONE)],
         "c",
@@ -469,14 +524,16 @@ pub const UPDATES: &[Binding] = &[
         A::CheckAll,
         S::Updates,
         "check every project listed",
-    ),
+    )
+    .hint("check all"),
     bind(
         &[(Char(' '), NONE)],
         "Space",
         A::Mark,
         S::Updates,
         "mark project / outdated dependency",
-    ),
+    )
+    .hint("mark"),
     bind(
         &[(Char('a'), NONE)],
         "a",
@@ -497,14 +554,16 @@ pub const UPDATES: &[Binding] = &[
         A::Update,
         S::Updates,
         "update marked within their requirements",
-    ),
+    )
+    .hint("update"),
     bind(
         &[(Char('U'), NONE)],
         "U",
         A::Upgrade,
         S::Updates,
         "upgrade marked to latest (edits manifests; press twice)",
-    ),
+    )
+    .hint("upgrade"),
     bind(
         &[(Char('o'), NONE)],
         "o",
@@ -527,7 +586,8 @@ pub const CACHES: &[Binding] = &[
         A::Mark,
         S::Select,
         "mark / unmark a cache",
-    ),
+    )
+    .hint("mark"),
     bind(
         &[(Char('A'), NONE)],
         "A",
@@ -545,26 +605,37 @@ pub const CACHES: &[Binding] = &[
         A::Clean,
         S::Select,
         "clean marked (or selected) caches; press twice",
-    ),
+    )
+    .hint("clean"),
     bind(
         &[(Char('r'), NONE)],
         "r",
         A::Rescan,
         S::View,
-        "measure again",
-    ),
+        "measure every cache again",
+    )
+    .hint("measure"),
     bind(
         &[(Char('o'), NONE)],
         "o",
         A::Open,
         S::View,
         "reveal in file manager",
-    ),
+    )
+    .hint("reveal"),
 ];
 
 /// Bindings shown in the help screen for `tab`, in display order.
 pub fn help(tab: Tab) -> impl Iterator<Item = &'static Binding> {
     tab.bindings().iter().chain(GLOBAL)
+}
+
+/// The footer: `tab`'s hinted bindings, actions before navigation, then the global ones.
+pub fn footer(tab: Tab) -> (Vec<&'static Binding>, Vec<&'static Binding>) {
+    let mut local: Vec<&Binding> = tab.bindings().iter().filter(|b| b.hint.is_some()).collect();
+    local.sort_by_key(|b| b.section == Section::Navigate);
+    let global = GLOBAL.iter().filter(|b| b.hint.is_some()).collect();
+    (local, global)
 }
 
 fn normalize(code: KeyCode, modifiers: KeyModifiers) -> (KeyCode, KeyModifiers) {
@@ -613,6 +684,20 @@ mod tests {
             Some(A::ShowTasks)
         );
         assert_eq!(action_for(r, &key(Char('z'), NONE)), None);
+    }
+
+    #[test]
+    fn every_tab_has_a_footer_and_global_keys_are_marked_global() {
+        for tab in Tab::ALL {
+            let (local, global) = footer(tab);
+            assert!(!local.is_empty(), "{tab:?} has no footer hints");
+            assert!(local.iter().all(|b| !b.is_global()));
+            assert!(global.iter().all(|b| b.is_global()));
+            assert!(global.iter().any(|b| b.action == A::Help));
+            assert!(global.iter().any(|b| b.action == A::Quit));
+        }
+        let (tasks, _) = footer(Tab::Tasks);
+        assert_eq!(tasks[0].action, A::Mark, "actions come before navigation");
     }
 
     #[test]

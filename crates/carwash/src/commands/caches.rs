@@ -68,6 +68,18 @@ pub fn measure(ctx: &Context, caches: &mut [GlobalCache], show_progress: bool) {
         }
     });
     bar.finish_and_clear();
+    remember(ctx, caches);
+}
+
+/// Stores measured sizes in the size cache, where the TUI's Caches tab finds them.
+fn remember(ctx: &Context, caches: &[GlobalCache]) {
+    ctx.update_size_cache(|sizes| {
+        for cache in caches {
+            if let Some(size) = cache.size {
+                sizes.insert(cache.path.clone(), size);
+            }
+        }
+    });
 }
 
 fn action(cache: &GlobalCache) -> (String, Style) {
@@ -213,7 +225,8 @@ fn clean(
 
     let mut failures = 0;
     let mut records = Vec::new();
-    for (cache, task) in plan {
+    let mut cleaned = Vec::new();
+    for (mut cache, task) in plan {
         let before = cache.size.map_or(0, |s| s.on_disk);
         let ok = match task {
             Some(task) => {
@@ -248,11 +261,11 @@ fn clean(
         };
         if ok {
             let after = if cache.path.exists() {
-                ctx.engine.measure_path(&cache.path, &Cancel::new()).on_disk
+                ctx.engine.measure_path(&cache.path, &Cancel::new())
             } else {
-                0
+                carwash_core::Size::default()
             };
-            let freed = before.saturating_sub(after);
+            let freed = before.saturating_sub(after.on_disk);
             anstream::println!("  freed {} from {}", fmt::bytes(freed), cache.name);
             records.push(Record::now(
                 cache.path.clone(),
@@ -261,11 +274,14 @@ fn clean(
                 cache.ecosystem.clone(),
                 DeleteMode::Permanent,
             ));
+            cache.size = Some(after);
+            cleaned.push(cache);
         } else {
             failures += 1;
             anstream::eprintln!("  failed to clean {}", cache.name);
         }
     }
+    remember(ctx, &cleaned);
     if let Some(dirs) = &ctx.dirs
         && let Err(error) = history::append(&dirs.history_file(), &records)
     {

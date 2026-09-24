@@ -79,10 +79,13 @@ Run `carwash [PATH]`. Four tabs, switched with `1` to `4`:
    updates within your requirements, `U` upgrades to latest (and edits manifests). Projects are
    re-checked after the update finishes.
 4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
-   when it is installed, or deletes the directory when that is safe.
+   when it is installed, or deletes the directory when that is safe. Sizes are remembered for a
+   day, so the tab opens instantly; `r` measures again.
 
-`?` lists every key for the current tab. `t` cycles themes. The wheel scrolls every tab; in
-Reclaim, clicking selects a row and clicking it again expands it.
+The footer shows the current tab's keys on the left and the keys that work in any tab on the
+right. Hover over a key for what it does (for `d`, exactly what it will delete or run), click it
+to run it, or click a tab to switch. `?` lists every key. `t` cycles themes. The wheel scrolls
+every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 
 ## The CLI
 

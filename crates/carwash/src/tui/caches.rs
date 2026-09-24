@@ -3,13 +3,19 @@
 use super::app::{App, Effect, Level};
 use super::keymap::Action;
 use super::widgets::{pane, spinner};
+use carwash_core::cache::SizeCache;
 use carwash_core::caches::GlobalCache;
 use carwash_core::{Size, fmt};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Remembered sizes younger than this are shown without measuring again.
+const SIZES_FRESH_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Default)]
 pub struct CachesState {
@@ -19,44 +25,76 @@ pub struct CachesState {
     pub marked: HashSet<String>,
     /// Being cleaned or measured.
     pub busy: HashSet<String>,
+    /// When each cache's size was measured, in this session or an earlier one.
+    measured_at: HashMap<String, SystemTime>,
     clean_armed: bool,
     requested: bool,
+    /// The tab has been shown; stale sizes are measured from then on.
+    opened: bool,
+    /// The next discovery measures every cache, fresh or not.
+    remeasure_all: bool,
+    /// The user has moved the cursor.
+    moved: bool,
 }
 
 impl CachesState {
-    pub fn set(&mut self, mut caches: Vec<GlobalCache>) {
-        if let Some(previous) = &self.caches {
-            for cache in &mut caches {
-                cache.size = previous
-                    .iter()
-                    .find(|p| p.id == cache.id)
-                    .and_then(|p| p.size);
+    /// Installs discovered caches with their remembered sizes.
+    fn set(&mut self, mut caches: Vec<GlobalCache>, sizes: &SizeCache) {
+        for cache in &mut caches {
+            if let Some(cached) = sizes.get(&cache.path) {
+                cache.size = Some(cached.size);
+                self.measured_at.insert(
+                    cache.id.clone(),
+                    UNIX_EPOCH + Duration::from_secs(cached.measured_at),
+                );
             }
         }
-        self.busy.extend(caches.iter().map(|c| c.id.clone()));
         self.caches = Some(caches);
         self.sort();
     }
 
-    pub fn measured(&mut self, id: &str, size: Size) {
+    /// Records a measurement; returns the cache's path.
+    fn measured(&mut self, id: &str, size: Size, now: SystemTime) -> Option<PathBuf> {
         self.busy.remove(id);
-        if let Some(cache) = self
+        let cache = self
             .caches
             .as_mut()
-            .and_then(|c| c.iter_mut().find(|c| c.id == id))
-        {
-            cache.size = Some(size);
-        }
+            .and_then(|c| c.iter_mut().find(|c| c.id == id))?;
+        cache.size = Some(size);
+        let path = cache.path.clone();
+        self.measured_at.insert(id.to_owned(), now);
         self.sort();
+        Some(path)
     }
 
-    /// Largest first; the cursor stays on the same cache.
+    pub fn measured_age(&self, id: &str, now: SystemTime) -> Option<Duration> {
+        self.measured_at
+            .get(id)
+            .map(|at| now.duration_since(*at).unwrap_or_default())
+    }
+
+    /// Age of the oldest size shown, when it is not from this session's measuring.
+    pub fn oldest_age(&self, now: SystemTime) -> Option<Duration> {
+        self.caches
+            .iter()
+            .flatten()
+            .filter(|c| !self.busy.contains(&c.id))
+            .filter_map(|c| self.measured_age(&c.id, now))
+            .max()
+            .filter(|age| *age >= Duration::from_secs(60))
+    }
+
+    /// Largest first. Once the user has moved, the cursor stays on the same cache; until
+    /// then it stays on the first row.
     fn sort(&mut self) {
         let Some(caches) = &mut self.caches else {
             return;
         };
         let current = caches.get(self.cursor).map(|c| c.id.clone());
         caches.sort_by_key(|c| std::cmp::Reverse(c.size.map_or(0, |s| s.on_disk)));
+        if !self.moved {
+            return;
+        }
         if let Some(position) = current.and_then(|id| caches.iter().position(|c| c.id == id)) {
             self.cursor = position;
         }
@@ -73,13 +111,56 @@ impl CachesState {
 }
 
 impl App {
-    /// Opening the tab discovers and measures caches once.
-    pub fn caches_effects(&mut self) -> Vec<Effect> {
-        if self.caches.requested {
-            return Vec::new();
-        }
+    /// Discovery is cheap (a few dozen known paths), so it runs at startup; measuring waits
+    /// until the tab is shown.
+    pub fn discover_caches(&mut self) -> Vec<Effect> {
         self.caches.requested = true;
         vec![Effect::DiscoverCaches]
+    }
+
+    /// Showing the tab measures caches with no remembered size, or a stale one.
+    pub fn caches_effects(&mut self) -> Vec<Effect> {
+        self.caches.opened = true;
+        if !self.caches.requested {
+            return self.discover_caches();
+        }
+        self.measure_caches()
+    }
+
+    pub fn on_caches_discovered(&mut self, caches: Vec<GlobalCache>) -> Vec<Effect> {
+        self.caches.set(caches, &self.cache);
+        self.measure_caches()
+    }
+
+    pub fn on_cache_measured(&mut self, id: &str, size: Size) {
+        if let Some(path) = self.caches.measured(id, size, self.now) {
+            self.cache.insert(path, size);
+        }
+    }
+
+    fn measure_caches(&mut self) -> Vec<Effect> {
+        let state = &mut self.caches;
+        if !state.opened {
+            return Vec::new();
+        }
+        let all = std::mem::take(&mut state.remeasure_all);
+        let targets: Vec<(String, PathBuf)> = state
+            .caches
+            .iter()
+            .flatten()
+            .filter(|c| !state.busy.contains(&c.id))
+            .filter(|c| {
+                all || state
+                    .measured_age(&c.id, self.now)
+                    .is_none_or(|age| age > SIZES_FRESH_FOR)
+            })
+            .map(|c| (c.id.clone(), c.path.clone()))
+            .collect();
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        state.busy.extend(targets.iter().map(|(id, _)| id.clone()));
+        vec![Effect::MeasureCaches(targets)]
     }
 
     fn selected_caches(&self) -> Vec<GlobalCache> {
@@ -102,6 +183,24 @@ impl App {
         }
     }
 
+    /// What cleaning would do to the marked (or selected) caches.
+    pub fn caches_clean_preview(&self) -> Option<String> {
+        let selected = self.selected_caches();
+        match selected.as_slice() {
+            [] => None,
+            [cache] => Some(match (cache.prune_task(), cache.deletable) {
+                (Some(task), _) => format!("{}: runs `{}`", cache.name, task.command_line()),
+                (None, true) => format!("{}: deletes {}", cache.name, cache.path.display()),
+                (None, false) => format!("{}: its tool is not installed", cache.name),
+            }),
+            many => Some(format!(
+                "{} marked caches · {}",
+                many.len(),
+                fmt::bytes(many.iter().filter_map(|c| c.size).map(|s| s.on_disk).sum())
+            )),
+        }
+    }
+
     pub fn on_caches_action(&mut self, action: Action) -> Vec<Effect> {
         if action != Action::Clean {
             self.caches.clean_armed = false;
@@ -110,6 +209,18 @@ impl App {
         let last = len.saturating_sub(1);
         let page = self.page.max(1);
         let state = &mut self.caches;
+        if matches!(
+            action,
+            Action::Up
+                | Action::Down
+                | Action::PageUp
+                | Action::PageDown
+                | Action::Top
+                | Action::Bottom
+                | Action::Mark
+        ) {
+            state.moved = true;
+        }
         match action {
             Action::Up => state.cursor = state.cursor.saturating_sub(1),
             Action::Down => state.cursor = (state.cursor + 1).min(last),
@@ -132,8 +243,8 @@ impl App {
             }
             Action::Unmark => state.marked.clear(),
             Action::Rescan => {
-                state.requested = false;
-                return self.caches_effects();
+                state.remeasure_all = true;
+                return self.discover_caches();
             }
             Action::Open => {
                 if let Some(path) = self.selected_caches().first().map(|c| c.path.clone()) {
@@ -247,16 +358,20 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ])
         })
         .collect();
-    let title = format!(
-        "Caches {} · {}{}",
+    let mut title = format!(
+        "Caches {} · {}",
         caches.len(),
-        fmt::bytes(app.caches.total()),
-        if app.caches.marked.is_empty() {
-            String::new()
-        } else {
-            format!(" · {} marked", app.caches.marked.len())
-        }
+        fmt::bytes(app.caches.total())
     );
+    if !app.caches.marked.is_empty() {
+        title.push_str(&format!(" · {} marked", app.caches.marked.len()));
+    }
+    if let Some(age) = app.caches.oldest_age(app.now) {
+        title.push_str(&format!(
+            " · sizes up to {} old (r to measure)",
+            fmt::age(age)
+        ));
+    }
     let header = Row::new(
         ["", "SIZE", "", "CACHE", "CLEAN WITH"]
             .into_iter()
@@ -282,10 +397,19 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         &mut state,
     );
     if let Some(cache) = caches.get(app.caches.cursor) {
-        let mut lines = vec![Line::from(Span::styled(
-            cache.path.display().to_string(),
-            t.subtle(),
-        ))];
+        let measured = if app.caches.busy.contains(&cache.id) {
+            "measuring…".to_owned()
+        } else {
+            match app.caches.measured_age(&cache.id, app.now) {
+                Some(age) if age < Duration::from_secs(60) => "measured just now".to_owned(),
+                Some(age) => format!("measured {} ago", fmt::age(age)),
+                None => String::new(),
+            }
+        };
+        let mut lines = vec![Line::from(vec![
+            Span::styled(cache.path.display().to_string(), t.subtle()),
+            Span::styled(format!("  {measured}"), t.muted()),
+        ])];
         if let Some(note) = &cache.note {
             lines.push(Line::from(Span::styled(note.clone(), t.muted())));
         }
@@ -306,7 +430,7 @@ mod tests {
     use crate::tui::app::Msg;
     use crate::tui::app::tests::app;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::path::PathBuf;
+    use std::path::Path;
 
     fn press(app: &mut App, code: KeyCode) -> Vec<Effect> {
         app.update(Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)))
@@ -350,6 +474,94 @@ mod tests {
         assert_eq!(ids, ["big", "small"]);
         assert_eq!(app.caches.total(), 1_010);
         assert!(app.caches.busy.is_empty());
+        assert_eq!(app.caches.cursor, 0, "the largest cache is selected first");
+        press(&mut app, KeyCode::Char('j'));
+        app.update(Msg::CacheMeasured("small".into(), size(5_000)));
+        assert_eq!(
+            app.caches.cursor, 0,
+            "after moving, the cursor follows its cache"
+        );
+    }
+
+    fn measured_ids(effects: &[Effect]) -> Vec<&str> {
+        effects
+            .iter()
+            .flat_map(|e| match e {
+                Effect::MeasureCaches(targets) => {
+                    targets.iter().map(|(id, _)| id.as_str()).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn startup_discovers_but_measures_only_once_the_tab_is_shown() {
+        let mut app = app();
+        assert!(
+            app.startup()
+                .iter()
+                .any(|e| matches!(e, Effect::DiscoverCaches))
+        );
+        let effects = app.update(Msg::CachesDiscovered(vec![cache("a")]));
+        assert!(measured_ids(&effects).is_empty());
+        let effects = press(&mut app, KeyCode::Char('4'));
+        assert_eq!(measured_ids(&effects), ["a"]);
+        // Showing the tab again does not measure twice.
+        press(&mut app, KeyCode::Char('1'));
+        assert!(measured_ids(&press(&mut app, KeyCode::Char('4'))).is_empty());
+    }
+
+    #[test]
+    fn remembered_sizes_are_shown_and_only_stale_ones_measured() {
+        let mut app = app();
+        let size = Size {
+            on_disk: 500,
+            ..Size::default()
+        };
+        app.cache.insert(PathBuf::from("/home/fresh"), size);
+        press(&mut app, KeyCode::Char('4'));
+        let effects = app.update(Msg::CachesDiscovered(vec![cache("fresh"), cache("new")]));
+        assert_eq!(measured_ids(&effects), ["new"]);
+        assert_eq!(app.caches.total(), 500);
+
+        // A day later the remembered size is stale; `r` measures everything regardless.
+        let mut later = crate::tui::app::tests::app();
+        later.cache.insert(PathBuf::from("/home/fresh"), size);
+        later.now += SIZES_FRESH_FOR + Duration::from_secs(60);
+        press(&mut later, KeyCode::Char('4'));
+        let effects = later.update(Msg::CachesDiscovered(vec![cache("fresh")]));
+        assert_eq!(measured_ids(&effects), ["fresh"]);
+
+        app.update(Msg::CacheMeasured("new".into(), size));
+        assert!(
+            press(&mut app, KeyCode::Char('r'))
+                .iter()
+                .any(|e| matches!(e, Effect::DiscoverCaches))
+        );
+        let effects = app.update(Msg::CachesDiscovered(vec![cache("fresh"), cache("new")]));
+        assert_eq!(measured_ids(&effects), ["fresh", "new"]);
+    }
+
+    #[test]
+    fn measurements_are_remembered() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(Msg::CachesDiscovered(vec![cache("a")]));
+        let size = Size {
+            on_disk: 7,
+            ..Size::default()
+        };
+        app.update(Msg::CacheMeasured("a".into(), size));
+        assert_eq!(app.cache.get(Path::new("/home/a")).unwrap().size, size);
+    }
+
+    #[test]
+    fn clean_preview_names_the_command() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(Msg::CachesDiscovered(vec![cache("a")]));
+        assert_eq!(app.caches_clean_preview().unwrap(), "a: deletes /home/a");
     }
 
     #[test]

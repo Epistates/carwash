@@ -75,8 +75,9 @@ pub fn run(ctx: &Context, root: PathBuf, options: ScanOptions) -> Result<()> {
         pty_size: (24, 80),
         checker: Arc::new(crate::commands::outdated::checker(ctx)),
     };
-    runtime.execute(Effect::Scan);
-    runtime.execute(Effect::RefreshDisk);
+    for effect in app.startup() {
+        runtime.execute(effect);
+    }
 
     let result = event_loop(&mut terminal, &mut app, &mut runtime, &rx);
 
@@ -338,27 +339,20 @@ impl Runtime<'_> {
                     }
                 }
             }
-            Effect::DiscoverCaches => match crate::commands::caches::present(self.ctx) {
-                Ok(caches) => {
-                    let _ = self.tx.send(Msg::CachesDiscovered(caches.clone()));
-                    let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
-                    std::thread::spawn(move || {
-                        for cache in caches {
-                            let size = engine.measure_path(&cache.path, &Cancel::new());
-                            let _ = tx.send(Msg::CacheMeasured(cache.id, size));
-                        }
-                    });
-                }
-                Err(error) => {
-                    let _ = self.tx.send(Msg::CachesDiscovered(Vec::new()));
+            Effect::DiscoverCaches => {
+                let caches = crate::commands::caches::present(self.ctx).unwrap_or_else(|error| {
                     tracing::warn!(%error, "cannot list caches");
-                }
-            },
-            Effect::MeasureCache { id, path } => {
+                    Vec::new()
+                });
+                let _ = self.tx.send(Msg::CachesDiscovered(caches));
+            }
+            Effect::MeasureCaches(targets) => {
                 let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    let size = engine.measure_path(&path, &Cancel::new());
-                    let _ = tx.send(Msg::CacheMeasured(id, size));
+                    for (id, path) in targets {
+                        let size = engine.measure_path(&path, &Cancel::new());
+                        let _ = tx.send(Msg::CacheMeasured(id, size));
+                    }
                 });
             }
             Effect::CleanCaches { caches, size } => {

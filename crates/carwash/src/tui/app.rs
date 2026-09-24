@@ -101,10 +101,8 @@ pub enum Effect {
         caches: Vec<GlobalCache>,
         size: (u16, u16),
     },
-    MeasureCache {
-        id: String,
-        path: PathBuf,
-    },
+    /// Measures each `(id, path)` and reports it with [`Msg::CacheMeasured`].
+    MeasureCaches(Vec<(String, PathBuf)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +171,31 @@ pub struct TableGeometry {
     pub offset: usize,
 }
 
+/// A clickable, hoverable region recorded while rendering: a tab title or a footer hint.
+#[derive(Debug, Clone, Copy)]
+pub struct Hotspot {
+    pub area: Rect,
+    pub target: Target,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Target {
+    Tab(Tab),
+    Binding(&'static keymap::Binding),
+}
+
+impl Target {
+    fn action(self) -> Action {
+        match self {
+            Target::Tab(Tab::Reclaim) => Action::ShowReclaim,
+            Target::Tab(Tab::Tasks) => Action::ShowTasks,
+            Target::Tab(Tab::Updates) => Action::ShowUpdates,
+            Target::Tab(Tab::Caches) => Action::ShowCaches,
+            Target::Binding(binding) => binding.action,
+        }
+    }
+}
+
 pub struct App {
     pub store: Store,
     pub registry: Arc<Registry>,
@@ -194,6 +217,10 @@ pub struct App {
     selected_key: Option<RowKey>,
     pub page: usize,
     pub geometry: TableGeometry,
+    /// Recorded by the last render.
+    pub hotspots: Vec<Hotspot>,
+    /// The hotspot under the mouse, shown with a tooltip.
+    pub hover: Option<Hotspot>,
     pub scan: ScanStatus,
     pub toast: Option<Toast>,
     pub theme: Theme,
@@ -255,6 +282,8 @@ impl App {
             selected_key: None,
             page: 10,
             geometry: TableGeometry::default(),
+            hotspots: Vec::new(),
+            hover: None,
             scan: ScanStatus::default(),
             toast: None,
             theme,
@@ -335,6 +364,39 @@ impl App {
         self.selected_key = self.rows.rows.get(self.selected).map(|r| r.key.clone());
     }
 
+    /// Effects to run when the UI starts.
+    pub fn startup(&mut self) -> Vec<Effect> {
+        let mut effects = vec![Effect::Scan, Effect::RefreshDisk];
+        effects.extend(self.discover_caches());
+        effects
+    }
+
+    /// What `action` would do right now, for its tooltip.
+    pub fn action_context(&self, action: Action) -> Option<String> {
+        match (self.tab, action) {
+            (Tab::Reclaim, Action::Clean) if self.marked.is_empty() => {
+                Some("Nothing marked yet: Space marks a row, a marks everything ready.".into())
+            }
+            (Tab::Reclaim, Action::Clean) => Some(format!(
+                "{} marked · frees {}",
+                self.marked.len(),
+                fmt::bytes(self.marked_bytes())
+            )),
+            (Tab::Caches, Action::Clean) => self.caches_clean_preview(),
+            _ => None,
+        }
+    }
+
+    /// Bytes freed by cleaning the marked artifacts.
+    pub fn marked_bytes(&self) -> u64 {
+        self.marked
+            .iter()
+            .filter_map(|id| self.store.entry(*id))
+            .filter_map(|e| e.size())
+            .map(|s| s.reclaimable)
+            .sum()
+    }
+
     pub fn selected_row(&self) -> Option<&store::Row> {
         self.rows.rows.get(self.selected)
     }
@@ -390,12 +452,9 @@ impl App {
                 self.tasks.add_job(id, label, task, after);
                 Vec::new()
             }
-            Msg::CachesDiscovered(caches) => {
-                self.caches.set(caches);
-                Vec::new()
-            }
+            Msg::CachesDiscovered(caches) => self.on_caches_discovered(caches),
             Msg::CacheMeasured(id, size) => {
-                self.caches.measured(&id, size);
+                self.on_cache_measured(&id, size);
                 Vec::new()
             }
             Msg::DepsProgress(progress) => {
@@ -455,7 +514,7 @@ impl App {
                 match after {
                     After::Recheck(path) if !pending => self.recheck(&path),
                     After::Remeasure { id, path } if !pending => {
-                        vec![Effect::MeasureCache { id, path }]
+                        vec![Effect::MeasureCaches(vec![(id, path)])]
                     }
                     _ => Vec::new(),
                 }
@@ -483,6 +542,7 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        self.hover = None;
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Browse;
@@ -676,6 +736,25 @@ impl App {
         if !matches!(self.mode, Mode::Browse) {
             self.dirty = false;
             return Vec::new();
+        }
+        let spot = self
+            .hotspots
+            .iter()
+            .find(|h| {
+                h.area.contains(ratatui::layout::Position {
+                    x: mouse.column,
+                    y: mouse.row,
+                })
+            })
+            .copied();
+        if mouse.kind == MouseEventKind::Moved {
+            self.dirty = spot.map(|s| s.area) != self.hover.map(|s| s.area);
+            self.hover = spot;
+            return Vec::new();
+        }
+        if let (MouseEventKind::Down(_), Some(spot)) = (mouse.kind, spot) {
+            self.hover = None;
+            return self.on_global_action(spot.target.action());
         }
         if self.tab != Tab::Reclaim {
             // Other tabs record no row geometry; the wheel moves their own cursor.
