@@ -7,6 +7,11 @@ use std::path::Path;
 
 const CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
 
+/// `rel` with the platform's separator, as carwash prints paths.
+fn native(rel: &str) -> String {
+    rel.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 fn write(root: &Path, rel: &str, contents: &str) {
     let path = root.join(rel);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -66,7 +71,7 @@ fn scan_json_reports_artifacts_and_policy() {
     let find = |suffix: &str| {
         artifacts
             .iter()
-            .find(|a| a["path"].as_str().unwrap().ends_with(suffix))
+            .find(|a| a["path"].as_str().unwrap().ends_with(&native(suffix)))
             .unwrap_or_else(|| panic!("{suffix} missing"))
     };
     assert_eq!(find("app/target")["kind"], "build");
@@ -86,7 +91,7 @@ fn scan_table_summarises() {
         .arg(tree.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("app/target"))
+        .stdout(predicate::str::contains(native("app/target")))
         .stdout(predicate::str::contains("reclaimable from 4 artifacts"));
 }
 
@@ -197,7 +202,7 @@ fn user_rules_extend_the_registry() {
         .arg(tree.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("acme/.acme-cache"));
+        .stdout(predicate::str::contains(native("acme/.acme-cache")));
 }
 
 #[test]
