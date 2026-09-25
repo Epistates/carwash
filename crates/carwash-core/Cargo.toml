@@ -8,6 +8,7 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
+readme = "README.md"
 keywords = ["cleanup", "disk-usage", "monorepo", "node-modules", "cargo"]
 categories = ["development-tools", "filesystem"]
 

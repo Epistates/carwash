@@ -5,7 +5,7 @@ All notable changes to CarWash will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-09-25
 
 A rewrite. carwash is no longer a Rust project manager: it reclaims disk space across projects
 in any of 40 ecosystems, and checks dependencies and runs tasks along the way. Nothing from 0.3
@@ -29,9 +29,16 @@ carries over, including the configuration file.
 - Task discovery from `package.json`, `deno.json`, justfiles, Makefiles, Taskfiles, mise,
   Poe/PDM, Composer and Cargo aliases, plus standard commands per ecosystem.
 - 32 global caches (package stores, toolchains, Xcode and simulator data, IDE caches) with the
-  tool's own prune command where one exists.
+  tool's own prune command where one exists. Sizes are remembered between runs, so the Caches
+  tab opens instantly; a cache is measured again when the top of its tree changes, after a
+  week otherwise, or on request.
+- `p` scans another folder without restarting, with directory completion.
+- A footer that separates the current tab's keys from those that work in any tab. Hovering a
+  key or tab explains it (for `d`, exactly what will be deleted or run); clicking runs it.
+- Help per tab that sizes itself to the terminal.
 - User-extensible rules in `ecosystems.toml` and `caches.toml`.
 - Themes: gestalt (default), latte, nord, dracula, and a 16-color fallback.
+- A configuration file left by 0.3 is ignored with a warning instead of stopping every command.
 
 ### Changed
 - Configuration moved to `~/.config/carwash/config.toml` with a new schema.
