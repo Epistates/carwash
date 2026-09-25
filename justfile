@@ -1,76 +1,51 @@
-# CarWash Development Tasks
-# Usage: just <recipe>
+# carwash development tasks. Usage: just <recipe>
 
-# Default recipe - show available commands
 default:
     @just --list
 
-# Install carwash locally from source
+# Install carwash from this checkout
 install:
-    cargo install --path .
+    cargo install --locked --path crates/carwash
 
-# Build debug version
 build:
     cargo build
 
-# Build optimized release version
 build-release:
     cargo build --release
 
-# Run the application (scan current directory)
-run:
-    cargo run
-
-# Run with a specific directory
-run-path path:
+# Open the TUI on a directory
+run path=".":
     cargo run -- {{path}}
 
-# Run all tests
 test:
-    cargo test --lib
+    cargo test --workspace
 
-# Run tests with output
-test-verbose:
-    cargo test --lib -- --nocapture
-
-# Run a specific test
+# Run tests matching a name, with output
 test-name name:
-    cargo test {{name}} -- --nocapture
+    cargo test --workspace {{name}} -- --nocapture
 
-# Format code
 fmt:
-    cargo fmt
+    cargo fmt --all
 
-# Check code formatting without modifying
-fmt-check:
-    cargo fmt -- --check
-
-# Run clippy lints
 clippy:
-    cargo clippy
+    cargo clippy --workspace --all-targets -- -D warnings
 
-# Run clippy with warnings as errors
-clippy-strict:
-    cargo clippy -- -D warnings
+# Advisories, licenses and sources
+deny:
+    cargo deny check
 
-# Run all checks (fmt, clippy, test)
-check: fmt clippy test
+# Compile with the minimum supported Rust version
+msrv:
+    cargo +1.88 check --workspace --all-targets
 
-# Package for publishing (creates tarball)
-package:
-    cargo package
+# Everything CI runs
+check:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+    cargo deny check
 
-# Publish to crates.io
+# Publish the engine first, then the binary
 publish:
-    cargo publish
-
-# Clean build artifacts
-clean:
-    cargo clean
-
-# Update dependencies
-update-deps:
-    cargo update
-
-# Update and rebuild
-update: update-deps build
+    cargo publish -p carwash-core
+    cargo publish -p carwash
