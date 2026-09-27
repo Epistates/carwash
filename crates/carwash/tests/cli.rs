@@ -215,3 +215,42 @@ fn ecosystems_lists_builtins() {
         .stdout(predicate::str::contains("node_modules"))
         .stdout(predicate::str::contains("40 ecosystems"));
 }
+
+/// Deep trees removed side by side once exhausted a low open-file limit ("Too many open
+/// files"). Under a hard limit carwash cannot raise, every tree must still go.
+#[cfg(unix)]
+#[test]
+fn clean_survives_a_low_open_file_limit() {
+    let tree = tempfile::tempdir().unwrap();
+    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    for project in 0..24 {
+        let root = format!("p{project}");
+        write(tree.path(), &format!("{root}/package.json"), "{}");
+        for module in 0..8 {
+            let deep = format!("{root}/node_modules/m{module}/a/b/c/d/e/f/g/h/node_modules/x/y");
+            write(tree.path(), &format!("{deep}/index.js"), "x");
+        }
+        filetime::set_file_mtime(tree.path().join(format!("{root}/node_modules")), old).unwrap();
+    }
+    let home = tempfile::tempdir().unwrap();
+    let bin = assert_cmd::cargo::cargo_bin("carwash");
+    let script = format!(
+        "ulimit -n 64 && exec '{}' clean --yes --include-recent '{}'",
+        bin.display(),
+        tree.path().display()
+    );
+    Command::new("sh")
+        .args(["-c", &script])
+        .env("CARWASH_HOME", home.path())
+        .env_remove("CARWASH_CONFIG")
+        .env("NO_COLOR", "1")
+        .assert()
+        .success();
+    let left: Vec<String> = fs::read_dir(tree.path())
+        .unwrap()
+        .flat_map(|project| fs::read_dir(project.unwrap().path()).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "package.json")
+        .collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
+}

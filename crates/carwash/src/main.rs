@@ -16,6 +16,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    raise_open_file_limit();
     let cli = Cli::parse();
     match cli.global.color {
         ColorChoice::Always => anstream::ColorChoice::Always.write_global(),
@@ -33,6 +34,16 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Parallel walks and deletions keep a directory handle open per level of every tree they
+/// are in; macOS starts processes at 256 open files, which deep `node_modules` exhaust.
+/// Raise the soft limit (never lowering it; the cleaner copes if this fails). The target is
+/// modest because children inherit it (tasks, git, package managers), and some programs loop
+/// over every possible descriptor at startup; 10240 is macOS's own per-process ceiling.
+fn raise_open_file_limit() {
+    #[cfg(unix)]
+    let _ = rlimit::increase_nofile_limit(10_240);
 }
 
 /// Logging is off unless `CARWASH_LOG` is set (e.g. `debug`). Commands log to stderr; the
