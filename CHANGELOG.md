@@ -5,6 +5,15 @@ All notable changes to CarWash will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-27
+
+### Fixed
+- Cleaning many deep directories at once failed with "Too many open files" under macOS's
+  default limit of 256. carwash now raises its open-file limit at startup, and any removal
+  that still runs out of file handles is retried on its own after the others.
+- Leftovers of an interrupted clean were held back as "recently used"; they are now ready to
+  clean like any other artifact you already chose to delete.
+
 ## [0.4.0] - 2026-09-25
 
 A rewrite. carwash is no longer a Rust project manager: it reclaims disk space across projects

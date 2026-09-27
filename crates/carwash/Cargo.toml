@@ -41,6 +41,9 @@ portable-pty.workspace = true
 vt100.workspace = true
 tui-term.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rlimit.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 assert_cmd.workspace = true

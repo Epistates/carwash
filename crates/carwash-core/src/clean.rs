@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,14 +122,29 @@ fn staging_path(path: &Path) -> Option<PathBuf> {
     Some(parent.join(format!("{STAGING_PREFIX}{}-{n}-{name}", std::process::id())))
 }
 
-fn remove_permanently(path: &Path) -> io::Result<()> {
+/// Removes `path`; on failure, returns the path that is left to remove with the error.
+fn remove_permanently(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     // Rename first so the artifact disappears atomically; fall back to deleting in place
     // when renaming is not possible (for example on some network filesystems).
     let target = match staging_path(path) {
         Some(staged) if fs::rename(path, &staged).is_ok() => staged,
         _ => path.to_path_buf(),
     };
-    remove_dir_all::remove_dir_all(&target)
+    remove_dir_all::remove_dir_all(&target).map_err(|error| (target, error))
+}
+
+/// The process (EMFILE) or system (ENFILE) ran out of file handles. Parallel removal holds
+/// one per directory level of every tree in progress, so deep trees removed side by side can
+/// exhaust a low limit; removing one tree at a time needs only as many as it is deep.
+fn out_of_file_handles(error: &io::Error) -> bool {
+    // No stable `io::ErrorKind` covers these yet.
+    if cfg!(unix) {
+        matches!(error.raw_os_error(), Some(23 | 24))
+    } else if cfg!(windows) {
+        error.raw_os_error() == Some(4) // ERROR_TOO_MANY_OPEN_FILES
+    } else {
+        false
+    }
 }
 
 /// Deletes `items` in parallel on the current rayon pool.
@@ -146,40 +162,54 @@ pub fn clean(
     let removed = AtomicU64::new(0);
     let failed = AtomicU64::new(0);
     let bytes = AtomicU64::new(0);
+    let finish = |item: &CleanItem, result: Result<(), String>| match result {
+        Ok(()) => {
+            removed.fetch_add(1, Ordering::Relaxed);
+            bytes.fetch_add(item.expected_bytes, Ordering::Relaxed);
+            emit(CleanEvent::Removed {
+                id: item.id,
+                bytes: item.expected_bytes,
+            });
+        }
+        Err(error) => {
+            failed.fetch_add(1, Ordering::Relaxed);
+            emit(CleanEvent::Failed { id: item.id, error });
+        }
+    };
+    // Removals that ran out of file handles, with what is left of each, for a second pass.
+    let retry = Mutex::new(Vec::new());
 
     items.par_iter().for_each(|item| {
         if cancel.is_cancelled() {
             return;
         }
         emit(CleanEvent::Started { id: item.id });
-        let result = validate(&item.path, &options.allowed_roots)
-            .map_err(|e| e.to_string())
-            .and_then(|()| {
-                if options.dry_run {
-                    return Ok(());
-                }
-                match options.mode {
-                    DeleteMode::Permanent => {
-                        remove_permanently(&item.path).map_err(|e| e.to_string())
-                    }
-                    DeleteMode::Trash => trash::delete(&item.path).map_err(|e| e.to_string()),
-                }
-            });
-        match result {
-            Ok(()) => {
-                removed.fetch_add(1, Ordering::Relaxed);
-                bytes.fetch_add(item.expected_bytes, Ordering::Relaxed);
-                emit(CleanEvent::Removed {
-                    id: item.id,
-                    bytes: item.expected_bytes,
-                });
-            }
-            Err(error) => {
-                failed.fetch_add(1, Ordering::Relaxed);
-                emit(CleanEvent::Failed { id: item.id, error });
-            }
+        if let Err(refusal) = validate(&item.path, &options.allowed_roots) {
+            return finish(item, Err(refusal.to_string()));
         }
+        if options.dry_run {
+            return finish(item, Ok(()));
+        }
+        let result = match options.mode {
+            DeleteMode::Permanent => match remove_permanently(&item.path) {
+                Ok(()) => Ok(()),
+                Err((left, error)) if out_of_file_handles(&error) => {
+                    retry.lock().expect("retry list").push((item, left));
+                    return;
+                }
+                Err((_, error)) => Err(error.to_string()),
+            },
+            DeleteMode::Trash => trash::delete(&item.path).map_err(|e| e.to_string()),
+        };
+        finish(item, result);
     });
+
+    for (item, left) in retry.into_inner().expect("retry list") {
+        if cancel.is_cancelled() {
+            break;
+        }
+        finish(item, fs::remove_dir_all(&left).map_err(|e| e.to_string()));
+    }
 
     CleanReport {
         removed: removed.into_inner() as usize,
@@ -193,7 +223,15 @@ pub fn clean(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+
+    #[cfg(unix)]
+    #[test]
+    fn recognises_running_out_of_file_handles() {
+        assert!(out_of_file_handles(&io::Error::from_raw_os_error(24)));
+        assert!(out_of_file_handles(&io::Error::from_raw_os_error(23)));
+        assert!(!out_of_file_handles(&io::Error::from_raw_os_error(13)));
+        assert!(!out_of_file_handles(&io::Error::other("custom")));
+    }
 
     fn item(id: u32, path: PathBuf) -> CleanItem {
         CleanItem {

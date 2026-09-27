@@ -95,6 +95,11 @@ impl Policy {
             Safety::Review(_) if !self.include_review => return Some(Hold::Review),
             _ => {}
         }
+        // An interrupted clean's leftover was already chosen for deletion, and staging it
+        // made it look freshly modified.
+        if artifact.kind == ArtifactKind::Leftover {
+            return None;
+        }
         if let Some(recent) = self.recent
             && age(artifact, now).is_some_and(|age| age < recent)
         {
@@ -184,5 +189,12 @@ mod tests {
         };
         assert_eq!(lenient.hold(&generic, now), None);
         assert_eq!(lenient.hold(&recent, now), None);
+    }
+
+    #[test]
+    fn leftovers_are_never_held_as_recent() {
+        let (mut leftover, now) = artifact(1, 0, false);
+        leftover.kind = ArtifactKind::Leftover;
+        assert_eq!(Policy::default().hold(&leftover, now), None);
     }
 }
