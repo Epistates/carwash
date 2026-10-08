@@ -5,6 +5,14 @@ All notable changes to CarWash will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- In the TUI, marking a directory marks everything beneath it, including recently used and
+  needs-review artifacts; before, those had to be expanded and marked one by one. Protected
+  artifacts are still never marked, and the review screen still lists what is recent or needs
+  review before anything is deleted. `a` still marks only what is ready.
+
 ## [0.4.1] - 2026-09-27
 
 ### Fixed

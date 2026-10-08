@@ -319,7 +319,7 @@ pub const RECLAIM: &[Binding] = &[
         "Space",
         A::Mark,
         S::Select,
-        "mark / unmark (directories mark their ready artifacts)",
+        "mark / unmark (directories mark everything beneath them)",
     )
     .hint("mark"),
     bind(

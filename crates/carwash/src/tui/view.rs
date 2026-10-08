@@ -329,7 +329,7 @@ fn mark_cell(app: &App, row: &Row) -> Span<'static> {
         Span::styled(g.locked, t.muted())
     } else if totals.marked == 0 {
         Span::styled(g.unmarked, t.muted())
-    } else if totals.marked >= totals.ready.max(1) {
+    } else if totals.marked >= totals.markable {
         Span::styled(g.marked, t.bold(t.accent2))
     } else {
         Span::styled(g.partial, t.fg(t.accent2))

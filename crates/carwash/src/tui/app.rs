@@ -1001,33 +1001,32 @@ impl App {
                 return;
             }
         } else {
-            let ready: Vec<ArtifactId> = ids
+            // A directory marks everything beneath it except protected artifacts, which can
+            // never be marked; the review screen still calls out recent and needs-review ones.
+            let markable: Vec<ArtifactId> = ids
                 .iter()
                 .copied()
-                .filter(|&id| self.markable(id) && self.hold(id).is_none())
+                .filter(|&id| self.markable(id))
                 .collect();
-            let held = ids
-                .iter()
-                .filter(|&&id| self.markable(id) && self.hold(id).is_some())
-                .count();
-            if !ready.is_empty() && ready.iter().all(|id| self.marked.contains(id)) {
+            let protected = ids.len() - markable.len();
+            if markable.is_empty() {
+                self.toast(
+                    format!("Nothing to mark here: {protected} protected"),
+                    Level::Warn,
+                );
+                return;
+            }
+            if markable.iter().all(|id| self.marked.contains(id)) {
                 for id in &ids {
                     self.marked.remove(id);
                 }
             } else {
-                self.marked.extend(ready.iter().copied());
-                if ready.is_empty() && held > 0 {
+                self.marked.extend(markable.iter().copied());
+                if protected > 0 {
                     self.toast(
                         format!(
-                            "Nothing ready here: {held} held back (expand to mark individually)"
-                        ),
-                        Level::Warn,
-                    );
-                } else if held > 0 {
-                    self.toast(
-                        format!(
-                            "Marked {} · {held} held back (recent or needs review)",
-                            ready.len()
+                            "Marked {} · {protected} protected left alone",
+                            markable.len()
                         ),
                         Level::Info,
                     );
@@ -1313,19 +1312,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn marking_a_project_marks_only_ready_artifacts() {
+    fn marking_a_project_marks_everything_beneath_it() {
         let mut app = app();
         assert_eq!(app.rows.rows[0].label, "a");
         press(&mut app, KeyCode::Char(' '));
         assert!(app.marked.contains(&ArtifactId(0)));
         assert!(
-            !app.marked.contains(&ArtifactId(1)),
-            "recently used is held back"
+            app.marked.contains(&ArtifactId(1)),
+            "recently used is marked too"
         );
         // Marking again unmarks.
         press(&mut app, KeyCode::Char('k'));
         press(&mut app, KeyCode::Char(' '));
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn marking_a_project_skips_protected_artifacts() {
+        let mut app = app();
+        let b = app
+            .rows
+            .rows
+            .iter()
+            .position(|row| row.label == "b")
+            .expect("project b row");
+        app.select(b);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.marked.is_empty());
+        assert!(app.toast.as_ref().unwrap().text.contains("protected"));
     }
 
     #[test]
