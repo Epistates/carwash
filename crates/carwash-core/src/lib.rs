@@ -29,6 +29,7 @@ pub mod safety;
 pub mod scan;
 pub mod select;
 pub mod sweep;
+pub mod system;
 pub mod tasks;
 
 pub use discover::{Counters, DiscoverOptions};

@@ -29,6 +29,7 @@ nodejs-semver.workspace = true
 pep440_rs.workspace = true
 ureq.workspace = true
 thiserror.workspace = true
+sysinfo.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true

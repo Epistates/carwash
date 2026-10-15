@@ -126,7 +126,11 @@ fn platform_ok(prefix: &str) -> bool {
 }
 
 /// Resolves one path candidate; `None` when its platform or variable does not apply.
-fn resolve(candidate: &str, home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+pub(crate) fn resolve(
+    candidate: &str,
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
     let candidate = match candidate.split_once(':') {
         Some((prefix, rest)) if matches!(prefix, "macos" | "linux" | "windows") => {
             if !platform_ok(prefix) {

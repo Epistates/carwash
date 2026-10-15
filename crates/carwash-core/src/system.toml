@@ -1,0 +1,750 @@
+# OS mode areas: the operating system's own space hogs.
+#
+# Each area belongs to one platform and one tier:
+#   default  safe to clean whenever (regenerates, nothing of the user's)
+#   opt-in   fine to clean at a cost the user chooses (permanent, re-downloads, privileged)
+#   report   never cleaned by carwash; shown with its size and `how` to clean it by hand
+#
+# `paths` are candidates (`~/`, `$VAR/`, globs `*`, `?`, `{a,b}`); the first that matches an
+# existing directory is used with all its matches. Sweeping removes the contents and keeps
+# the directory, honouring `older_than`, `keep` (names directly under the path) and `apps`
+# (processes that must be closed). A `command` is the OS's own tool, run instead of
+# sweeping; its `paths` are only measured. `needs` = root / admin runs the command elevated
+# (shown, and run only on request); full-disk-access marks macOS privacy-protected places.
+#
+# Developer caches (npm, cargo, pip, Xcode, Homebrew...) live in caches.toml; broad areas
+# here keep them out so nothing is counted twice.
+#
+# Sources: Apple, Microsoft, freedesktop.org and systemd documentation. GPL cleaners
+# (BleachBit, Mole) were read for facts only.
+
+schema = 1
+
+# ── macOS ────────────────────────────────────────────────────────────────────────────────
+
+[[area]]
+id = "app-caches"
+name = "App caches"
+platform = "macos"
+category = "caches"
+paths = ["~/Library/Caches"]
+older_than = "7d"
+keep = [
+    # Not regenerable, or owned by system services.
+    "com.apple.bird", "CloudKit", "com.apple.akd", "com.apple.homed", "com.apple.containermanagerd",
+    "com.apple.ap.adprivacyd", "FamilyCircle", "com.apple.nsurlsessiond",
+    "com.spotify.client",
+    # Browsers have their own areas.
+    "com.apple.Safari", "Google", "Firefox", "Microsoft Edge", "BraveSoftware", "Arc",
+    "company.thebrowser.Browser",
+    # Developer caches (carwash caches).
+    "Yarn", "deno", "node-gyp", "electron", "ms-playwright", "pip", "uv", "pypoetry",
+    "go-build", "CocoaPods", "org.swift.swiftpm", "Homebrew", "JetBrains", "Mozilla.sccache",
+    "colima", "lima",
+]
+note = "Caches apps rebuild on demand. Only entries untouched for a week go, so apps you use keep theirs; first launches may be slower."
+
+[[area]]
+id = "safari-cache"
+name = "Safari cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Caches/com.apple.Safari"]
+apps = ["Safari"]
+note = "Safari's web cache. History, cookies and logins are elsewhere and untouched. Skipped while Safari runs."
+
+[[area]]
+id = "chrome-cache"
+name = "Chrome cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Caches/Google/Chrome"]
+apps = ["Google Chrome"]
+note = "Chrome's web and code caches for every profile. Profiles, history and logins are untouched. Skipped while Chrome runs."
+
+[[area]]
+id = "chrome-gpu-cache"
+name = "Chrome GPU caches"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Application Support/Google/Chrome/{GrShaderCache,GraphiteDawnCache,ShaderCache}", "~/Library/Application Support/Google/Chrome/*/GPUCache"]
+apps = ["Google Chrome"]
+note = "Compiled shaders Chrome rebuilds on demand. Skipped while Chrome runs."
+
+[[area]]
+id = "edge-cache"
+name = "Edge cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Caches/Microsoft Edge"]
+apps = ["Microsoft Edge"]
+note = "Edge's web and code caches for every profile. Skipped while Edge runs."
+
+[[area]]
+id = "brave-cache"
+name = "Brave cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Caches/BraveSoftware/Brave-Browser"]
+apps = ["Brave Browser"]
+note = "Brave's web and code caches for every profile. Skipped while Brave runs."
+
+[[area]]
+id = "arc-cache"
+name = "Arc cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Application Support/Arc/User Data/*/{Cache,Code Cache,GPUCache}"]
+apps = ["Arc"]
+note = "Arc's web, code and GPU caches. Cookies and history are untouched. Skipped while Arc runs."
+
+[[area]]
+id = "firefox-cache"
+name = "Firefox cache"
+platform = "macos"
+category = "browsers"
+paths = ["~/Library/Caches/Firefox/Profiles/*/cache2"]
+apps = ["firefox"]
+note = "Firefox's web cache for every profile. Profiles live elsewhere and are untouched. Skipped while Firefox runs."
+
+[[area]]
+id = "vscode-cache"
+name = "VS Code caches"
+platform = "macos"
+category = "apps"
+paths = ["~/Library/Application Support/Code/{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs,DawnGraphiteCache,DawnWebGPUCache}"]
+apps = ["Code", "Electron"]
+note = "Caches and downloaded extension packages VS Code rebuilds. Settings, extensions and workspace state are untouched. Skipped while VS Code runs."
+
+[[area]]
+id = "slack-cache"
+name = "Slack cache"
+platform = "macos"
+category = "apps"
+paths = [
+    "~/Library/Application Support/Slack/{Cache,Code Cache,GPUCache,DawnGraphiteCache,DawnWebGPUCache}",
+    "~/Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack/{Cache,Code Cache,GPUCache}",
+]
+apps = ["Slack"]
+note = "Slack's web caches; sign-in and settings are kept. Skipped while Slack runs."
+
+[[area]]
+id = "discord-cache"
+name = "Discord cache"
+platform = "macos"
+category = "apps"
+paths = ["~/Library/Application Support/discord/{Cache,Code Cache,GPUCache,DawnGraphiteCache,DawnWebGPUCache}"]
+apps = ["Discord"]
+note = "Discord's web caches; sign-in and settings are kept. Skipped while Discord runs."
+
+[[area]]
+id = "spotify-cache"
+name = "Spotify cache"
+platform = "macos"
+category = "apps"
+tier = "opt-in"
+paths = ["~/Library/Caches/com.spotify.client"]
+apps = ["Spotify"]
+note = "Streaming cache, which can include offline downloads: those download again. Skipped while Spotify runs."
+
+[[area]]
+id = "adobe-media-cache"
+name = "Adobe media cache"
+platform = "macos"
+category = "apps"
+tier = "opt-in"
+paths = ["~/Library/Application Support/Adobe/Common/{Media Cache Files,Media Cache}"]
+apps = ["Adobe Premiere Pro*", "After Effects*", "Adobe Media Encoder*"]
+note = "Conformed audio and peak files shared by Premiere, After Effects and Media Encoder; rebuilt when projects open, which takes time. Skipped while they run."
+
+[[area]]
+id = "logs"
+name = "App logs"
+platform = "macos"
+category = "logs"
+paths = ["~/Library/Logs"]
+older_than = "7d"
+keep = ["DiagnosticReports"]
+note = "Logs apps write for troubleshooting. Entries from the last week are kept."
+
+[[area]]
+id = "crash-reports"
+name = "Crash reports"
+platform = "macos"
+category = "logs"
+paths = ["~/Library/Logs/DiagnosticReports"]
+older_than = "7d"
+note = "Reports from apps that crashed or hung. The last week's are kept."
+
+[[area]]
+id = "ios-firmware"
+name = "iPhone and iPad software updates"
+platform = "macos"
+category = "system"
+paths = ["~/Library/iTunes/{iPhone,iPad,iPod,Apple TV} Software Updates"]
+older_than = "1d"
+note = "Firmware downloaded to update or restore devices, several GB each; downloaded again when needed."
+
+[[area]]
+id = "quicklook-cache"
+name = "Quick Look thumbnails"
+platform = "macos"
+category = "caches"
+command = ["qlmanage", "-r", "cache"]
+note = "Resets the Finder thumbnail cache through Quick Look; thumbnails regenerate."
+
+[[area]]
+id = "user-temp"
+name = "Temporary files"
+platform = "macos"
+category = "temp"
+tier = "opt-in"
+paths = ["$TMPDIR"]
+older_than = "3d"
+note = "Your temporary folder. macOS clears entries older than 3 days itself each night; this does it now. Recent files are kept."
+
+[[area]]
+id = "trash"
+name = "Trash"
+platform = "macos"
+category = "trash"
+tier = "opt-in"
+paths = ["~/.Trash"]
+needs = "full-disk-access"
+note = "Files you deleted. Emptying is permanent. Needs Full Disk Access for your terminal."
+
+[[area]]
+id = "mail-downloads"
+name = "Mail attachment copies"
+platform = "macos"
+category = "apps"
+tier = "opt-in"
+paths = ["~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"]
+older_than = "30d"
+apps = ["Mail"]
+needs = "full-disk-access"
+note = "Copies of attachments you opened; the messages keep the originals. Skipped while Mail runs."
+
+[[area]]
+id = "docker"
+name = "Docker unused data"
+platform = "macos"
+category = "containers"
+tier = "opt-in"
+command = ["docker", "system", "prune", "--force"]
+note = "Stopped containers, unused networks, dangling images and build cache. Volumes and tagged images are kept. The Docker engine must be running."
+
+[[area]]
+id = "time-machine-snapshots"
+name = "Time Machine local snapshots"
+platform = "macos"
+category = "backups"
+tier = "report"
+command = ["tmutil", "listlocalsnapshots", "/"]
+note = "Hourly local snapshots kept up to 24 hours. Space they hold is freed automatically when needed, and deleting files does not free it until they expire."
+how = "List with `tmutil listlocalsnapshots /`; delete one with `sudo tmutil deletelocalsnapshots <date>`."
+
+[[area]]
+id = "ios-backups"
+name = "iPhone and iPad backups"
+platform = "macos"
+category = "backups"
+tier = "report"
+paths = ["~/Library/Application Support/MobileSync/Backup"]
+needs = "full-disk-access"
+note = "Device backups, often the only copy of a device's data."
+how = "Review and delete individual backups in Finder: select the device, then Manage Backups."
+
+[[area]]
+id = "messages-attachments"
+name = "Messages attachments"
+platform = "macos"
+category = "backups"
+tier = "report"
+paths = ["~/Library/Messages/Attachments"]
+needs = "full-disk-access"
+note = "Photos and files from your conversations. With Messages in iCloud, deleting can affect every device."
+how = "Messages > Settings > General > Keep messages, or System Settings > General > Storage > Messages."
+
+[[area]]
+id = "xcode-archives"
+name = "Xcode archives"
+platform = "macos"
+category = "backups"
+tier = "report"
+paths = ["~/Library/Developer/Xcode/Archives"]
+note = "App builds with their debug symbols, needed to symbolicate crash reports from shipped versions."
+how = "Delete archives of versions you no longer support in Xcode's Organizer."
+
+[[area]]
+id = "macos-installers"
+name = "macOS installers"
+platform = "macos"
+category = "system"
+tier = "report"
+paths = ["/Applications/Install macOS*.app"]
+note = "Full macOS installers, 12-15 GB each."
+how = "Drag installers you no longer need from Applications to the Trash."
+
+[[area]]
+id = "system-logs"
+name = "System logs"
+platform = "macos"
+category = "logs"
+tier = "report"
+paths = ["/private/var/log"]
+note = "Logs written by system services, owned by root (also in /Library/Logs)."
+how = "Rotated logs can go: `sudo find /private/var/log /Library/Logs -name '*.gz' -mtime +30 -delete`. Never delete the unified log in /private/var/db/diagnostics."
+
+# ── Linux ────────────────────────────────────────────────────────────────────────────────
+
+[[area]]
+id = "thumbnails"
+name = "Thumbnails"
+platform = "linux"
+category = "caches"
+paths = ["$XDG_CACHE_HOME/thumbnails", "~/.cache/thumbnails"]
+older_than = "30d"
+note = "File manager thumbnails, regenerated on demand. Those viewed in the last 30 days are kept."
+
+[[area]]
+id = "shader-caches"
+name = "GPU shader caches"
+platform = "linux"
+category = "caches"
+paths = ["$XDG_CACHE_HOME/{mesa_shader_cache,mesa_shader_cache_db,nvidia}", "~/.cache/{mesa_shader_cache,mesa_shader_cache_db,nvidia}"]
+note = "Compiled shaders; rebuilt on demand, so games and apps may stutter briefly afterwards."
+
+[[area]]
+id = "app-caches"
+name = "Other app caches"
+platform = "linux"
+category = "caches"
+tier = "opt-in"
+paths = ["$XDG_CACHE_HOME", "~/.cache"]
+older_than = "30d"
+keep = [
+    # Live desktop session state and mounts.
+    "ibus", "kwin", "plasmashell", "doc", "gnome-control-center", "fontconfig", "gvfsd",
+    "tracker3", "mesa_shader_cache*", "qtshadercache-*", "nvidia", "thumbnails",
+    # Browsers and apps with their own areas.
+    "mozilla", "google-chrome", "chromium", "BraveSoftware", "microsoft-edge", "spotify",
+    # Developer caches (carwash caches).
+    "yarn", "deno", "node-gyp", "electron", "ms-playwright", "pip", "uv", "pypoetry",
+    "huggingface", "pre-commit", "go-build", "org.swift.swiftpm", "Homebrew", "JetBrains",
+    "sccache", "bazel", "libdnf5",
+]
+note = "Everything else in your cache folder that has not been touched for 30 days. Apps rebuild what they need."
+
+[[area]]
+id = "firefox-cache"
+name = "Firefox cache"
+platform = "linux"
+category = "browsers"
+paths = ["$XDG_CACHE_HOME/mozilla/firefox/*/cache2", "~/.cache/mozilla/firefox/*/cache2", "~/snap/firefox/common/.cache/mozilla/firefox/*/cache2", "~/.var/app/org.mozilla.firefox/cache/mozilla/firefox/*/cache2"]
+apps = ["firefox", "firefox-bin"]
+note = "Firefox's web cache for every profile. Profiles are untouched. Skipped while Firefox runs."
+
+[[area]]
+id = "chrome-cache"
+name = "Chrome cache"
+platform = "linux"
+category = "browsers"
+paths = ["$XDG_CACHE_HOME/google-chrome", "~/.cache/google-chrome"]
+apps = ["chrome", "google-chrome*"]
+note = "Chrome's web caches for every profile. Profiles, history and logins are untouched. Skipped while Chrome runs."
+
+[[area]]
+id = "chromium-cache"
+name = "Chromium cache"
+platform = "linux"
+category = "browsers"
+paths = ["$XDG_CACHE_HOME/chromium", "~/.cache/chromium"]
+apps = ["chromium*"]
+note = "Chromium's web caches for every profile. Skipped while Chromium runs."
+
+[[area]]
+id = "brave-cache"
+name = "Brave cache"
+platform = "linux"
+category = "browsers"
+paths = ["$XDG_CACHE_HOME/BraveSoftware", "~/.cache/BraveSoftware"]
+apps = ["brave*"]
+note = "Brave's web caches for every profile. Skipped while Brave runs."
+
+[[area]]
+id = "vscode-cache"
+name = "VS Code caches"
+platform = "linux"
+category = "apps"
+paths = ["$XDG_CONFIG_HOME/Code/{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs,DawnGraphiteCache,DawnWebGPUCache}", "~/.config/Code/{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs,DawnGraphiteCache,DawnWebGPUCache}"]
+apps = ["code"]
+note = "Caches and downloaded extension packages VS Code rebuilds. Settings and extensions are untouched. Skipped while VS Code runs."
+
+[[area]]
+id = "slack-cache"
+name = "Slack cache"
+platform = "linux"
+category = "apps"
+paths = ["$XDG_CONFIG_HOME/Slack/{Cache,Code Cache,GPUCache}", "~/.config/Slack/{Cache,Code Cache,GPUCache}"]
+apps = ["slack"]
+note = "Slack's web caches; sign-in and settings are kept. Skipped while Slack runs."
+
+[[area]]
+id = "discord-cache"
+name = "Discord cache"
+platform = "linux"
+category = "apps"
+paths = ["$XDG_CONFIG_HOME/discord/{Cache,Code Cache,GPUCache}", "~/.config/discord/{Cache,Code Cache,GPUCache}"]
+apps = ["Discord", "discord"]
+note = "Discord's web caches; sign-in and settings are kept. Skipped while Discord runs."
+
+[[area]]
+id = "spotify-cache"
+name = "Spotify cache"
+platform = "linux"
+category = "apps"
+tier = "opt-in"
+paths = ["$XDG_CACHE_HOME/spotify", "~/.cache/spotify", "~/.var/app/com.spotify.Client/cache/spotify"]
+apps = ["spotify"]
+note = "Streaming cache, which can include offline downloads: those download again. Skipped while Spotify runs."
+
+[[area]]
+id = "flatpak-app-caches"
+name = "Flatpak app caches"
+platform = "linux"
+category = "caches"
+paths = ["~/.var/app/*/cache"]
+older_than = "7d"
+note = "Caches of Flatpak apps. Entries from the last week are kept."
+
+[[area]]
+id = "snap-app-caches"
+name = "Snap app caches"
+platform = "linux"
+category = "caches"
+paths = ["~/snap/*/common/.cache"]
+older_than = "7d"
+note = "Caches of Snap apps. Entries from the last week are kept."
+
+[[area]]
+id = "trash"
+name = "Trash"
+platform = "linux"
+category = "trash"
+tier = "opt-in"
+paths = ["$XDG_DATA_HOME/Trash/{files,info,expunged}", "~/.local/share/Trash/{files,info,expunged}"]
+note = "Files you deleted, in your home folder's trash. Emptying is permanent."
+
+[[area]]
+id = "flatpak-unused"
+name = "Unused Flatpak runtimes"
+platform = "linux"
+category = "packages"
+command = ["flatpak", "uninstall", "--unused", "--user", "--noninteractive"]
+paths = ["~/.local/share/flatpak/runtime"]
+note = "Runtimes no installed app of yours needs; downloaded again if one does."
+
+[[area]]
+id = "journal"
+name = "System journal"
+platform = "linux"
+category = "logs"
+tier = "opt-in"
+command = ["journalctl", "--vacuum-time=4weeks"]
+needs = "root"
+paths = ["/var/log/journal"]
+note = "systemd's log archive; entries older than 4 weeks are removed through journalctl."
+
+[[area]]
+id = "apt-cache"
+name = "APT package cache"
+platform = "linux"
+category = "packages"
+command = ["apt-get", "clean"]
+needs = "root"
+paths = ["/var/cache/apt/archives"]
+note = "Downloaded .deb packages, kept after installing; downloaded again if needed."
+
+[[area]]
+id = "dnf-cache"
+name = "DNF package cache"
+platform = "linux"
+category = "packages"
+command = ["dnf", "clean", "all"]
+needs = "root"
+paths = ["/var/cache/libdnf5", "/var/cache/dnf"]
+note = "Downloaded packages and repository metadata; fetched again when needed."
+
+[[area]]
+id = "pacman-cache"
+name = "pacman package cache"
+platform = "linux"
+category = "packages"
+command = ["paccache", "-rk2"]
+needs = "root"
+paths = ["/var/cache/pacman/pkg"]
+note = "Old package versions; the two most recent of each are kept so you can still downgrade."
+
+[[area]]
+id = "zypper-cache"
+name = "zypper package cache"
+platform = "linux"
+category = "packages"
+command = ["zypper", "clean", "--all"]
+needs = "root"
+paths = ["/var/cache/zypp"]
+note = "Downloaded packages and repository metadata; fetched again when needed."
+
+[[area]]
+id = "tmpfiles"
+name = "Temporary files and core dumps"
+platform = "linux"
+category = "temp"
+tier = "opt-in"
+command = ["systemd-tmpfiles", "--clean"]
+needs = "root"
+paths = ["/var/tmp", "/var/lib/systemd/coredump"]
+note = "Runs the system's own cleanup of /tmp, /var/tmp and old core dumps, by its configured ages (10 and 30 days by default)."
+
+[[area]]
+id = "docker"
+name = "Docker unused data"
+platform = "linux"
+category = "containers"
+tier = "opt-in"
+command = ["docker", "system", "prune", "--force"]
+note = "Stopped containers, unused networks, dangling images and build cache. Volumes and tagged images are kept."
+
+[[area]]
+id = "podman"
+name = "Podman unused data"
+platform = "linux"
+category = "containers"
+tier = "opt-in"
+command = ["podman", "system", "prune", "--force"]
+note = "Stopped containers, unused pods, networks and dangling images of your own Podman storage. Volumes are kept."
+
+[[area]]
+id = "snap-revisions"
+name = "Old Snap revisions"
+platform = "linux"
+category = "packages"
+tier = "report"
+paths = ["/var/lib/snapd/snaps"]
+note = "Snap keeps previous revisions of every snap for rollback."
+how = "List with `snap list --all`; remove a disabled revision with `sudo snap remove <name> --revision=<rev>`, or keep fewer with `sudo snap set system refresh.retain=2`."
+
+[[area]]
+id = "crash-reports"
+name = "Crash reports"
+platform = "linux"
+category = "logs"
+tier = "report"
+paths = ["/var/crash"]
+note = "Reports from crashed programs (apport); deleted after a week by the system."
+how = "`sudo find /var/crash -maxdepth 1 -name '*.crash' -delete`"
+
+[[area]]
+id = "rotated-logs"
+name = "Rotated system logs"
+platform = "linux"
+category = "logs"
+tier = "report"
+paths = ["/var/log"]
+note = "Old compressed logs kept by logrotate; useful for auditing."
+how = "`sudo find /var/log -type f -regextype posix-extended -regex '.*\\.([0-9]+|gz|xz|bz2|old)$' -mtime +30 -delete`. Never delete active logs."
+
+# ── Windows ──────────────────────────────────────────────────────────────────────────────
+
+[[area]]
+id = "user-temp"
+name = "Temporary files"
+platform = "windows"
+category = "temp"
+paths = ["$TEMP", "$LOCALAPPDATA/Temp"]
+older_than = "7d"
+note = "Your temporary folder. Files untouched for a week go, as Disk Cleanup does; files in use are skipped."
+
+[[area]]
+id = "crash-dumps"
+name = "Crash dumps"
+platform = "windows"
+category = "logs"
+paths = ["$LOCALAPPDATA/CrashDumps"]
+note = "Memory dumps from crashed apps, useful only for debugging those crashes."
+
+[[area]]
+id = "error-reports"
+name = "Error reports"
+platform = "windows"
+category = "logs"
+paths = ["$LOCALAPPDATA/Microsoft/Windows/WER/{ReportQueue,ReportArchive}"]
+older_than = "7d"
+note = "Windows Error Reporting files for your account. The last week's are kept."
+
+[[area]]
+id = "internet-cache"
+name = "Internet cache"
+platform = "windows"
+category = "caches"
+paths = ["$LOCALAPPDATA/Microsoft/Windows/INetCache"]
+note = "The WinINet cache used by Office and older apps; files in use are skipped."
+
+[[area]]
+id = "thumbnail-cache"
+name = "Thumbnail cache"
+platform = "windows"
+category = "caches"
+tier = "opt-in"
+paths = ["$LOCALAPPDATA/Microsoft/Windows/Explorer"]
+note = "Explorer's thumbnail and icon caches. Explorer keeps them open, so most are skipped until you sign out; Disk Cleanup's Thumbnails option is more thorough."
+
+[[area]]
+id = "shader-cache"
+name = "DirectX shader cache"
+platform = "windows"
+category = "caches"
+tier = "opt-in"
+paths = ["$LOCALAPPDATA/D3DSCache"]
+note = "Compiled shaders; rebuilt on demand, so games may stutter briefly afterwards."
+
+[[area]]
+id = "chrome-cache"
+name = "Chrome cache"
+platform = "windows"
+category = "browsers"
+paths = ["$LOCALAPPDATA/Google/Chrome/User Data/*/{Cache,Code Cache,GPUCache}"]
+apps = ["chrome"]
+note = "Chrome's web, code and GPU caches for every profile. Profiles, history and logins are untouched. Skipped while Chrome runs."
+
+[[area]]
+id = "edge-cache"
+name = "Edge cache"
+platform = "windows"
+category = "browsers"
+paths = ["$LOCALAPPDATA/Microsoft/Edge/User Data/*/{Cache,Code Cache,GPUCache}"]
+apps = ["msedge"]
+note = "Edge's web, code and GPU caches for every profile. Skipped while Edge runs."
+
+[[area]]
+id = "brave-cache"
+name = "Brave cache"
+platform = "windows"
+category = "browsers"
+paths = ["$LOCALAPPDATA/BraveSoftware/Brave-Browser/User Data/*/{Cache,Code Cache,GPUCache}"]
+apps = ["brave"]
+note = "Brave's web, code and GPU caches for every profile. Skipped while Brave runs."
+
+[[area]]
+id = "firefox-cache"
+name = "Firefox cache"
+platform = "windows"
+category = "browsers"
+paths = ["$LOCALAPPDATA/Mozilla/Firefox/Profiles/*/cache2"]
+apps = ["firefox"]
+note = "Firefox's web cache for every profile. Profiles live in Roaming and are untouched. Skipped while Firefox runs."
+
+[[area]]
+id = "vscode-cache"
+name = "VS Code caches"
+platform = "windows"
+category = "apps"
+paths = ["$APPDATA/Code/{Cache,Code Cache,GPUCache,CachedData,CachedExtensionVSIXs}"]
+apps = ["Code"]
+note = "Caches and downloaded extension packages VS Code rebuilds. Settings and extensions are untouched. Skipped while VS Code runs."
+
+[[area]]
+id = "slack-cache"
+name = "Slack cache"
+platform = "windows"
+category = "apps"
+paths = ["$APPDATA/Slack/{Cache,Code Cache,GPUCache}"]
+apps = ["slack"]
+note = "Slack's web caches; sign-in and settings are kept. Skipped while Slack runs."
+
+[[area]]
+id = "discord-cache"
+name = "Discord cache"
+platform = "windows"
+category = "apps"
+paths = ["$APPDATA/discord/{Cache,Code Cache,GPUCache}"]
+apps = ["Discord"]
+note = "Discord's web caches; sign-in and settings are kept. Skipped while Discord runs."
+
+[[area]]
+id = "recycle-bin"
+name = "Recycle Bin"
+platform = "windows"
+category = "trash"
+tier = "opt-in"
+command = ["powershell", "-NoProfile", "-Command", "Clear-RecycleBin -Force"]
+note = "Files you deleted, on every drive. Emptying is permanent."
+
+[[area]]
+id = "delivery-optimization"
+name = "Delivery Optimization files"
+platform = "windows"
+category = "system"
+command = ["powershell", "-NoProfile", "-Command", "Delete-DeliveryOptimizationCache -Force"]
+needs = "admin"
+note = "Update files Windows shares with other PCs; it prunes them itself, and this clears them now."
+
+[[area]]
+id = "component-store"
+name = "Superseded Windows components"
+platform = "windows"
+category = "system"
+tier = "opt-in"
+command = ["dism", "/Online", "/Cleanup-Image", "/StartComponentCleanup"]
+needs = "admin"
+note = "Old versions of Windows components replaced by updates. Takes several minutes; installed updates can still be uninstalled."
+
+[[area]]
+id = "docker"
+name = "Docker unused data"
+platform = "windows"
+category = "containers"
+tier = "opt-in"
+command = ["docker", "system", "prune", "--force"]
+note = "Stopped containers, unused networks, dangling images and build cache. Volumes are kept. Docker's virtual disk does not shrink by itself afterwards."
+
+[[area]]
+id = "windows-temp"
+name = "Windows temporary files"
+platform = "windows"
+category = "temp"
+tier = "report"
+paths = ["$SystemRoot/Temp", "$WINDIR/Temp"]
+note = "The system-wide temporary folder, which needs administrator rights."
+how = "Settings > System > Storage > Temporary files, or Disk Cleanup > Clean up system files > Temporary files."
+
+[[area]]
+id = "windows-update-cleanup"
+name = "Windows Update leftovers and previous installations"
+platform = "windows"
+category = "system"
+tier = "report"
+paths = ["$SystemDrive/Windows.old", "$SystemRoot/SoftwareDistribution/Download"]
+note = "Downloaded updates and, after an upgrade, the previous Windows installation (needed to roll back)."
+how = "Settings > System > Storage > Temporary files: select Windows Update Cleanup and Previous Windows installation(s). Never delete these folders by hand."
+
+[[area]]
+id = "wsl-disks"
+name = "WSL and Docker virtual disks"
+platform = "windows"
+category = "containers"
+tier = "report"
+paths = ["$LOCALAPPDATA/Docker/wsl", "$LOCALAPPDATA/Packages/*/LocalState"]
+note = "Linux distributions' and Docker's virtual disks. They grow but never shrink by themselves, and deleting them deletes everything inside."
+how = "Free space inside them first (e.g. `docker system prune`), run `wsl --shutdown`, then compact the .vhdx with `Optimize-VHD -Mode Full` or diskpart's `compact vdisk`."
+
+[[area]]
+id = "installer-cache"
+name = "Windows Installer cache"
+platform = "windows"
+category = "system"
+tier = "report"
+paths = ["$SystemRoot/Installer"]
+note = "Copies of installed programs' installers, needed to repair, update and uninstall them."
+how = "Never delete files here; uninstall programs you no longer need instead."
