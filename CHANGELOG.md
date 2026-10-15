@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artifacts are still never marked, and the review screen still lists what is recent or needs
   review before anything is deleted. `a` still marks only what is ready.
 
+### Fixed
+- Deletion could follow a symlink: if an artifact was replaced by a symlink between the safety
+  check and the deletion, the symlink's target was deleted. carwash now removes the link
+  itself and never resolves it.
+- Deletion failed on unreadable files and sockets, and could hang forever on a named pipe
+  (FIFO) inside an artifact. These are now removed like any other file.
+
+### Security
+- Dropped the `remove_dir_all` crate, which resolved symlinks at the path it was given and
+  opened every file it deleted. Removal now uses the standard library's implementation.
+
 ## [0.4.1] - 2026-09-27
 
 ### Fixed

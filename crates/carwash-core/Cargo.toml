@@ -16,7 +16,6 @@ categories = ["development-tools", "filesystem"]
 rayon.workspace = true
 dashmap.workspace = true
 globset.workspace = true
-remove_dir_all.workspace = true
 trash.workspace = true
 fs4.workspace = true
 etcetera.workspace = true
