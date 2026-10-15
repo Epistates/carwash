@@ -130,12 +130,16 @@ fn remove_permanently(path: &Path) -> Result<(), (PathBuf, io::Error)> {
         Some(staged) if fs::rename(path, &staged).is_ok() => staged,
         _ => path.to_path_buf(),
     };
-    remove_dir_all::remove_dir_all(&target).map_err(|error| (target, error))
+    // std removes a symlink found at `target` without following it, should the artifact
+    // have been swapped for one after validation, and unlinks files without opening them
+    // (named pipes, sockets and unreadable files included). It walks relative to directory
+    // handles, so nothing swapped in deeper is followed either (CVE-2022-21658).
+    fs::remove_dir_all(&target).map_err(|error| (target, error))
 }
 
-/// The process (EMFILE) or system (ENFILE) ran out of file handles. Parallel removal holds
-/// one per directory level of every tree in progress, so deep trees removed side by side can
-/// exhaust a low limit; removing one tree at a time needs only as many as it is deep.
+/// The process (EMFILE) or system (ENFILE) ran out of file handles. Each removal holds one
+/// per directory level, so deep trees removed side by side can exhaust a low limit;
+/// removing one tree at a time needs only as many as it is deep.
 fn out_of_file_handles(error: &io::Error) -> bool {
     // No stable `io::ErrorKind` covers these yet.
     if cfg!(unix) {
@@ -231,6 +235,47 @@ mod tests {
         assert!(out_of_file_handles(&io::Error::from_raw_os_error(23)));
         assert!(!out_of_file_handles(&io::Error::from_raw_os_error(13)));
         assert!(!out_of_file_handles(&io::Error::other("custom")));
+    }
+
+    /// A directory swapped for a symlink after validation must cost only the link: the
+    /// staged path is removed without resolving it.
+    #[cfg(unix)]
+    #[test]
+    fn removal_never_follows_a_swapped_in_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        fs::write(victim.join("precious"), "keep").unwrap();
+        let swapped = dir.path().join("project").join("target");
+        fs::create_dir(swapped.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&victim, &swapped).unwrap();
+        // The link itself may or may not be reported as removed; the target must survive.
+        let _ = remove_permanently(&swapped);
+        assert!(victim.join("precious").exists(), "symlink target deleted");
+        assert!(fs::symlink_metadata(&swapped).is_err(), "link left behind");
+    }
+
+    /// Named pipes, sockets and unreadable files are unlinked without being opened.
+    #[cfg(unix)]
+    #[test]
+    fn removes_special_and_unreadable_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir_all(target.join("deep")).unwrap();
+        let fifo = target.join("deep/pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        let _socket = std::os::unix::net::UnixListener::bind(target.join("sock")).unwrap();
+        let locked = target.join("locked");
+        fs::write(&locked, "x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(made || cfg!(not(target_os = "macos")), "mkfifo failed");
+        remove_permanently(&target).unwrap();
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "staging left");
     }
 
     fn item(id: u32, path: PathBuf) -> CleanItem {

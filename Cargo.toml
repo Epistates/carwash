@@ -20,7 +20,6 @@ rayon = "1.12"
 crossbeam-channel = "0.5"
 dashmap = "6.1"
 globset = "0.4"
-remove_dir_all = { version = "1.0", features = ["parallel"] }
 trash = "5.2"
 fs4 = "1.1"
 etcetera = "0.11"
