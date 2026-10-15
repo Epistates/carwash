@@ -40,6 +40,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         super::updates::render(frame, app, body);
     } else if app.tab == Tab::Caches {
         super::caches::render(frame, app, body);
+    } else if app.tab == Tab::System {
+        super::system::render(frame, app, body);
     } else if details {
         let [table, side] =
             Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAILS_WIDTH)])
@@ -227,6 +229,14 @@ fn render_toolbar(frame: &mut Frame, app: &App, area: Rect) {
         let right = Line::from(vec![
             Span::styled(fmt::bytes(app.caches.total()), t.bold(t.text)),
             Span::styled(" in caches ", t.muted()),
+        ]);
+        split_line(frame, area, Line::from(left), right);
+        return;
+    }
+    if app.tab == Tab::System {
+        let right = Line::from(vec![
+            Span::styled(fmt::bytes(app.system.ready()), t.bold(t.text)),
+            Span::styled(" ready to clean ", t.muted()),
         ]);
         split_line(frame, area, Line::from(left), right);
         return;
@@ -1433,5 +1443,61 @@ mod tests {
         );
         assert!(screen.contains("a/target"));
         assert!(screen.contains("delete permanently"));
+    }
+
+    #[test]
+    fn system_tab_shows_tiers_sizes_and_blockers() {
+        use carwash_core::sweep::SweepReport;
+        use carwash_core::system::{Action as AreaAction, Area, Tier};
+        let area = |id: &str, name: &str, tier, action| Area {
+            id: id.into(),
+            name: name.into(),
+            category: "caches".into(),
+            tier,
+            action,
+            roots: vec![std::path::PathBuf::from(format!("/home/me/{id}"))],
+            checked: true,
+            older_than: None,
+            keep: Vec::new(),
+            apps: Vec::new(),
+            needs: None,
+            note: Some(format!("About {name}.")),
+            how: (tier == Tier::Report).then(|| "Delete them in Finder.".into()),
+        };
+        let mut app = app();
+        press(&mut app, KeyCode::Char('5'));
+        app.update(crate::tui::app::Msg::SystemDiscovered(vec![
+            area("app-caches", "App caches", Tier::Default, AreaAction::Sweep),
+            area(
+                "safari-cache",
+                "Safari cache",
+                Tier::Default,
+                AreaAction::Sweep,
+            ),
+            area(
+                "backups",
+                "iPhone backups",
+                Tier::Report,
+                AreaAction::Report,
+            ),
+        ]));
+        for (id, bytes, blocked) in [
+            ("app-caches", 12_300_000_000, vec![]),
+            ("safari-cache", 762_000, vec!["Safari".to_owned()]),
+            ("backups", 5_000_000_000, vec![]),
+        ] {
+            let mut report = SweepReport::default();
+            report.removed.bytes = bytes;
+            app.update(crate::tui::app::Msg::SystemMeasured {
+                id: id.into(),
+                report,
+                blocked,
+            });
+        }
+        let screen = draw(&mut app, 120, 16);
+        assert!(screen.contains("System 3 · 12.3 GB ready"), "{screen}");
+        assert!(screen.contains("close Safari"), "{screen}");
+        assert!(screen.contains("report"), "{screen}");
+        assert!(screen.contains("About App caches."), "{screen}");
     }
 }

@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   number. Directories are swept safely (contents only, no symlinks, one disk, recent and
   in-use files kept, running apps' caches skipped); elevated tools are printed, or run through
   sudo or UAC with `--escalate`. Areas can be added or overridden in `system.toml`.
+- A System tab (`5`) in the TUI for OS mode: mark areas, clean them with `d` twice; privileged
+  commands run in the Tasks tab, where sudo or UAC asks for consent.
 
 ### Changed
 - In the TUI, marking a directory marks everything beneath it, including recently used and

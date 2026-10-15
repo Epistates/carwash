@@ -66,7 +66,7 @@ Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rus
 
 ## The TUI
 
-Run `carwash [PATH]`. Four tabs, switched with `1` to `4`:
+Run `carwash [PATH]`. Five tabs, switched with `1` to `5`:
 
 1. **Reclaim**: every project and artifact as a tree (or flat by project or artifact, `Tab`),
    sorted by size. Mark with `Space`, press `d` to review and clean. `/` filters with fuzzy text
@@ -82,6 +82,11 @@ Run `carwash [PATH]`. Four tabs, switched with `1` to `4`:
    when it is installed, or deletes the directory when that is safe. Sizes are remembered, so
    the tab opens instantly. A cache is measured again when the top of its tree has changed
    (entries added or removed there), after a week otherwise, or when you press `r`.
+5. **System**: [OS mode](#os-mode), the operating system's caches, logs, trash and temporary
+   files, numbered as in `carwash os`, with what cleaning each frees. `a` marks the default
+   tier, `d` (twice) cleans. Commands run in the Tasks tab, so one that needs root asks for your
+   password there (a UAC prompt on Windows); the first `d` names the exact command. Report
+   areas cannot be marked; their details say how to clean them by hand.
 
 `p` scans another folder without restarting: type a path (Tab completes, `~` and relative
 paths work) and press Enter. Running tasks keep running.

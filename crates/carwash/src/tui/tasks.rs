@@ -55,6 +55,8 @@ pub enum After {
     Recheck(PathBuf),
     /// Measure a cache again.
     Remeasure { id: String, path: PathBuf },
+    /// Measure a system area again.
+    RemeasureArea(String),
 }
 
 impl std::fmt::Debug for Job {
