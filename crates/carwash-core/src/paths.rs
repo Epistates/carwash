@@ -59,6 +59,11 @@ impl Dirs {
         self.data.join("history.jsonl")
     }
 
+    /// The numbered artifact list of the most recent `carwash scan`, for `clean --pick`.
+    pub fn last_scan_file(&self) -> PathBuf {
+        self.state.join("last-scan.json")
+    }
+
     pub fn log_dir(&self) -> PathBuf {
         self.state.join("logs")
     }

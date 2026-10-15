@@ -28,11 +28,26 @@ struct CleanOutput<'a> {
     mode: DeleteMode,
     selected: Vec<Planned<'a>>,
     held: BTreeMap<&'static str, usize>,
+    /// Picked artifacts that will not be deleted, with the reason.
+    skipped: Vec<Failure>,
+    /// Set by --free or --until-free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    goal: Option<Goal>,
     removed: usize,
     failed: Vec<Failure>,
     bytes: u64,
     free_before: Option<u64>,
     free_after: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct Goal {
+    /// Bytes the goal asks to reclaim (for --until-free, what was missing at plan time).
+    bytes: u64,
+    /// The --until-free target, if that was the goal.
+    until_free: Option<u64>,
+    /// Whether the selection (on a dry run) or the deletion reached the goal.
+    met: bool,
 }
 
 #[derive(Serialize)]
@@ -49,7 +64,14 @@ struct Failure {
 }
 
 pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
-    let (root, options) = ctx.scan_options(&args.walk, true, true)?;
+    let picks = if args.pick.is_empty() {
+        None
+    } else {
+        Some(super::pick::resolve(ctx, &args.pick, &args.walk)?)
+    };
+    // Picked numbers name artifacts of the last scan, so its tree is scanned again.
+    let walk = picks.as_ref().map_or(&args.walk, |p| &p.walk);
+    let (root, options) = ctx.scan_options(walk, true, true)?;
     let snapshot = ctx.run_scan(&root, &options, !args.json);
     let filter = ctx.filter(&args.filter)?;
     // An explicit --older-than replaces the default recent-activity window.
@@ -64,15 +86,75 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
     } else {
         ctx.config.clean.mode
     };
+    let wants_goal = args.free.is_some() || args.until_free.is_some();
+    if wants_goal && mode == DeleteMode::Trash {
+        bail!(
+            "--free and --until-free need permanent deletion, but the config sets mode = \"trash\" (the trash frees nothing until emptied)"
+        );
+    }
+    let available = fs4::available_space(&root).ok();
+    let goal_bytes = match (args.free, args.until_free) {
+        (Some(bytes), _) => Some(bytes),
+        (None, Some(target)) => {
+            let Some(available) = available else {
+                bail!("cannot read the free space of {}", root.display());
+            };
+            Some(target.saturating_sub(available))
+        }
+        (None, None) => None,
+    };
 
     let mut selected: Vec<&Artifact> = Vec::new();
     let mut held: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for artifact in snapshot.artifacts.iter().filter(|a| filter.matches(a, now)) {
-        match policy.hold(artifact, now) {
-            None if artifact.size.is_some() => selected.push(artifact),
-            None => *held.entry("unmeasured").or_default() += 1,
-            Some(hold) => *held.entry(hold.describe()).or_default() += 1,
+    // Picked artifacts carwash will not delete, with the reason.
+    let mut skipped: Vec<Failure> = Vec::new();
+    if let Some(picks) = &picks {
+        // An explicit pick overrides the recent and needs-review holds, as marking one by
+        // one in the TUI does, but never protection.
+        let by_path: HashMap<&Path, &Artifact> = snapshot
+            .artifacts
+            .iter()
+            .map(|a| (a.path.as_path(), a))
+            .collect();
+        for path in &picks.paths {
+            let refusal = match by_path.get(path.as_path()) {
+                None => Some(format!("not an artifact under {}", root.display())),
+                Some(a) if policy.hold(a, now) == Some(Hold::Protected) => {
+                    Some(format!("protected: {}", a.safety().describe()))
+                }
+                Some(a) => {
+                    selected.push(a);
+                    None
+                }
+            };
+            if let Some(error) = refusal {
+                skipped.push(Failure {
+                    path: path.clone(),
+                    error,
+                });
+            }
         }
+    } else {
+        for artifact in snapshot.artifacts.iter().filter(|a| filter.matches(a, now)) {
+            match policy.hold(artifact, now) {
+                None if artifact.size.is_some() => selected.push(artifact),
+                None => *held.entry("unmeasured").or_default() += 1,
+                Some(hold) => *held.entry(hold.describe()).or_default() += 1,
+            }
+        }
+    }
+    if let Some(want) = goal_bytes {
+        // Least recently used first, like evicting from a cache: the oldest artifacts are
+        // the least likely to be needed by work in progress.
+        super::scan::sort(&mut selected, SortKey::Age, now);
+        let mut planned = 0;
+        selected.retain(|a| {
+            let keep = planned < want;
+            if keep {
+                planned += a.size.map_or(0, |s| s.reclaimable);
+            }
+            keep
+        });
     }
     super::scan::sort(&mut selected, SortKey::Size, now);
     let total: u64 = selected
@@ -83,7 +165,37 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
 
     let mut out = anstream::stdout().lock();
     if !args.json {
-        print_plan(&mut out, &selected, &held, total, &root, ctx, now, &policy)?;
+        if goal_bytes == Some(0) {
+            // Only --until-free asks for nothing: the disk already has enough room.
+            writeln!(
+                out,
+                "{} available on this disk, which meets the goal; nothing to do.",
+                fmt::bytes(available.unwrap_or_default())
+            )?;
+        } else {
+            print_plan(&mut out, &selected, &held, total, &root, ctx, now, &policy)?;
+        }
+        for skip in &skipped {
+            let yellow = AnsiColor::Yellow.on_default();
+            writeln!(
+                out,
+                "{}skipped{} {}: {}",
+                yellow.render(),
+                yellow.render_reset(),
+                skip.path.display(),
+                skip.error
+            )?;
+        }
+        if let Some(want) = goal_bytes
+            && total < want
+        {
+            writeln!(
+                out,
+                "Goal not reachable: only {} of the {} needed is ready to clean.",
+                fmt::bytes(total),
+                fmt::bytes(want)
+            )?;
+        }
     }
     let mut output = CleanOutput {
         version: crate::report::VERSION,
@@ -99,12 +211,21 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
             })
             .collect(),
         held: held.clone(),
+        skipped,
+        goal: goal_bytes.map(|bytes| Goal {
+            bytes,
+            until_free: args.until_free,
+            met: total >= bytes,
+        }),
         removed: 0,
         failed: Vec::new(),
         bytes: 0,
-        free_before: None,
+        free_before: available,
         free_after: None,
     };
+    let goal_missed = |output: &CleanOutput| output.goal.as_ref().is_some_and(|g| !g.met);
+    // Less than what was asked for: a missed goal or a picked artifact that was skipped.
+    let incomplete = |output: &CleanOutput| goal_missed(output) || !output.skipped.is_empty();
 
     if selected.is_empty() || args.dry_run {
         if args.json {
@@ -113,7 +234,11 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
         } else if args.dry_run && !selected.is_empty() {
             writeln!(out, "Dry run: nothing was deleted.")?;
         }
-        return Ok(ExitCode::SUCCESS);
+        return Ok(if incomplete(&output) {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        });
     }
 
     if !args.yes {
@@ -228,8 +353,14 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
     output.removed = report.removed;
     output.failed = failures.into_inner().expect("failures lock");
     output.bytes = report.bytes;
-    output.free_before = report.free_before;
+    output.free_before = report.free_before.or(available);
     output.free_after = report.free_after;
+    if let Some(goal) = &mut output.goal {
+        goal.met = match (args.until_free, output.free_after) {
+            (Some(target), Some(after)) => after >= target,
+            _ => report.bytes >= goal.bytes,
+        };
+    }
 
     if args.json {
         serde_json::to_writer_pretty(&mut out, &output)?;
@@ -269,8 +400,11 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
                 failure.error
             )?;
         }
+        if goal_missed(&output) {
+            writeln!(out, "The goal was not met.")?;
+        }
     }
-    Ok(if output.failed.is_empty() {
+    Ok(if output.failed.is_empty() && !incomplete(&output) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -292,7 +426,15 @@ fn print_plan(
         writeln!(out, "Nothing to clean under {}.", root.display())?;
     } else {
         let shown: Vec<&Artifact> = selected.iter().take(PLAN_ROWS).copied().collect();
-        artifact_table(&shown, root, ctx.registry(), |a| policy.hold(a, now), now).write(out)?;
+        artifact_table(
+            &shown,
+            root,
+            ctx.registry(),
+            |a| policy.hold(a, now),
+            now,
+            false,
+        )
+        .write(out)?;
         if selected.len() > shown.len() {
             let rest: u64 = selected[shown.len()..]
                 .iter()

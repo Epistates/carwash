@@ -1,7 +1,7 @@
 //! JSON output shapes. Kept separate from the engine model so the CLI contract can stay
 //! stable while internals change; `version` is bumped on breaking changes.
 
-use carwash_core::select::{Filter, Policy};
+use carwash_core::select::Policy;
 use carwash_core::{
     Artifact, ArtifactKind, Detection, GitState, Project, Registry, Safety, Size, Snapshot,
 };
@@ -53,6 +53,8 @@ impl<'a> ProjectOut<'a> {
 
 #[derive(Serialize)]
 pub struct ArtifactOut<'a> {
+    /// Row number, from 1, as `clean --pick` takes it.
+    pub index: usize,
     pub id: u32,
     pub path: &'a Path,
     pub project: Option<u32>,
@@ -75,6 +77,7 @@ pub struct ArtifactOut<'a> {
 
 impl<'a> ArtifactOut<'a> {
     pub fn new(
+        index: usize,
         artifact: &'a Artifact,
         registry: &'a Registry,
         policy: &Policy,
@@ -91,6 +94,7 @@ impl<'a> ArtifactOut<'a> {
             Detection::CarwashLeftover => ("carwash_leftover", None),
         };
         Self {
+            index,
             id: artifact.id.0,
             path: &artifact.path,
             project: artifact.project.map(|p| p.0),
@@ -136,43 +140,47 @@ pub struct ScanReport<'a> {
     pub root: &'a Path,
     pub elapsed_ms: u128,
     pub directories: u64,
+    /// Bytes available on the root's disk, when the OS reports it.
+    pub available: Option<u64>,
     /// Every artifact matching the filters.
     pub total: Totals,
     /// The subset the default policy would clean.
     pub selectable: Totals,
     pub projects: Vec<ProjectOut<'a>>,
+    /// Every artifact matching the filters, in `--sort` order; `index` numbers them.
     pub artifacts: Vec<ArtifactOut<'a>>,
     pub warnings: usize,
 }
 
 impl<'a> ScanReport<'a> {
+    /// `artifacts` are the filtered artifacts in display order.
     pub fn new(
         root: &'a Path,
         snapshot: &'a Snapshot,
+        artifacts: &[&'a Artifact],
         registry: &'a Registry,
-        filter: &Filter,
         policy: &Policy,
+        now: SystemTime,
     ) -> Self {
-        let now = SystemTime::now();
         let mut total = Totals::default();
         let mut selectable = Totals::default();
-        let artifacts: Vec<ArtifactOut<'a>> = snapshot
-            .artifacts
+        let artifacts: Vec<ArtifactOut<'a>> = artifacts
             .iter()
-            .filter(|a| filter.matches(a, now))
             .inspect(|a| {
                 total.add(a);
                 if policy.hold(a, now).is_none() {
                     selectable.add(a);
                 }
             })
-            .map(|a| ArtifactOut::new(a, registry, policy, now))
+            .enumerate()
+            .map(|(row, a)| ArtifactOut::new(row + 1, a, registry, policy, now))
             .collect();
         Self {
             version: VERSION,
             root,
             elapsed_ms: snapshot.elapsed.as_millis(),
             directories: snapshot.dirs,
+            available: fs4::available_space(root).ok(),
             total,
             selectable,
             projects: snapshot

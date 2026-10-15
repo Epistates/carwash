@@ -96,7 +96,7 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | Command | |
 |---|---|
 | `carwash scan [PATH]` | List reclaimable artifacts. `--json`, `--sort`, `--limit`, filters below |
-| `carwash clean [PATH]` | Show the plan, confirm, delete. `--dry-run`, `--yes`, `--trash`, `--include-review`, `--include-recent` |
+| `carwash clean [PATH]` | Show the plan, confirm, delete. `--pick 1,3-5`, `--free SIZE`, `--until-free SIZE`, `--dry-run`, `--yes`, `--trash`, `--include-review`, `--include-recent` |
 | `carwash tasks [PATH]` | Tasks per project. `--all` for every project's list |
 | `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
@@ -109,6 +109,49 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 Filters shared by `scan` and `clean`: `--min-size 500MB`, `--older-than 3mo`,
 `--kind build,deps,cache,env,other,leftover`, `-e rust,node`, `--exclude PATH`, `--max-depth N`,
 `--hidden`, `--cross-fs`. Every listing command takes `--json`.
+
+### Choosing exactly what to delete
+
+`carwash scan` numbers its rows, and `carwash clean --pick` deletes the ones you name:
+
+```bash
+carwash scan ~/work
+carwash clean --pick 1,3-5,7
+carwash clean ~/work --pick ~/work/app/target --pick ~/work/web/node_modules
+```
+
+`--pick` also takes artifact paths (repeat the flag, or separate them with commas), which need
+no earlier scan. A pick is an explicit choice, so
+it can include recently used and needs-review artifacts, but never protected ones. carwash
+scans the tree again before deleting and skips anything that is no longer an artifact.
+
+### Scripts and agents
+
+To make room before a big build, download or container pull, ask for the space you need
+instead of cleaning everything:
+
+```bash
+carwash clean ~/work --until-free 50GB --yes --json   # make sure the disk has 50 GB available
+carwash clean ~/work --free 20GB --yes --json         # reclaim about 20 GB
+```
+
+Both take the least recently used artifacts first and stop once the goal is reached, and only
+ever pick what the default policy would clean: nothing protected, recently used or needing
+review. `--until-free` does nothing when the disk already has the room. Add `--dry-run` to see
+the plan first; `carwash scan --json` reports the disk's `available` bytes and what is
+`selectable`.
+
+To choose for yourself, read `carwash scan --json` (every artifact with its `path`, `size`,
+`kind`, `hold` and `modified` time) and pass the paths you want to `clean --pick`. Prefer
+paths over row numbers when anything else might run a scan meanwhile: numbers refer to the
+most recent scan on the machine.
+
+Without a terminal, `clean` refuses to delete unless given `--yes`. With `--json`, stdout is one
+JSON document: `selected`, `held` (counts by reason), `skipped` (picks it refused, with the
+reason), `removed`, `failed`, `bytes`, `free_before`, `free_after` and, with a goal,
+`goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
+do, 1 when a deletion failed, a pick was skipped or the goal could not be met, and 2 on
+invalid usage or errors.
 
 ## Configuration
 

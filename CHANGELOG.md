@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `carwash clean --free SIZE` reclaims at least SIZE, and `--until-free SIZE` frees just enough
+  that the disk has SIZE available. Both take the least recently used artifacts first, only
+  pick what the default policy would clean, and exit 1 when the goal cannot be met, so scripts
+  and agents can make room before big work. With `--json`, the result includes the goal and
+  free space before and after (also on dry runs).
+- `carwash scan` numbers its rows (`index` in `--json`), and `carwash clean --pick 1,3-5,7`
+  deletes exactly those, or the artifact paths given. Picks may include recently used and
+  needs-review artifacts but never protected ones, and the tree is scanned again first.
+- `carwash scan --json` reports the disk's `available` bytes, and lists artifacts in `--sort`
+  order.
+- `carwash clean --help` documents examples and exit codes.
+
 ### Changed
 - In the TUI, marking a directory marks everything beneath it, including recently used and
   needs-review artifacts; before, those had to be expanded and marked one by one. Protected
