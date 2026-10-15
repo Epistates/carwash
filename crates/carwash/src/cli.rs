@@ -64,6 +64,9 @@ pub enum Command {
     Outdated(OutdatedArgs),
     /// List and clean per-user caches (package stores, toolchains, SDK and IDE caches).
     Caches(CachesArgs),
+    /// List and clean the operating system's caches, logs, trash and temporary files.
+    #[command(after_long_help = OS_EXAMPLES)]
+    Os(OsArgs),
     /// List the ecosystems carwash recognises.
     Ecosystems(JsonArgs),
     /// Show how much space carwash has reclaimed.
@@ -376,6 +379,58 @@ pub enum CachesAction {
         delete: bool,
     },
 }
+
+#[derive(Debug, Args)]
+pub struct OsArgs {
+    #[command(subcommand)]
+    pub action: Option<OsAction>,
+
+    /// Machine-readable output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OsAction {
+    /// Clean areas by id or row number (default: every area in the default tier).
+    Clean {
+        /// Area ids or row numbers from `carwash os`, e.g. `app-caches` or `1,3-5`.
+        #[arg(value_name = "AREA", value_delimiter = ',')]
+        areas: Vec<String>,
+
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Show what would be cleaned, then stop.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Run commands that need root or administrator rights, through sudo or a UAC
+        /// prompt (default: print them for you to run).
+        #[arg(long)]
+        escalate: bool,
+
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+const OS_EXAMPLES: &str = "\
+Examples:
+  carwash os                         List areas on this machine with what cleaning frees
+  carwash os clean                   Clean every area in the default tier
+  carwash os clean 2,5-7 trash       Clean rows 2, 5, 6 and 7 and the trash
+  carwash os clean --escalate        Also run commands that need root or administrator
+
+Tiers: default areas are safe to clean whenever; opt-in areas cost something (permanent,
+re-downloads, privileged) and are cleaned only when named; report areas are never cleaned
+by carwash, only measured, with instructions for doing it by hand.
+
+Areas are swept (contents only, keeping recent entries where an age is shown, skipping
+files in use and caches of running apps) or cleaned by the operating system's own tool.
+carwash never sweeps as root; privileged tools run only with --escalate.";
 
 #[derive(Debug, Args)]
 pub struct JsonArgs {

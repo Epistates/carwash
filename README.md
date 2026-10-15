@@ -102,6 +102,8 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
 | `carwash caches` | Global caches and their sizes |
 | `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children |
+| `carwash os` | The operating system's caches, logs, trash and temp files, with what cleaning frees |
+| `carwash os clean [AREA...]` | Clean the default tier, or areas by id or number. `--escalate`, `--dry-run`, `--yes` |
 | `carwash ecosystems` | Recognised ecosystems |
 | `carwash history` | Space reclaimed so far |
 | `carwash completions SHELL` | Shell completions |
@@ -152,6 +154,38 @@ reason), `removed`, `failed`, `bytes`, `free_before`, `free_after` and, with a g
 `goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
 do, 1 when a deletion failed, a pick was skipped or the goal could not be met, and 2 on
 invalid usage or errors.
+
+### OS mode
+
+`carwash os` looks beyond your projects at the operating system's own space hogs on macOS,
+Linux and Windows: app and browser caches, logs and crash reports, the trash, temporary
+files, package-manager caches and container data. Each area is in one of three tiers:
+
+- **default**: safe to clean whenever. It regenerates and holds nothing of yours, such as
+  app caches untouched for a week or a closed browser's cache. `carwash os clean` cleans these.
+- **opt-in**: fine to clean, at a cost you choose: the trash (permanent), Spotify's cache
+  (re-downloads), `docker system prune`, or commands that need root. Name them to clean them.
+- **report**: never cleaned by carwash, only measured, with instructions for doing it
+  yourself: iPhone backups, Messages attachments, Time Machine snapshots, the Windows
+  Installer cache, WSL disks.
+
+```bash
+carwash os                       # list areas, numbered, with what cleaning frees
+carwash os clean                 # clean the default tier
+carwash os clean 2,5-7 trash     # clean areas by number or id
+carwash os clean --escalate      # also run commands that need root or administrator
+```
+
+Areas are swept or cleaned with the operating system's own tool (`journalctl --vacuum-time`,
+`apt-get clean`, `qlmanage -r cache`, `Delete-DeliveryOptimizationCache`). Sweeping removes a
+directory's contents and keeps the directory, never follows symlinks, junctions or other
+links, stays on one disk, keeps recent entries where an age is shown, skips files in use,
+cloud placeholders (OneDrive, iCloud) and the caches of apps that are running. carwash never
+sweeps as root. Commands that need root or administrator rights are printed for you to run,
+or run through `sudo` or a UAC prompt with `--escalate`. Areas in macOS privacy-protected
+places (the Trash, Mail) need Full Disk Access for your terminal; listing never looks inside
+them. Add or override areas in `~/.config/carwash/system.toml`, in the format of the built-in
+[`system.toml`](crates/carwash-core/src/system.toml).
 
 ## Configuration
 

@@ -51,6 +51,11 @@ impl Dirs {
         self.config.join("caches.toml")
     }
 
+    /// User additions and overrides for OS mode areas.
+    pub fn system_file(&self) -> PathBuf {
+        self.config.join("system.toml")
+    }
+
     pub fn size_cache_file(&self) -> PathBuf {
         self.cache.join("sizes.json")
     }

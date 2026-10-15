@@ -3,6 +3,7 @@
 pub mod caches;
 pub mod clean;
 pub mod info;
+pub mod os;
 pub mod outdated;
 pub mod pick;
 pub mod scan;
