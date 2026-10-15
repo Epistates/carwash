@@ -91,6 +91,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Command::Run(args)) => commands::tasks::run(&ctx, args),
         Some(Command::Outdated(args)) => commands::outdated::run(&ctx, args),
         Some(Command::Caches(args)) => commands::caches::run(&ctx, args),
+        Some(Command::Os(args)) => commands::os::run(&ctx, args),
         Some(Command::Ecosystems(args)) => commands::info::ecosystems(&ctx, args),
         Some(Command::History(args)) => commands::info::history(&ctx, args),
         Some(Command::Completions { .. }) => unreachable!("handled above"),

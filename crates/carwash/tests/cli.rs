@@ -486,3 +486,105 @@ fn pick_numbers_are_checked_against_the_last_scan() {
     assert!(other.path().join("app/target").exists());
     assert!(tree.path().join("app/target").exists());
 }
+
+/// User-defined OS areas over `root`, for every platform, so tests do not depend on the
+/// machine: a sweepable cache, a report-only area and one whose app is always running.
+fn os_areas(home: &Path, root: &Path) {
+    let mut toml = String::from("schema = 1\n");
+    for platform in ["macos", "linux", "windows"] {
+        for (id, extra) in [
+            ("fixture-cache", ""),
+            ("fixture-report", "tier = \"report\"\nhow = \"by hand\"\n"),
+            // Every process name matches `*`, including carwash's own.
+            ("fixture-busy", "apps = [\"*\"]\n"),
+        ] {
+            toml.push_str(&format!(
+                "[[area]]\nid = \"{id}\"\nname = \"{id}\"\nplatform = \"{platform}\"\ncategory = \"caches\"\npaths = ['{}']\nnote = \"test\"\n{extra}",
+                root.join(id).display()
+            ));
+        }
+    }
+    write(home, "config/system.toml", &toml);
+    for id in ["fixture-cache", "fixture-report", "fixture-busy"] {
+        write(root, &format!("{id}/sub/blob"), &"x".repeat(20_000));
+    }
+}
+
+#[test]
+fn os_lists_areas_with_what_cleaning_frees() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    os_areas(home.path(), root.path());
+    let output = carwash(home.path())
+        .args(["os", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let areas: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let area = |id: &str| {
+        areas
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+            .clone()
+    };
+    assert!(area("fixture-cache")["frees"].as_u64().unwrap() >= 20_000);
+    assert_eq!(area("fixture-report")["tier"], "report");
+    assert!(
+        !area("fixture-busy")["blocked_by"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(area("fixture-cache")["index"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn os_clean_sweeps_named_areas_and_keeps_the_directory() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    os_areas(home.path(), root.path());
+    let output = carwash(home.path())
+        .args(["os", "clean", "fixture-cache", "--yes", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["areas"][0]["outcome"], "cleaned");
+    assert!(report["freed"].as_u64().unwrap() >= 20_000);
+    let cache = root.path().join("fixture-cache");
+    assert!(cache.is_dir(), "the directory stays");
+    assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+    assert!(root.path().join("fixture-busy/sub/blob").exists());
+}
+
+#[test]
+fn os_clean_refuses_report_areas_and_respects_running_apps() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    os_areas(home.path(), root.path());
+    carwash(home.path())
+        .args(["os", "clean", "fixture-report", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("report-only"));
+    let output = carwash(home.path())
+        .args(["os", "clean", "fixture-busy", "--yes", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["areas"][0]["outcome"], "blocked");
+    assert!(root.path().join("fixture-busy/sub/blob").exists());
+    assert!(root.path().join("fixture-report/sub/blob").exists());
+    carwash(home.path())
+        .args(["os", "clean", "no-such-area", "--yes"])
+        .assert()
+        .code(2);
+}

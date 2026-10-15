@@ -72,6 +72,14 @@ fn parse(token: &str) -> Result<Token> {
     }
 }
 
+/// The rows a token names (`3` or `3-5`, from 1), or `None` when it is not a number.
+pub fn rows(token: &str) -> Result<Option<(usize, usize)>, String> {
+    match parse(token).map_err(|e| e.to_string())? {
+        Token::Rows(first, last) => Ok(Some((first, last))),
+        Token::Path(_) => Ok(None),
+    }
+}
+
 /// Resolves `--pick` values against the last scan (numbers) and the filesystem (paths).
 /// Numbers scan the last scan's tree again; paths alone scan `walk`.
 pub fn resolve(ctx: &Context, values: &[String], walk: &WalkArgs) -> Result<Picks> {

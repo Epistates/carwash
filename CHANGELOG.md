@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `carwash scan --json` reports the disk's `available` bytes, and lists artifacts in `--sort`
   order.
 - `carwash clean --help` documents examples and exit codes.
+- OS mode: `carwash os` lists the operating system's own space hogs on macOS, Linux and
+  Windows (app and browser caches, logs, crash reports, trash, temporary files,
+  package-manager caches, container data) with what cleaning each frees, in three tiers:
+  default (safe whenever), opt-in (a cost you choose) and report (never cleaned; instructions
+  to do it by hand). `carwash os clean` cleans the default tier, or areas named by id or
+  number. Directories are swept safely (contents only, no symlinks, one disk, recent and
+  in-use files kept, running apps' caches skipped); elevated tools are printed, or run through
+  sudo or UAC with `--escalate`. Areas can be added or overridden in `system.toml`.
 
 ### Changed
 - In the TUI, marking a directory marks everything beneath it, including recently used and
