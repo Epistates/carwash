@@ -4,6 +4,7 @@ pub mod caches;
 pub mod clean;
 pub mod info;
 pub mod outdated;
+pub mod pick;
 pub mod scan;
 pub mod tasks;
 
@@ -66,14 +67,20 @@ pub(crate) fn notes(artifact: &Artifact) -> String {
     notes.join(", ")
 }
 
+/// `numbered` adds a `#` column counting rows from 1, as `clean --pick` refers to them.
 pub(crate) fn artifact_table(
     artifacts: &[&Artifact],
     root: &Path,
     registry: &carwash_core::Registry,
     hold: impl Fn(&Artifact) -> Option<Hold>,
     now: SystemTime,
+    numbered: bool,
 ) -> Table {
-    let mut table = Table::new(&[
+    let mut columns = Vec::new();
+    if numbered {
+        columns.push(("#", Align::Right));
+    }
+    columns.extend([
         ("FREED", Align::Right),
         ("ON DISK", Align::Right),
         ("AGE", Align::Right),
@@ -83,7 +90,8 @@ pub(crate) fn artifact_table(
         ("NOTES", Align::Left),
         ("PATH", Align::Left),
     ]);
-    for artifact in artifacts {
+    let mut table = Table::new(&columns);
+    for (row, artifact) in artifacts.iter().enumerate() {
         let (freed, on_disk) = match artifact.size {
             Some(size) => (
                 Cell::styled(
@@ -104,7 +112,11 @@ pub(crate) fn artifact_table(
             .ecosystem
             .map(|e| registry.ecosystem(e).key.clone())
             .unwrap_or_default();
-        table.push(vec![
+        let mut cells = Vec::new();
+        if numbered {
+            cells.push(Cell::styled((row + 1).to_string(), Style::new().dimmed()));
+        }
+        cells.extend([
             freed,
             on_disk,
             Cell::styled(age, Style::new().dimmed()),
@@ -114,6 +126,7 @@ pub(crate) fn artifact_table(
             Cell::styled(notes(artifact), Style::new().dimmed()),
             Cell::new(display_path(&artifact.path, root)),
         ]);
+        table.push(cells);
     }
     table
 }

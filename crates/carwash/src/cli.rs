@@ -2,6 +2,7 @@
 
 use carwash_core::ArtifactKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -53,6 +54,7 @@ pub enum Command {
     /// List reclaimable artifacts without deleting anything.
     Scan(ScanArgs),
     /// Delete artifacts, after showing the plan and asking for confirmation.
+    #[command(after_long_help = CLEAN_EXAMPLES)]
     Clean(CleanArgs),
     /// List project tasks: package.json scripts, just/make/Taskfile/mise targets, standard commands.
     Tasks(TasksArgs),
@@ -73,7 +75,7 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct WalkArgs {
     /// Directory to scan.
     #[arg(default_value = ".")]
@@ -204,10 +206,52 @@ pub struct CleanArgs {
     #[arg(long)]
     pub include_recent: bool,
 
+    /// Stop once this much would be freed, least recently used first, e.g. 20GB.
+    #[arg(long, value_name = "SIZE", value_parser = parse_size, conflicts_with_all = ["until_free", "trash"])]
+    pub free: Option<u64>,
+
+    /// Free just enough that PATH's disk has this much available, least recently used first.
+    #[arg(long, value_name = "SIZE", value_parser = parse_size, conflicts_with = "trash")]
+    pub until_free: Option<u64>,
+
+    /// Delete exactly these: numbers from the last `carwash scan` (1,3-5,7) or artifact paths.
+    #[arg(
+        long,
+        value_name = "LIST",
+        value_delimiter = ',',
+        conflicts_with_all = [
+            "free", "until_free", "include_review", "include_recent",
+            "min_size", "older_than", "kind", "ecosystems",
+        ]
+    )]
+    pub pick: Vec<String>,
+
     /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
 }
+
+const CLEAN_EXAMPLES: &str = "\
+Examples:
+  carwash clean ~/work --dry-run              Show what the default policy would delete
+  carwash clean ~/work --free 20GB --yes      Free about 20 GB, oldest artifacts first
+  carwash clean ~ --until-free 50GB --yes     Make sure the disk has 50 GB available
+  carwash scan ~/work && carwash clean --pick 1,3-5,7
+                                              Delete rows 1, 3, 4, 5 and 7 of that scan
+  carwash clean ~/work --pick ~/work/app/target --yes
+                                              Delete one artifact by path
+
+Scripts and agents: add --json for a machine-readable result on stdout. Without a terminal,
+--yes is required. --free and --until-free only take artifacts the default policy would
+clean (never protected, recently used or needs-review ones, unless --include-* says so).
+--pick deletes exactly what it names, including recently used and needs-review artifacts,
+but never protected ones; the root is scanned again first and anything that is no longer an
+artifact is skipped. Prefer paths over numbers when several scans may run at once: numbers
+refer to the most recent `carwash scan` by anyone.
+
+Exit status: 0 on success (including nothing to do), 1 when a deletion failed, a picked
+artifact was skipped, or the --free/--until-free goal could not be met, 2 on invalid usage
+or errors.";
 
 #[derive(Debug, Args)]
 pub struct TasksArgs {

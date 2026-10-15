@@ -23,13 +23,7 @@ pub fn run(ctx: &Context, args: &ScanArgs) -> Result<ExitCode> {
     let registry = ctx.registry();
     let mut out = anstream::stdout().lock();
 
-    if args.json {
-        let report = ScanReport::new(&root, &snapshot, registry, &filter, &policy);
-        serde_json::to_writer_pretty(&mut out, &report)?;
-        writeln!(out)?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
+    // One order for the table, the JSON and `clean --pick`, so row numbers agree.
     let now = SystemTime::now();
     let mut artifacts: Vec<&Artifact> = snapshot
         .artifacts
@@ -37,6 +31,14 @@ pub fn run(ctx: &Context, args: &ScanArgs) -> Result<ExitCode> {
         .filter(|a| filter.matches(a, now))
         .collect();
     sort(&mut artifacts, args.sort, now);
+    super::pick::save(ctx, &root, &args.walk, &artifacts);
+
+    if args.json {
+        let report = ScanReport::new(&root, &snapshot, &artifacts, registry, &policy, now);
+        serde_json::to_writer_pretty(&mut out, &report)?;
+        writeln!(out)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let limit = match args.limit {
         Some(0) => usize::MAX,
@@ -44,7 +46,7 @@ pub fn run(ctx: &Context, args: &ScanArgs) -> Result<ExitCode> {
         None => DEFAULT_ROWS,
     };
     let shown: Vec<&Artifact> = artifacts.iter().take(limit).copied().collect();
-    let table = artifact_table(&shown, &root, registry, |a| policy.hold(a, now), now);
+    let table = artifact_table(&shown, &root, registry, |a| policy.hold(a, now), now, true);
     if table.is_empty() {
         writeln!(out, "No artifacts found under {}.", root.display())?;
     } else {
@@ -95,6 +97,14 @@ pub fn run(ctx: &Context, args: &ScanArgs) -> Result<ExitCode> {
         parts.push(format!("{n} {label} ({})", fmt::bytes(*bytes)));
     }
     writeln!(out, "{}", parts.join(" · "))?;
+    if !artifacts.is_empty() {
+        writeln!(
+            out,
+            "{}Delete by number with `carwash clean --pick 1,3-5`, or everything ready with `carwash clean`{}",
+            Style::new().dimmed().render(),
+            Style::new().dimmed().render_reset()
+        )?;
+    }
     writeln!(
         out,
         "{}Scanned {} directories in {:.1}s{}",
