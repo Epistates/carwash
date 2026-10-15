@@ -27,12 +27,15 @@ pub struct Task {
 impl Task {
     /// The command as a user would type it.
     pub fn command_line(&self) -> String {
-        std::iter::once(self.program.as_str())
-            .chain(self.args.iter().map(String::as_str))
-            .map(quote)
-            .collect::<Vec<_>>()
-            .join(" ")
+        command_line(
+            std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str)),
+        )
     }
+}
+
+/// A command as a user would type it, quoting arguments that need it.
+pub fn command_line<'a>(argv: impl IntoIterator<Item = &'a str>) -> String {
+    argv.into_iter().map(quote).collect::<Vec<_>>().join(" ")
 }
 
 fn quote(arg: &str) -> String {

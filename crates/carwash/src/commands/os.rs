@@ -104,22 +104,12 @@ pub fn run(ctx: &Context, args: &OsArgs) -> Result<ExitCode> {
     }
 }
 
-/// A command as it would be typed.
 fn command_line(argv: &[String]) -> String {
-    argv.iter()
-        .map(|arg| {
-            if arg.is_empty() || arg.contains([' ', '\'', '"']) {
-                format!("'{}'", arg.replace('\'', "'\\''"))
-            } else {
-                arg.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    carwash_core::tasks::command_line(argv.iter().map(String::as_str))
 }
 
 /// The command as the user would run it with the rights it needs.
-fn privileged_line(argv: &[String], needs: Option<Need>) -> String {
+pub(crate) fn privileged_line(argv: &[String], needs: Option<Need>) -> String {
     match needs {
         Some(Need::Root) => format!("sudo {}", command_line(argv)),
         Some(Need::Admin) => format!("{} (in an administrator terminal)", command_line(argv)),
@@ -127,16 +117,29 @@ fn privileged_line(argv: &[String], needs: Option<Need>) -> String {
     }
 }
 
-fn needs_elevation(area: &Area) -> bool {
+pub(crate) fn needs_elevation(area: &Area) -> bool {
     matches!(area.action, Action::Command { .. }) && area.needs.is_some_and(Need::elevates)
 }
 
+/// The command that cleans a command area, elevated (through sudo, or a UAC prompt on
+/// Windows) when it needs root or administrator rights.
+pub(crate) fn area_command(area: &Area) -> Option<Vec<String>> {
+    let Action::Command { argv } = &area.action else {
+        return None;
+    };
+    Some(if needs_elevation(area) {
+        elevated(argv)
+    } else {
+        argv.clone()
+    })
+}
+
 /// Whether the walk was refused somewhere for want of macOS Full Disk Access.
-fn lacks_disk_access(area: &Area, report: &SweepReport) -> bool {
+pub(crate) fn lacks_disk_access(area: &Area, report: &SweepReport) -> bool {
     area.needs == Some(Need::FullDiskAccess) && report.skipped.contains_key(&Skip::Denied)
 }
 
-const DISK_ACCESS_HINT: &str =
+pub(crate) const DISK_ACCESS_HINT: &str =
     "grant Full Disk Access to your terminal in System Settings > Privacy & Security";
 
 fn notes(area: &Area, report: &SweepReport, blocked: &[String]) -> String {
@@ -568,13 +571,14 @@ fn clean(ctx: &Context, areas: &[Area], picks: &[String], flags: &Flags) -> Resu
                 outcome_for(area, *plan, &report, Outcome::Cleaned)
             }
             Plan::Command => {
-                let Action::Command { argv } = &area.action else {
+                let (Action::Command { argv }, Some(full)) = (&area.action, area_command(area))
+                else {
                     unreachable!("command plan for a command area");
                 };
                 if !flags.json {
                     anstream::println!("▶ {}", privileged_line(argv, area.needs));
                 }
-                match run_command(argv, needs_elevation(area), flags.json) {
+                match run_command(&full, flags.json) {
                     Ok(()) => {
                         let after = area.sweep(true, &Cancel::new());
                         let mut report = measured.clone();
@@ -688,14 +692,9 @@ fn print_swept(area: &Area, report: &SweepReport) {
 
 /// Runs an area's command with the terminal attached, elevated through sudo or a UAC
 /// prompt when it needs root or administrator rights.
-fn run_command(argv: &[String], elevate: bool, json: bool) -> Result<()> {
-    let mut command = if elevate {
-        elevated(argv)
-    } else {
-        let mut command = Command::new(&argv[0]);
-        command.args(&argv[1..]);
-        command
-    };
+fn run_command(argv: &[String], json: bool) -> Result<()> {
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
     // With --json, stdout carries only the report.
     if json {
         command.stdout(Stdio::null());
@@ -711,15 +710,17 @@ fn run_command(argv: &[String], elevate: bool, json: bool) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn elevated(argv: &[String]) -> Command {
-    // sudo prompts for the password itself, in this terminal.
-    let mut command = Command::new("sudo");
-    command.arg("--").args(argv);
-    command
+fn elevated(argv: &[String]) -> Vec<String> {
+    // sudo prompts for the password itself, in the terminal the command runs in.
+    ["sudo", "--"]
+        .into_iter()
+        .map(String::from)
+        .chain(argv.iter().cloned())
+        .collect()
 }
 
 #[cfg(windows)]
-fn elevated(argv: &[String]) -> Command {
+fn elevated(argv: &[String]) -> Vec<String> {
     // Start-Process -Verb RunAs shows the UAC prompt and waits for the elevated process.
     let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
     let mut script = format!(
@@ -731,16 +732,15 @@ fn elevated(argv: &[String]) -> Command {
         script.push_str(&format!(" -ArgumentList {}", args.join(",")));
     }
     script.push_str("; exit $p.ExitCode");
-    let mut command = Command::new("powershell");
-    command.args(["-NoProfile", "-Command", &script]);
-    command
+    ["powershell", "-NoProfile", "-Command", &script]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn elevated(argv: &[String]) -> Command {
-    let mut command = Command::new(&argv[0]);
-    command.args(&argv[1..]);
-    command
+fn elevated(argv: &[String]) -> Vec<String> {
+    argv.to_vec()
 }
 
 #[cfg(test)]
