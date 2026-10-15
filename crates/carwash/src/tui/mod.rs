@@ -10,6 +10,7 @@ mod keymap;
 mod pty;
 mod query;
 mod store;
+mod system;
 mod tasks;
 mod theme;
 mod updates;
@@ -443,6 +444,80 @@ impl Runtime<'_> {
                             }
                         }
                         let _ = tx.send(measure_cache(&engine, cache.id, &cache.path));
+                    });
+                }
+            }
+            Effect::DiscoverSystem => {
+                // Expanding patterns reads directories: keep it off the event loop.
+                let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let areas =
+                        crate::commands::os::present(dirs.as_ref()).unwrap_or_else(|error| {
+                            tracing::warn!(%error, "cannot list system areas");
+                            Vec::new()
+                        });
+                    let _ = tx.send(Msg::SystemDiscovered(areas));
+                });
+            }
+            Effect::MeasureSystem(areas) => {
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let running = carwash_core::system::RunningApps::snapshot();
+                    for area in areas {
+                        let report = area.sweep(true, &Cancel::new());
+                        let _ = tx.send(Msg::SystemMeasured {
+                            blocked: area.blocked_by(&running),
+                            id: area.id,
+                            report,
+                        });
+                    }
+                });
+            }
+            Effect::CleanSystem { areas, size } => {
+                for area in areas {
+                    if let Some(argv) = crate::commands::os::area_command(&area) {
+                        let task = Task {
+                            name: area.id.clone(),
+                            source: "system".into(),
+                            program: argv[0].clone(),
+                            args: argv[1..].to_vec(),
+                            description: Some(area.name.clone()),
+                            cwd: carwash_core::paths::home().unwrap_or_else(|| PathBuf::from("/")),
+                            standard: true,
+                        };
+                        let after = tasks::After::RemeasureArea(area.id.clone());
+                        self.start_job(area.name.clone(), task, size, after);
+                        continue;
+                    }
+                    let tx = self.tx.clone();
+                    let history = self.ctx.dirs.as_ref().map(|d| d.history_file());
+                    std::thread::spawn(move || {
+                        // Apps may have started since the area was measured.
+                        let running = carwash_core::system::RunningApps::snapshot();
+                        let blocked = area.blocked_by(&running);
+                        let result = if blocked.is_empty() {
+                            let report = area.sweep(false, &Cancel::new());
+                            let freed = report.removed.bytes;
+                            if freed > 0
+                                && let (Some(file), Some(root)) = (history, area.roots.first())
+                            {
+                                let record = carwash_core::history::Record::now(
+                                    root.clone(),
+                                    freed,
+                                    carwash_core::ArtifactKind::Cache,
+                                    None,
+                                    carwash_core::clean::DeleteMode::Permanent,
+                                );
+                                let _ = history::append(&file, &[record]);
+                            }
+                            Ok(freed)
+                        } else {
+                            Err(format!("close {} first", blocked.join(", ")))
+                        };
+                        let _ = tx.send(Msg::SystemCleaned {
+                            id: area.id,
+                            result,
+                        });
                     });
                 }
             }

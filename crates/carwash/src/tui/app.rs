@@ -5,6 +5,7 @@ use super::folder::FolderPrompt;
 use super::keymap::{self, Action, Tab};
 use super::query::{Fuzzy, Query};
 use super::store::{self, EntryStatus, Grouping, RowKey, Rows, SortKey, Store, View};
+use super::system::SystemState;
 use super::tasks::{After, JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use super::updates::UpdatesState;
@@ -14,6 +15,8 @@ use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
 use carwash_core::history::Record;
 use carwash_core::select::{Hold, Policy};
+use carwash_core::sweep::SweepReport;
+use carwash_core::system::Area;
 use carwash_core::tasks::Task;
 use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, Size, fmt};
 use ratatui::crossterm::event::{
@@ -71,6 +74,18 @@ pub enum Msg {
         /// Taken just before measuring.
         fingerprint: Option<Fingerprint>,
     },
+    SystemDiscovered(Vec<Area>),
+    /// A dry-run sweep of an area, with the running programs that block it.
+    SystemMeasured {
+        id: String,
+        report: SweepReport,
+        blocked: Vec<String>,
+    },
+    /// A swept area: the bytes freed, or why it was not cleaned.
+    SystemCleaned {
+        id: String,
+        result: Result<u64, String>,
+    },
 }
 
 #[derive(Debug)]
@@ -117,6 +132,14 @@ pub enum Effect {
     },
     /// Measures each `(id, path)` and reports it with [`Msg::CacheMeasured`].
     MeasureCaches(Vec<(String, PathBuf)>),
+    DiscoverSystem,
+    /// Dry-runs each area and reports it with [`Msg::SystemMeasured`].
+    MeasureSystem(Vec<Area>),
+    /// Sweeps each area, or runs its command as a job (elevated when it needs to be).
+    CleanSystem {
+        areas: Vec<Area>,
+        size: (u16, u16),
+    },
     /// Writes the size cache now, rather than only when the UI exits.
     SaveSizes(SizeCache),
     /// Lists directories completing the folder prompt's input.
@@ -215,6 +238,7 @@ impl Target {
             Target::Tab(Tab::Tasks) => Action::ShowTasks,
             Target::Tab(Tab::Updates) => Action::ShowUpdates,
             Target::Tab(Tab::Caches) => Action::ShowCaches,
+            Target::Tab(Tab::System) => Action::ShowSystem,
             Target::Binding(binding) => binding.action,
         }
     }
@@ -257,6 +281,7 @@ pub struct App {
     pub tasks: TasksState,
     pub updates: UpdatesState,
     pub caches: CachesState,
+    pub system: SystemState,
     pub folder: FolderPrompt,
     /// Quit was pressed once while jobs were running.
     quit_armed: bool,
@@ -321,6 +346,7 @@ impl App {
             tasks: TasksState::default(),
             updates: UpdatesState::default(),
             caches: CachesState::default(),
+            system: SystemState::default(),
             folder: FolderPrompt::default(),
             quit_armed: false,
             quit: false,
@@ -336,6 +362,7 @@ impl App {
             || self.tasks.running() > 0
             || !self.updates.checking.is_empty()
             || !self.caches.busy.is_empty()
+            || !self.system.busy.is_empty()
     }
 
     pub(crate) fn toast(&mut self, text: impl Into<String>, level: Level) {
@@ -394,6 +421,7 @@ impl App {
     pub fn startup(&mut self) -> Vec<Effect> {
         let mut effects = vec![Effect::Scan, Effect::RefreshDisk];
         effects.extend(self.discover_caches());
+        effects.extend(self.discover_system());
         effects
     }
 
@@ -409,6 +437,7 @@ impl App {
                 fmt::bytes(self.marked_bytes())
             )),
             (Tab::Caches, Action::Clean) => self.caches_clean_preview(),
+            (Tab::System, Action::Clean) => self.system_clean_preview(),
             _ => None,
         }
     }
@@ -506,6 +535,13 @@ impl App {
                 size,
                 fingerprint,
             } => self.on_cache_measured(&id, size, fingerprint),
+            Msg::SystemDiscovered(areas) => self.on_system_discovered(areas),
+            Msg::SystemMeasured {
+                id,
+                report,
+                blocked,
+            } => self.on_system_measured(id, report, blocked),
+            Msg::SystemCleaned { id, result } => self.on_system_cleaned(id, result),
             Msg::DepsProgress(progress) => {
                 self.updates.progress = Some(progress);
                 Vec::new()
@@ -565,6 +601,7 @@ impl App {
                     After::Remeasure { id, path } if !pending => {
                         vec![Effect::MeasureCaches(vec![(id, path)])]
                     }
+                    After::RemeasureArea(id) if !pending => self.measure_area(&id),
                     _ => Vec::new(),
                 }
             }
@@ -637,13 +674,17 @@ impl App {
                 self.tab = Tab::Caches;
                 return self.caches_effects();
             }
-            Action::Search if self.tab == Tab::Caches => self.dirty = false,
+            Action::ShowSystem => {
+                self.tab = Tab::System;
+                return self.system_effects();
+            }
+            Action::Search if matches!(self.tab, Tab::Caches | Tab::System) => self.dirty = false,
             Action::Search => {
                 let current = match self.tab {
                     Tab::Reclaim => self.query.raw.clone(),
                     Tab::Tasks => self.tasks.filter.clone(),
                     Tab::Updates => self.updates.filter.clone(),
-                    Tab::Caches => String::new(),
+                    Tab::Caches | Tab::System => String::new(),
                 };
                 self.input = Input::new(current);
                 self.mode = Mode::Search;
@@ -672,6 +713,7 @@ impl App {
             Tab::Tasks => self.on_tasks_action(action),
             Tab::Updates => self.on_updates_action(action),
             Tab::Caches => self.on_caches_action(action),
+            Tab::System => self.on_system_action(action),
         }
     }
 
@@ -702,7 +744,7 @@ impl App {
             Tab::Reclaim => Vec::new(),
             Tab::Tasks => self.tasks_effects(),
             Tab::Updates => self.updates_effects(),
-            Tab::Caches => Vec::new(),
+            Tab::Caches | Tab::System => Vec::new(),
         }
     }
 
@@ -711,7 +753,7 @@ impl App {
             Tab::Reclaim => self.set_query(value),
             Tab::Tasks => self.tasks.set_filter(value),
             Tab::Updates => self.updates.set_filter(value),
-            Tab::Caches => {}
+            Tab::Caches | Tab::System => {}
         }
     }
 

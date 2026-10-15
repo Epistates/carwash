@@ -40,6 +40,7 @@ pub enum Action {
     ShowTasks,
     ShowUpdates,
     ShowCaches,
+    ShowSystem,
     ChangeRoot,
     Theme,
     Help,
@@ -53,10 +54,17 @@ pub enum Tab {
     Tasks,
     Updates,
     Caches,
+    System,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Reclaim, Tab::Tasks, Tab::Updates, Tab::Caches];
+    pub const ALL: [Tab; 5] = [
+        Tab::Reclaim,
+        Tab::Tasks,
+        Tab::Updates,
+        Tab::Caches,
+        Tab::System,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -64,6 +72,7 @@ impl Tab {
             Tab::Tasks => "Tasks",
             Tab::Updates => "Updates",
             Tab::Caches => "Caches",
+            Tab::System => "System",
         }
     }
 
@@ -82,6 +91,9 @@ impl Tab {
             Tab::Caches => {
                 "Per-user caches outside your projects. Sizes are remembered for a day; r measures again."
             }
+            Tab::System => {
+                "The operating system's caches, logs, trash and temporary files. Default areas are safe whenever; report areas are cleaned by hand."
+            }
         }
     }
 
@@ -91,6 +103,7 @@ impl Tab {
             Tab::Tasks => TASKS,
             Tab::Updates => UPDATES,
             Tab::Caches => CACHES,
+            Tab::System => SYSTEM,
         }
     }
 }
@@ -237,6 +250,13 @@ pub const GLOBAL: &[Binding] = &[
         A::ShowCaches,
         S::General,
         "global caches",
+    ),
+    bind(
+        &[(Char('5'), NONE)],
+        "5",
+        A::ShowSystem,
+        S::General,
+        "system caches, logs and trash",
     ),
     bind(
         &[(Char('p'), NONE)],
@@ -632,6 +652,65 @@ pub const CACHES: &[Binding] = &[
         "reveal in file manager",
     )
     .hint("reveal"),
+];
+
+pub const SYSTEM: &[Binding] = &[
+    MOVE[0],
+    MOVE[1],
+    MOVE[2],
+    MOVE[3],
+    MOVE[4],
+    MOVE[5],
+    bind(
+        &[(Char(' '), NONE)],
+        "Space",
+        A::Mark,
+        S::Select,
+        "mark / unmark an area",
+    )
+    .hint("mark"),
+    bind(
+        &[(Char('a'), NONE)],
+        "a",
+        A::MarkAll,
+        S::Select,
+        "mark every ready area in the default tier",
+    )
+    .hint("mark ready"),
+    bind(
+        &[(Char('A'), NONE)],
+        "A",
+        A::Unmark,
+        S::Select,
+        "unmark everything",
+    ),
+    bind(
+        &[
+            (Char('d'), NONE),
+            (Char('x'), NONE),
+            (KeyCode::Delete, NONE),
+        ],
+        "d x",
+        A::Clean,
+        S::Select,
+        "clean marked (or selected) areas; press twice",
+    )
+    .hint("clean"),
+    bind(
+        &[(Char('r'), NONE)],
+        "r",
+        A::Rescan,
+        S::View,
+        "measure every area again",
+    )
+    .hint("measure"),
+    bind(
+        &[(Char('o'), NONE)],
+        "o",
+        A::Open,
+        S::View,
+        "reveal in file manager",
+    ),
 ];
 
 /// Bindings shown in the help screen for `tab`, in display order.
