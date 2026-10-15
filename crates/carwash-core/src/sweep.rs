@@ -15,8 +15,10 @@
 //! the user owns. Callers should not sweep as root or an elevated administrator.
 
 use crate::Cancel;
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -30,7 +32,7 @@ const MAX_FAILURES: usize = 20;
 pub struct SweepOptions {
     /// Only remove entries not modified for at least this long.
     pub older_than: Option<Duration>,
-    /// Names directly under the root that are never touched.
+    /// Names directly under the root that are never touched; `*`, `?` and `{a,b}` work.
     pub keep: Vec<String>,
     /// Report what would be removed without removing anything.
     pub dry_run: bool,
@@ -72,6 +74,11 @@ impl Tally {
         self.entries += 1;
         self.bytes += bytes;
     }
+
+    fn merge(&mut self, other: Tally) {
+        self.entries += other.entries;
+        self.bytes += other.bytes;
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +101,25 @@ pub struct SweepReport {
 }
 
 impl SweepReport {
+    /// Adds `other` to this report, as when sweeping several roots.
+    pub fn merge(&mut self, other: SweepReport) {
+        self.removed.merge(other.removed);
+        for (reason, tally) in other.skipped {
+            self.skipped.entry(reason).or_default().merge(tally);
+        }
+        self.failed.merge(other.failed);
+        let room = MAX_FAILURES.saturating_sub(self.failures.len());
+        self.failures.extend(other.failures.into_iter().take(room));
+        self.cancelled |= other.cancelled;
+    }
+
+    /// Records that `root` could not be swept at all (missing roots are not recorded).
+    pub fn root_failed(&mut self, root: &Path, error: &io::Error) {
+        if error.kind() != io::ErrorKind::NotFound {
+            self.error(root, error, 0);
+        }
+    }
+
     fn skip(&mut self, reason: Skip, bytes: u64) {
         self.skipped.entry(reason).or_default().add(bytes);
     }
@@ -153,12 +179,40 @@ pub(crate) fn sweep_at(
     cancel: &Cancel,
     now: SystemTime,
 ) -> io::Result<SweepReport> {
-    // Seconds since the Unix epoch before which entries count as old.
-    let cutoff = options.older_than.map(|older_than| {
-        let now = now.duration_since(UNIX_EPOCH).unwrap_or_default();
-        now.saturating_sub(older_than).as_secs() as i64
-    });
-    imp::sweep(root, options, cutoff, cancel)
+    let mut keep = GlobSetBuilder::new();
+    for pattern in &options.keep {
+        let glob = GlobBuilder::new(pattern)
+            .case_insensitive(cfg!(windows))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        keep.add(glob);
+    }
+    let rules = Rules {
+        cutoff: options.older_than.map(|older_than| {
+            let now = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+            now.saturating_sub(older_than).as_secs() as i64
+        }),
+        keep: keep
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+        dry_run: options.dry_run,
+    };
+    imp::sweep(root, &rules, cancel)
+}
+
+/// [`SweepOptions`] prepared for the walk.
+struct Rules {
+    /// Seconds since the Unix epoch before which entries count as old.
+    cutoff: Option<i64>,
+    keep: GlobSet,
+    dry_run: bool,
+}
+
+impl Rules {
+    /// Whether `name`, directly under the root, is kept.
+    fn kept(&self, name: &OsStr) -> bool {
+        self.keep.is_match(Path::new(name))
+    }
 }
 
 #[cfg(unix)]
@@ -166,7 +220,7 @@ mod imp {
     use super::*;
     use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags, Stat};
     use rustix::io::Errno;
-    use std::ffi::{CStr, OsStr};
+    use std::ffi::CStr;
     use std::os::fd::OwnedFd;
     use std::os::unix::ffi::OsStrExt;
 
@@ -179,12 +233,7 @@ mod imp {
     #[cfg(target_os = "macos")]
     const SF_DATALESS: u32 = 0x4000_0000;
 
-    pub(super) fn sweep(
-        root: &Path,
-        options: &SweepOptions,
-        cutoff: Option<i64>,
-        cancel: &Cancel,
-    ) -> io::Result<SweepReport> {
+    pub(super) fn sweep(root: &Path, rules: &Rules, cancel: &Cancel) -> io::Result<SweepReport> {
         let fd = fs::open(root, DIR_FLAGS, Mode::empty()).map_err(|e| match e {
             Errno::LOOP => io::Error::other(format!("{} is a symlink", root.display())),
             e => io::Error::from(e),
@@ -192,8 +241,7 @@ mod imp {
         let stat = fs::fstat(&fd)?;
         let mut walk = Walk {
             dev: stat.st_dev,
-            cutoff,
-            options,
+            rules,
             cancel,
             path: root.to_path_buf(),
             report: SweepReport::default(),
@@ -205,8 +253,7 @@ mod imp {
     struct Walk<'a> {
         /// The root's filesystem; the walk never leaves it.
         dev: fs::Dev,
-        cutoff: Option<i64>,
-        options: &'a SweepOptions,
+        rules: &'a Rules,
         cancel: &'a Cancel,
         /// The entry being looked at, for reports.
         path: PathBuf,
@@ -249,13 +296,7 @@ mod imp {
 
         /// Handles one entry of `dir`; true when it was removed.
         fn entry(&mut self, dir: &OwnedFd, name: &CStr, depth: usize) -> bool {
-            if depth == 0
-                && self
-                    .options
-                    .keep
-                    .iter()
-                    .any(|k| k.as_bytes() == name.to_bytes())
-            {
+            if depth == 0 && self.rules.kept(OsStr::from_bytes(name.to_bytes())) {
                 self.report.skip(Skip::Kept, 0);
                 return false;
             }
@@ -330,7 +371,7 @@ mod imp {
         }
 
         fn recent(&self, stat: &Stat, file: bool) -> bool {
-            let Some(cutoff) = self.cutoff else {
+            let Some(cutoff) = self.rules.cutoff else {
                 return false;
             };
             // A file's change time catches contents restored with an old mtime; a
@@ -352,7 +393,7 @@ mod imp {
         }
 
         fn unlink(&mut self, dir: &OwnedFd, name: &CStr, flags: AtFlags, bytes: u64) -> bool {
-            if self.options.dry_run {
+            if self.rules.dry_run {
                 self.report.removed.add(bytes);
                 return true;
             }
@@ -395,12 +436,7 @@ mod imp {
     /// other cloud placeholders. Deleting one can delete the cloud copy.
     const CLOUD: u32 = 0x1000 | 0x4_0000 | 0x8_0000 | 0x10_0000 | 0x40_0000;
 
-    pub(super) fn sweep(
-        root: &Path,
-        options: &SweepOptions,
-        cutoff: Option<i64>,
-        cancel: &Cancel,
-    ) -> io::Result<SweepReport> {
+    pub(super) fn sweep(root: &Path, rules: &Rules, cancel: &Cancel) -> io::Result<SweepReport> {
         let meta = fs::symlink_metadata(root)?;
         if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(io::Error::other(format!(
@@ -415,8 +451,7 @@ mod imp {
             ));
         }
         let mut walk = Walk {
-            cutoff,
-            options,
+            rules,
             cancel,
             report: SweepReport::default(),
         };
@@ -425,8 +460,7 @@ mod imp {
     }
 
     struct Walk<'a> {
-        cutoff: Option<i64>,
-        options: &'a SweepOptions,
+        rules: &'a Rules,
         cancel: &'a Cancel,
         report: SweepReport,
     }
@@ -460,13 +494,7 @@ mod imp {
 
         fn entry(&mut self, entry: &fs::DirEntry, depth: usize) -> bool {
             let path = entry.path();
-            if depth == 0
-                && self
-                    .options
-                    .keep
-                    .iter()
-                    .any(|k| entry.file_name() == k.as_str())
-            {
+            if depth == 0 && self.rules.kept(&entry.file_name()) {
                 self.report.skip(Skip::Kept, 0);
                 return false;
             }
@@ -509,7 +537,7 @@ mod imp {
         }
 
         fn recent(&self, meta: &Metadata) -> bool {
-            let Some(cutoff) = self.cutoff else {
+            let Some(cutoff) = self.rules.cutoff else {
                 return false;
             };
             let secs = |t: io::Result<SystemTime>| {
@@ -521,7 +549,7 @@ mod imp {
         }
 
         fn remove(&mut self, path: &Path, dir: bool, bytes: u64) -> bool {
-            if self.options.dry_run {
+            if self.rules.dry_run {
                 self.report.removed.add(bytes);
                 return true;
             }
@@ -552,12 +580,7 @@ mod imp {
 mod imp {
     use super::*;
 
-    pub(super) fn sweep(
-        _: &Path,
-        _: &SweepOptions,
-        _: Option<i64>,
-        _: &Cancel,
-    ) -> io::Result<SweepReport> {
+    pub(super) fn sweep(_: &Path, _: &Rules, _: &Cancel) -> io::Result<SweepReport> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "sweeping is not supported on this platform",
@@ -649,16 +672,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, "keep/data", "k");
+        write(root, "mesa_shader_cache_db/x", "m");
         write(root, "other/keep", "o");
         let report = run(
             root,
             SweepOptions {
-                keep: vec!["keep".into()],
+                keep: vec!["keep".into(), "mesa_shader_cache*".into()],
                 ..SweepOptions::default()
             },
         );
-        assert_eq!(names(root), ["keep"]);
-        assert_eq!(report.skipped[&Skip::Kept].entries, 1);
+        assert_eq!(names(root), ["keep", "mesa_shader_cache_db"]);
+        assert_eq!(report.skipped[&Skip::Kept].entries, 2);
     }
 
     #[test]
