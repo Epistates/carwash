@@ -262,6 +262,7 @@ dependencies = [
  "nodejs-semver",
  "pep440_rs",
  "rayon",
+ "rustix",
  "semver",
  "serde",
  "serde_json",
