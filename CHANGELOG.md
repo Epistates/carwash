@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
 ### Added
 - `carwash clean --free SIZE` reclaims at least SIZE, and `--until-free SIZE` frees just enough
   that the disk has SIZE available. Both take the least recently used artifacts first, only
@@ -46,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Dropped the `remove_dir_all` crate, which resolved symlinks at the path it was given and
   opened every file it deleted. Removal now uses the standard library's implementation.
+- Updated `rustls-webpki`, `webpki-roots` and `rustix` to versions that fix RustSec advisories
+  (distrusted certificate intermediates, zero-length extended-attribute buffers), and `trash`,
+  which no longer pulls in the unmaintained `chrono`.
 
 ## [0.4.1] - 2026-09-27
 
