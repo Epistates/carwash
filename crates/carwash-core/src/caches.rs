@@ -8,8 +8,9 @@
 
 use crate::Cancel;
 use crate::cache::Fingerprint;
+use crate::clean::{CleanEvent, CleanItem, CleanOptions, DeleteMode};
 use crate::device_support::{self, Support};
-use crate::model::{Size, unix_secs_opt};
+use crate::model::{ArtifactId, Size, unix_secs_opt};
 use crate::scan::Engine;
 use crate::simulators::{self, Simulator};
 use crate::system::RunningApps;
@@ -207,6 +208,12 @@ pub enum Detail {
         /// projects have been found. Not looked up for standing toolchains.
         needed_by: Option<Vec<PathBuf>>,
     },
+    /// What is left of a cache that carwash started to delete and could not finish: the
+    /// staging folder it had renamed the cache to.
+    Leftover {
+        /// The name of the folder that was being deleted.
+        of: String,
+    },
     /// The simulator clones Xcode keeps for parallel testing.
     TestDevices {
         /// Clones in the set.
@@ -401,9 +408,44 @@ impl GlobalCache {
                 }
             }
             // Advice on what is still needed does not stand in the way of a clean.
-            Some(Detail::DeviceSupport { .. } | Detail::Toolchain { .. }) | None => {}
+            Some(
+                Detail::DeviceSupport { .. } | Detail::Toolchain { .. } | Detail::Leftover { .. },
+            )
+            | None => {}
         }
         cache
+    }
+
+    /// Deletes the cache's directory, which must be [`Step::DeleteDirectory`]'s to delete.
+    /// On failure, says what happened and where the remainder is.
+    pub fn delete_directory(&self, engine: &Engine, cancel: &Cancel) -> Result<(), String> {
+        let Some(parent) = self.path.parent() else {
+            return Err("has no parent directory".to_owned());
+        };
+        let failure = Mutex::new(None);
+        let report = engine.clean(
+            &[CleanItem {
+                id: ArtifactId(0),
+                path: self.path.clone(),
+                expected_bytes: self.size.map_or(0, |s| s.on_disk),
+            }],
+            &CleanOptions {
+                mode: DeleteMode::Permanent,
+                allowed_roots: vec![parent.to_path_buf()],
+                dry_run: false,
+            },
+            cancel,
+            &|event| {
+                if let CleanEvent::Failed { error, .. } = event {
+                    *failure.lock().expect("failure") = Some(error);
+                }
+            },
+        );
+        match failure.into_inner().expect("failure") {
+            Some(error) => Err(error),
+            None if report.removed == 1 => Ok(()),
+            None => Err("was not removed".to_owned()),
+        }
     }
 
     /// Measures the cache: all of `path`, or its `parts` when only some of it counts.
@@ -658,12 +700,16 @@ fn discover_with(
     };
     let mut out = Vec::new();
     for spec in specs {
-        let Some(path) = spec
+        let candidates: Vec<PathBuf> = spec
             .paths
             .iter()
             .filter_map(|c| resolve(c, home, env))
-            .find(|p| p.is_dir())
-        else {
+            .collect();
+        let found = candidates.iter().find(|p| p.is_dir()).cloned();
+        // What an interrupted clean left behind is listed even when the cache itself is
+        // gone.
+        out.extend(leftovers(spec, found.as_deref(), &candidates));
+        let Some(path) = found else {
             continue;
         };
         match spec.adapter.as_deref().and_then(Adapter::parse) {
@@ -697,6 +743,75 @@ fn discover_with(
                 }
             }
             None => out.push(whole(spec, path)),
+        }
+    }
+    out
+}
+
+/// The name of the folder a staging folder was made from, when `name` is exactly a name
+/// carwash gives one: the staging prefix, a process id, a counter, and the original name.
+fn staged_from(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix(crate::discover::STAGING_PREFIX)?;
+    let number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let (pid, rest) = rest.split_once('-')?;
+    let (counter, original) = rest.split_once('-')?;
+    (number(pid) && number(counter) && !original.is_empty()).then_some(original)
+}
+
+/// The staging folders an interrupted or failed clean of `spec` left behind, as entries
+/// of their own that are recommended for removal. A clean renames a cache's directory to
+/// a staging name beside it before removing it, so they are looked for where carwash
+/// itself puts them and nowhere else: inside a cache whose subdirectories it deletes one
+/// by one, and beside a cache it deletes whole, there only under that cache's own name.
+/// Only real directories with exactly such a name count.
+fn leftovers(spec: &CacheSpec, found: Option<&Path>, candidates: &[PathBuf]) -> Vec<GlobalCache> {
+    if !spec.delete {
+        return Vec::new();
+    }
+    // Where to look, and which original name to accept there (any, inside the cache).
+    let mut places: Vec<(PathBuf, Option<String>)> = Vec::new();
+    if spec.children {
+        places.extend(found.map(|path| (path.to_path_buf(), None)));
+    } else {
+        for candidate in candidates {
+            let name = candidate.file_name().and_then(|n| n.to_str());
+            if let (Some(parent), Some(name)) = (candidate.parent(), name)
+                && !places.iter().any(|(place, _)| place == parent)
+            {
+                places.push((parent.to_path_buf(), Some(name.to_owned())));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (place, only) in places {
+        let Ok(entries) = std::fs::read_dir(&place) else {
+            continue;
+        };
+        let mut staged: Vec<(String, PathBuf)> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
+            .filter(|(name, _)| {
+                staged_from(name)
+                    .is_some_and(|original| only.as_deref().is_none_or(|only| only == original))
+            })
+            .collect();
+        staged.sort();
+        for (name, path) in staged {
+            let original = staged_from(&name).unwrap_or_default().to_owned();
+            out.push(GlobalCache {
+                id: format!("{}/{name}", spec.id),
+                name: format!("{}: leftover of {original}", spec.name),
+                deletable: true,
+                prune: None,
+                note: Some(
+                    "What is left of a clean that was interrupted or could not finish. Nothing uses it."
+                        .to_owned(),
+                ),
+                advice: Some(Advice::remove("left by a clean that did not finish")),
+                detail: Some(Detail::Leftover { of: original }),
+                ..whole(spec, path)
+            });
         }
     }
     out
@@ -1357,8 +1472,6 @@ pub(crate) mod tests {
         for folder in device_support::tests::FOLDERS {
             fs::create_dir_all(home.path().join(SUPPORT).join(folder)).unwrap();
         }
-        // A half-removed folder from an interrupted clean is not a device support version.
-        fs::create_dir_all(home.path().join(SUPPORT).join(".carwash-trash-1-0-old")).unwrap();
         let specs: Vec<CacheSpec> = builtin_specs()
             .into_iter()
             .filter(|s| s.id == "xcode-device-support")
@@ -1440,6 +1553,133 @@ pub(crate) mod tests {
                 "connected devices could not be checked"
             );
         }
+    }
+
+    #[test]
+    fn recognises_only_the_staging_names_carwash_makes() {
+        assert_eq!(
+            staged_from(".carwash-trash-87627-5-iPad16,3 26.5 (23F5069b)"),
+            Some("iPad16,3 26.5 (23F5069b)")
+        );
+        assert_eq!(staged_from(".carwash-trash-1-0-_cacache"), Some("_cacache"));
+        // A second failed removal stages the staging folder itself.
+        assert_eq!(
+            staged_from(".carwash-trash-2-0-.carwash-trash-1-0-pip"),
+            Some(".carwash-trash-1-0-pip")
+        );
+        for other in [
+            ".carwash-trash-",
+            ".carwash-trash-1-0-",
+            ".carwash-trash-x-0-pip",
+            ".carwash-trash-1-y-pip",
+            ".carwash-trash-1-pip",
+            ".carwash-trash--0-pip",
+            "carwash-trash-1-0-pip",
+            ".Trash",
+            "pip",
+        ] {
+            assert_eq!(staged_from(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn what_an_unfinished_clean_left_is_listed_for_removal() {
+        let devicectl = Tools(vec![(
+            device_support::LIST,
+            device_support::tests::LISTING.to_owned(),
+        )]);
+        let home = tempfile::tempdir().unwrap();
+        let support = home.path().join(SUPPORT);
+        for folder in [
+            "iPad16,3 27.3 (24C5037i)",
+            ".carwash-trash-87627-1-iPad16,3 26.6.1 (23G82)",
+            ".carwash-trash-87627-5-iPad16,3 26.5 (23F5069b)",
+            // Not carwash's: left alone and not listed.
+            ".carwash-trash-notes",
+            ".hidden",
+        ] {
+            fs::create_dir_all(support.join(folder).join("Symbols")).unwrap();
+        }
+        fs::write(support.join(".carwash-trash-1-0-a-file"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(home.path(), support.join(".carwash-trash-1-0-a-link")).unwrap();
+        // A cache deleted whole: the staging folder sits beside where the cache was, and
+        // the cache itself is gone.
+        fs::create_dir_all(home.path().join(".npm/.carwash-trash-501-0-_cacache/x")).unwrap();
+        // Beside a cache, only a folder staged from that cache counts.
+        fs::create_dir_all(home.path().join(".npm/.carwash-trash-501-1-other")).unwrap();
+
+        let specs: Vec<CacheSpec> = builtin_specs()
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s.id.as_str(),
+                    "xcode-device-support" | "npm" | "rustup-toolchains"
+                )
+            })
+            .map(|mut spec| {
+                for path in &mut spec.paths {
+                    *path = path.trim_start_matches("macos:").to_owned();
+                }
+                spec
+            })
+            .collect();
+        let caches = discover_with(&specs, home.path(), &env(&[]), &devicectl);
+        let ids: Vec<&str> = caches.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "npm/.carwash-trash-501-0-_cacache",
+                "xcode-device-support/.carwash-trash-87627-1-iPad16,3 26.6.1 (23G82)",
+                "xcode-device-support/.carwash-trash-87627-5-iPad16,3 26.5 (23F5069b)",
+                "xcode-device-support/iPad16,3 27.3 (24C5037i)",
+            ]
+        );
+        let leftover = &caches[1];
+        assert_eq!(
+            leftover.name,
+            "iOS device support: leftover of iPad16,3 26.6.1 (23G82)"
+        );
+        assert_eq!(
+            leftover.path,
+            support.join(".carwash-trash-87627-1-iPad16,3 26.6.1 (23G82)")
+        );
+        assert_eq!(
+            leftover.advice,
+            Some(Advice::remove("left by a clean that did not finish"))
+        );
+        assert_eq!(
+            leftover.detail,
+            Some(Detail::Leftover {
+                of: "iPad16,3 26.6.1 (23G82)".into()
+            })
+        );
+        assert_eq!(
+            leftover.plan(Mode::Clean, &idle()),
+            Ok(Step::DeleteDirectory)
+        );
+        assert_eq!(caches[0].name, "npm cache: leftover of _cacache");
+        assert_eq!(
+            caches[0].plan(Mode::Clean, &idle()),
+            Ok(Step::DeleteDirectory)
+        );
+    }
+
+    #[test]
+    fn a_failed_deletion_says_what_happened() {
+        let home = tempfile::tempdir().unwrap();
+        let engine = Engine::new(crate::Registry::builtin());
+        let mut gone = cache("delete = true");
+        gone.path = home.path().join("never-there");
+        assert_eq!(
+            gone.delete_directory(&engine, &Cancel::new()),
+            Err("no longer exists".to_owned())
+        );
+        let mut there = cache("delete = true");
+        there.path = home.path().join("store");
+        fs::create_dir_all(there.path.join("sub")).unwrap();
+        assert_eq!(there.delete_directory(&engine, &Cancel::new()), Ok(()));
+        assert!(!there.path.exists());
     }
 
     /// Counts how often each tool is asked.

@@ -10,13 +10,13 @@ use carwash_core::cache::Fingerprint;
 use carwash_core::caches::{
     self, Detail, GlobalCache, Host, LocalHost, Mode, Refusal, Step, Verdict,
 };
-use carwash_core::clean::{CleanItem, CleanOptions, DeleteMode};
+use carwash_core::clean::DeleteMode;
 use carwash_core::history::{self, Record};
 use carwash_core::paths::Dirs;
 use carwash_core::system::RunningApps;
 use carwash_core::tasks::Task;
 use carwash_core::toolchains::{self, Needs};
-use carwash_core::{ArtifactId, ArtifactKind, Cancel, fmt};
+use carwash_core::{ArtifactKind, Cancel, fmt};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::io::{BufRead, IsTerminal, Write};
@@ -213,7 +213,8 @@ pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
                 },
             };
             let mut out = anstream::stdout().lock();
-            clean(ctx, &Machine(ctx), &mut out, &caches, ids, &flags)
+            let mut err = anstream::stderr().lock();
+            clean(ctx, &Machine(ctx), &mut out, &mut err, &caches, ids, &flags)
         }
     }
 }
@@ -353,8 +354,9 @@ pub(crate) trait Cleaner {
     fn running(&self) -> RunningApps;
     /// Runs a tool's command with the terminal attached; true when it succeeded.
     fn run(&self, task: &Task) -> bool;
-    /// Deletes a cache's directory; true when it is gone.
-    fn delete(&self, cache: &GlobalCache) -> bool;
+    /// Deletes a cache's directory. On failure, says what happened and where the
+    /// remainder is.
+    fn delete(&self, cache: &GlobalCache) -> Result<(), String>;
 }
 
 /// The machine carwash runs on.
@@ -378,25 +380,8 @@ impl Cleaner for Machine<'_> {
         matches!(status, Ok(s) if s.success())
     }
 
-    fn delete(&self, cache: &GlobalCache) -> bool {
-        let Some(parent) = cache.path.parent() else {
-            return false;
-        };
-        let report = self.0.engine.clean(
-            &[CleanItem {
-                id: ArtifactId(0),
-                path: cache.path.clone(),
-                expected_bytes: cache.size.map_or(0, |s| s.on_disk),
-            }],
-            &CleanOptions {
-                mode: DeleteMode::Permanent,
-                allowed_roots: vec![parent.to_path_buf()],
-                dry_run: false,
-            },
-            &Cancel::new(),
-            &|_| {},
-        );
-        report.removed == 1
+    fn delete(&self, cache: &GlobalCache) -> Result<(), String> {
+        cache.delete_directory(&self.0.engine, &Cancel::new())
     }
 }
 
@@ -443,6 +428,13 @@ fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<S
     for id in ids {
         if let Some(exact) = caches.iter().find(|c| &c.id == id) {
             take(exact, true);
+            // What an unfinished clean of this cache left beside it goes with it.
+            let staged = format!("{id}/{}", carwash_core::discover::STAGING_PREFIX);
+            for leftover in caches.iter().filter(|c| {
+                c.id.starts_with(&staged) && matches!(c.detail, Some(Detail::Leftover { .. }))
+            }) {
+                take(leftover, false);
+            }
             continue;
         }
         let prefix = format!("{id}/");
@@ -464,6 +456,7 @@ fn clean(
     ctx: &Context,
     cleaner: &dyn Cleaner,
     out: &mut dyn Write,
+    err: &mut dyn Write,
     caches: &[GlobalCache],
     ids: &[String],
     flags: &Flags,
@@ -574,20 +567,29 @@ fn clean(
             Ok(step) => step,
             Err(refusal) => {
                 skipped += 1;
-                writeln!(out, "  skipped {}: {}", cache.name, left_alone(&refusal))?;
+                writeln!(err, "  skipped {}: {}", cache.name, left_alone(&refusal))?;
                 continue;
             }
         };
         let before = cache.size.map_or(0, |s| s.on_disk);
-        let ok = match step {
+        let result = match step {
             Step::Run(task) => {
                 writeln!(out, "▶ {}", task.command_line())?;
                 out.flush()?;
-                cleaner.run(&task)
+                cleaner
+                    .run(&task)
+                    .then_some(())
+                    .ok_or_else(|| format!("`{}` did not succeed", task.command_line()))
             }
             Step::DeleteDirectory => cleaner.delete(&cache),
         };
-        if ok {
+        if let Err(error) = &result {
+            failures += 1;
+            // Problems go to stderr, where scripts that read the summary do not see them
+            // as output.
+            writeln!(err, "  failed to clean {}: {error}", cache.name)?;
+        }
+        if result.is_ok() {
             cache.fingerprint = Fingerprint::of(&cache.path);
             let after = cache.measure(&ctx.engine, &Cancel::new());
             let freed = before.saturating_sub(after.on_disk);
@@ -601,9 +603,6 @@ fn clean(
             ));
             cache.size = Some(after);
             cleaned.push(cache);
-        } else {
-            failures += 1;
-            writeln!(out, "  failed to clean {}", cache.name)?;
         }
     }
     remember(ctx, &cleaned);
@@ -664,6 +663,8 @@ mod tests {
         running: Vec<&'static str>,
         ran: Mutex<Vec<String>>,
         deleted: Mutex<Vec<String>>,
+        /// What every deletion fails with, if they are to fail.
+        delete_fails: Option<String>,
     }
 
     impl Fake {
@@ -673,6 +674,7 @@ mod tests {
                 running: running.to_vec(),
                 ran: Mutex::default(),
                 deleted: Mutex::default(),
+                delete_fails: None,
             }
         }
 
@@ -717,9 +719,12 @@ mod tests {
             true
         }
 
-        fn delete(&self, cache: &GlobalCache) -> bool {
+        fn delete(&self, cache: &GlobalCache) -> Result<(), String> {
             self.deleted.lock().unwrap().push(cache.id.clone());
-            true
+            match &self.delete_fails {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
         }
     }
 
@@ -782,7 +787,10 @@ mod tests {
             mode,
             recommended: false,
         };
-        let exit = clean(&context(), fake, &mut out, &caches, &ids, &flags).unwrap();
+        let mut err = Vec::new();
+        let exit = clean(&context(), fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        // Most tests read the two streams as a terminal shows them.
+        out.extend(err);
         (exit, String::from_utf8(out).unwrap())
     }
 
@@ -908,6 +916,7 @@ mod tests {
             &context(),
             &fake,
             &mut Vec::new(),
+            &mut Vec::new(),
             &caches,
             &["plain".to_owned()],
             &flags,
@@ -919,6 +928,7 @@ mod tests {
             clean(
                 &context(),
                 &fake,
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &caches,
                 &["nope".to_owned()],
@@ -938,6 +948,120 @@ mod tests {
         assert_eq!(set.clean[0].id, "simulators");
         let twice = select(&caches, &["plain".to_owned(), "plain".to_owned()], false).unwrap();
         assert_eq!(twice.clean.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_deletion_is_explained_on_stderr_and_the_rest_goes_on() {
+        let mut fake = Fake::new(&[LISTING], &[]);
+        fake.delete_fails = Some(
+            "another program was still writing into it, so part of it is left in /h/.carwash-trash-1-0-plain; the next scan offers to finish removing it. Nothing else was affected"
+                .to_owned(),
+        );
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Clean,
+            recommended: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ids = ["plain".to_owned(), format!("simulators/{SHUT_DOWN}")];
+        let exit = clean(&context(), &fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        let (out, err) = (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        );
+        assert!(failed(exit));
+        assert!(
+            err.contains("failed to clean Plain: another program was still writing into it"),
+            "{err}"
+        );
+        assert!(err.contains("/h/.carwash-trash-1-0-plain"), "{err}");
+        assert!(
+            !out.contains("failed to clean"),
+            "problems are not output: {out}"
+        );
+        // The other cache was still cleaned.
+        assert_eq!(fake.ran(), [format!("cargo simctl delete {SHUT_DOWN}")]);
+        assert!(out.contains("freed"), "{out}");
+    }
+
+    #[test]
+    fn a_refusal_just_before_cleaning_goes_to_stderr() {
+        let booted_since = LISTING.replace("\"state\": \"Shutdown\"", "\"state\": \"Booted\"");
+        let fake = Fake::new(&[LISTING, &booted_since], &[]);
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Erase,
+            recommended: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ids = [format!("simulators/{SHUT_DOWN}")];
+        let exit = clean(&context(), &fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        assert!(failed(exit));
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains("skipped Simulators: iPhone 18 Pro, iOS 27.0: booted"),
+            "{err}"
+        );
+        assert!(
+            !String::from_utf8(out)
+                .unwrap()
+                .contains("skipped Simulators")
+        );
+    }
+
+    #[test]
+    fn a_cache_is_cleaned_together_with_what_an_unfinished_clean_left_of_it() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in [
+            ".plain",
+            ".carwash-trash-7-0-.plain",
+            ".kids/one",
+            ".kids/.carwash-trash-7-1-two",
+        ] {
+            fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        let specs = caches::specs_with_overrides(
+            "schema = 1\n[[cache]]\nid = \"plain\"\nname = \"Plain\"\npaths = [\"~/.plain\"]\ndelete = true\n[[cache]]\nid = \"kids\"\nname = \"Kids\"\npaths = [\"~/.kids\"]\nchildren = true\ndelete = true\n",
+        )
+        .unwrap();
+        let specs: Vec<CacheSpec> = specs
+            .into_iter()
+            .filter(|s| matches!(s.id.as_str(), "plain" | "kids"))
+            .collect();
+        let found = caches::discover_on(&specs, home.path(), &NoDevicectl);
+        let whole = select(&found, &["plain".to_owned()], false).unwrap();
+        assert_eq!(
+            whole
+                .clean
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["plain", "plain/.carwash-trash-7-0-.plain"]
+        );
+        let parent = select(&found, &["kids".to_owned()], false).unwrap();
+        assert_eq!(
+            parent
+                .clean
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["kids/.carwash-trash-7-1-two", "kids/one"]
+        );
+        // And they are what `--recommended` takes.
+        let recommended = select(&found, &[], true).unwrap();
+        assert_eq!(recommended.clean.len(), 2);
+        assert!(
+            recommended
+                .clean
+                .iter()
+                .all(|c| matches!(c.detail, Some(Detail::Leftover { .. })))
+        );
     }
 
     /// `devicectl list devices` as captured: an iPad on 27.3 and an iPhone on 27.2.1, both
@@ -1077,6 +1201,7 @@ mod tests {
             &context(),
             &fake,
             &mut out,
+            &mut Vec::new(),
             &caches,
             &["xcode-device-support".to_owned()],
             &flags,

@@ -411,6 +411,14 @@ impl App {
         }
     }
 
+    /// A cache's directory could not be removed. Says why, and lists the caches again so
+    /// that what is left of it shows up as a leftover instead of an empty row.
+    pub fn on_cache_clean_failed(&mut self, id: &str, name: &str, error: &str) -> Vec<Effect> {
+        self.caches.busy.remove(id);
+        self.toast(format!("{name} was not cleaned: {error}"), Level::Warn);
+        self.discover_caches()
+    }
+
     /// Measures one cache again, after a command that cleaned it.
     pub fn remeasure_cache(&mut self, id: &str) -> Vec<Effect> {
         match self.caches.caches.iter().flatten().find(|c| c.id == id) {
@@ -1237,6 +1245,29 @@ pub(crate) mod tests {
             panic!("clean expected, got {effects:?}");
         };
         assert_eq!(caches[0].id, "current");
+    }
+
+    #[test]
+    fn a_failed_deletion_is_reported_and_the_caches_are_listed_again() {
+        let mut app = opened(vec![cache("plain")]);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.caches.busy.contains("plain"));
+        let effects = app.update(Msg::CacheCleanFailed {
+            id: "plain".into(),
+            name: "Plain".into(),
+            error: "another program was still writing into it, so part of it is left in /h/.carwash-trash-1-0-plain".into(),
+        });
+        assert!(app.caches.busy.is_empty());
+        assert!(
+            toast_text(&app).contains("Plain was not cleaned: another program was still writing"),
+            "{}",
+            toast_text(&app)
+        );
+        assert!(
+            matches!(effects.first(), Some(Effect::DiscoverCaches)),
+            "the leftover is found by listing again, not by measuring a missing folder: {effects:?}"
+        );
     }
 
     #[test]

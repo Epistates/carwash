@@ -63,8 +63,11 @@ figure is worth checking again a few minutes later.
 
 If another program is still writing into a directory while it is deleted (a build that has
 not quite finished, say), carwash retries for a moment. If that is not enough, it reports
-that directory as failed, says where the remainder is so the next scan can finish it, and
-cleans everything else as planned.
+that directory as failed, says where the remainder is, and cleans everything else as
+planned. The remainder is a `.carwash-trash-*` folder beside where the directory was. The
+next `carwash scan` lists it as a leftover to finish removing, and `carwash caches` and the
+Caches tab list what an unfinished clean left of a cache as a row of its own, recommended
+for removal and cleaned together with that cache.
 
 ## Install
 

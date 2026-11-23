@@ -445,35 +445,30 @@ impl Runtime<'_> {
                     let history = self.ctx.dirs.as_ref().map(|d| d.history_file());
                     std::thread::spawn(move || {
                         let before = cache.size.map_or(0, |s| s.on_disk);
-                        if let Some(parent) = cache.path.parent() {
-                            let report = engine.clean(
-                                &[carwash_core::clean::CleanItem {
-                                    id: carwash_core::ArtifactId(0),
-                                    path: cache.path.clone(),
-                                    expected_bytes: before,
-                                }],
-                                &CleanOptions {
-                                    mode: carwash_core::clean::DeleteMode::Permanent,
-                                    allowed_roots: vec![parent.to_path_buf()],
-                                    dry_run: false,
-                                },
-                                &Cancel::new(),
-                                &|_| {},
-                            );
-                            if report.removed == 1
-                                && let Some(file) = history
-                            {
-                                let record = carwash_core::history::Record::now(
-                                    cache.path.clone(),
-                                    before,
-                                    carwash_core::ArtifactKind::Cache,
-                                    cache.ecosystem.clone(),
-                                    carwash_core::clean::DeleteMode::Permanent,
-                                );
-                                let _ = history::append(&file, &[record]);
+                        match cache.delete_directory(&engine, &Cancel::new()) {
+                            Ok(()) => {
+                                if let Some(file) = history {
+                                    let record = carwash_core::history::Record::now(
+                                        cache.path.clone(),
+                                        before,
+                                        carwash_core::ArtifactKind::Cache,
+                                        cache.ecosystem.clone(),
+                                        carwash_core::clean::DeleteMode::Permanent,
+                                    );
+                                    let _ = history::append(&file, &[record]);
+                                }
+                                let _ = tx.send(measure_cache(&engine, &cache));
+                            }
+                            // Not measured again: the directory is gone or half gone, and
+                            // the message says where the remainder is.
+                            Err(error) => {
+                                let _ = tx.send(Msg::CacheCleanFailed {
+                                    id: cache.id.clone(),
+                                    name: cache.name.clone(),
+                                    error,
+                                });
                             }
                         }
-                        let _ = tx.send(measure_cache(&engine, &cache));
                     });
                 }
             },

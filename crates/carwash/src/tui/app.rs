@@ -75,6 +75,13 @@ pub enum Msg {
         /// Taken just before measuring.
         fingerprint: Option<Fingerprint>,
     },
+    /// Deleting a cache's directory failed; `error` says what happened and where the
+    /// remainder is.
+    CacheCleanFailed {
+        id: String,
+        name: String,
+        error: String,
+    },
     /// What the Rust projects in the scanned folder need of the installed toolchains.
     ToolchainNeeds(Needs),
     /// A cache checked just before cleaning: what cleaning it takes, or why it is left
@@ -557,6 +564,9 @@ impl App {
                 fingerprint,
             } => self.on_cache_measured(&id, size, fingerprint),
             Msg::CacheChecked { cache, step } => self.on_cache_checked(cache, step),
+            Msg::CacheCleanFailed { id, name, error } => {
+                self.on_cache_clean_failed(&id, &name, &error)
+            }
             Msg::ToolchainNeeds(needs) => {
                 self.caches.set_needs(needs);
                 Vec::new()
