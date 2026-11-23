@@ -65,6 +65,33 @@ pub struct CleanReport {
     /// Free space on the filesystem of the first target, before and after.
     pub free_before: Option<u64>,
     pub free_after: Option<u64>,
+    /// That filesystem is one where free space can keep rising for a while after a large
+    /// deletion (see [`settles_late`]), so `free_after` may not be the final figure.
+    pub settles_late: bool,
+}
+
+/// Whether free space on the filesystem holding `path` can keep rising for a while after
+/// a large deletion, so that a reading taken straight away understates the result. That is
+/// the case on APFS.
+pub fn settles_late(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        rustix::fs::statfs(path).is_ok_and(|fs| names_apfs(&fs.f_fstypename))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Whether a NUL-padded filesystem type name, as `statfs` reports it, is `apfs`.
+#[cfg(target_os = "macos")]
+fn names_apfs(name: &[std::ffi::c_char]) -> bool {
+    name.iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .eq(*b"apfs")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -318,6 +345,7 @@ pub fn clean(
         bytes: bytes.into_inner(),
         free_before,
         free_after: probe.as_deref().and_then(|p| fs4::available_space(p).ok()),
+        settles_late: probe.as_deref().is_some_and(settles_late),
     }
 }
 
@@ -332,6 +360,25 @@ mod tests {
         assert!(out_of_file_handles(&io::Error::from_raw_os_error(23)));
         assert!(!out_of_file_handles(&io::Error::from_raw_os_error(13)));
         assert!(!out_of_file_handles(&io::Error::other("custom")));
+    }
+
+    #[test]
+    fn only_apfs_is_known_to_settle_late() {
+        assert!(!settles_late(Path::new("/definitely/not/here")));
+        #[cfg(target_os = "macos")]
+        {
+            let name = |text: &str| {
+                let mut padded = [0 as std::ffi::c_char; 16];
+                for (slot, byte) in padded.iter_mut().zip(text.bytes()) {
+                    *slot = byte as std::ffi::c_char;
+                }
+                padded
+            };
+            assert!(names_apfs(&name("apfs")));
+            assert!(!names_apfs(&name("hfs")));
+            assert!(!names_apfs(&name("apfsx")));
+            assert!(!names_apfs(&name("")));
+        }
     }
 
     fn refilled() -> io::Error {

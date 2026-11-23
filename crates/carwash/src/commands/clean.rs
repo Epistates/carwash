@@ -38,6 +38,9 @@ struct CleanOutput<'a> {
     bytes: u64,
     free_before: Option<u64>,
     free_after: Option<u64>,
+    /// `free_after` was read right after a large clean on a filesystem (APFS) where free
+    /// space can keep rising for a while, and so far shows less than `bytes`.
+    free_space_may_rise: bool,
 }
 
 #[derive(Serialize)]
@@ -222,6 +225,7 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
         bytes: 0,
         free_before: available,
         free_after: None,
+        free_space_may_rise: false,
     };
     let goal_missed = |output: &CleanOutput| output.goal.as_ref().is_some_and(|g| !g.met);
     // Less than what was asked for: a missed goal or a picked artifact that was skipped.
@@ -355,6 +359,16 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
     output.bytes = report.bytes;
     output.free_before = report.free_before.or(available);
     output.free_after = report.free_after;
+    let change = report
+        .free_before
+        .zip(report.free_after)
+        .map(|(before, after)| super::FreeChange {
+            before,
+            after,
+            freed: report.bytes,
+            settles_late: report.settles_late && mode == DeleteMode::Permanent,
+        });
+    output.free_space_may_rise = change.is_some_and(|c| c.may_rise());
     if let Some(goal) = &mut output.goal {
         goal.met = match (args.until_free, output.free_after) {
             (Some(target), Some(after)) => after >= target,
@@ -375,13 +389,11 @@ pub fn run(ctx: &Context, args: &CleanArgs) -> Result<ExitCode> {
             green.render_reset(),
             super::directories(report.removed)
         )?;
-        if let (Some(before), Some(after)) = (report.free_before, report.free_after) {
-            writeln!(
-                out,
-                "Free space: {} → {}",
-                fmt::bytes(before),
-                fmt::bytes(after)
-            )?;
+        if let Some(change) = change {
+            writeln!(out, "{}", change.line())?;
+            if change.may_rise() {
+                writeln!(out, "{}", super::FreeChange::NOTE)?;
+            }
         }
         if mode == DeleteMode::Trash {
             writeln!(

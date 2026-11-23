@@ -56,6 +56,11 @@ Sizes are allocated blocks, not apparent sizes, with hard links counted once. "R
 counts data whose every link is inside the artifact, so a pnpm `node_modules` hard-linked into
 the global store shows how much deleting it would actually free.
 
+After a clean, carwash reads the disk's free space again and shows the change next to what it
+freed. On APFS the free space can keep rising for a while after a large clean, so a reading
+taken right away may be well below the total; carwash says so when that happens, and the
+figure is worth checking again a few minutes later.
+
 If another program is still writing into a directory while it is deleted (a build that has
 not quite finished, say), carwash retries for a moment. If that is not enough, it reports
 that directory as failed, says where the remainder is so the next scan can finish it, and

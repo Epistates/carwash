@@ -524,6 +524,9 @@ fn clean(
         }
     }
 
+    let home = carwash_core::paths::home();
+    let free = || home.as_deref().and_then(|h| fs4::available_space(h).ok());
+    let free_before = free();
     let mut failures = 0;
     let mut records = Vec::new();
     let mut cleaned = Vec::new();
@@ -580,6 +583,20 @@ fn clean(
     }
     let total: u64 = records.iter().map(|r| r.bytes).sum();
     writeln!(out, "Freed {} in total.", fmt::bytes(total))?;
+    if let Some((before, after)) = free_before.zip(free()).filter(|_| total > 0) {
+        let change = super::FreeChange {
+            before,
+            after,
+            freed: total,
+            settles_late: home
+                .as_deref()
+                .is_some_and(carwash_core::clean::settles_late),
+        };
+        writeln!(out, "{}", change.line())?;
+        if change.may_rise() {
+            writeln!(out, "{}", super::FreeChange::NOTE)?;
+        }
+    }
     Ok(exit(failures > 0 || skipped > 0))
 }
 

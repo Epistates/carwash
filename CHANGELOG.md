@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `carwash caches clean xcode-device-support` leaves the newest folder per device model and
   the ones connected devices run, and says so. Naming a kept child by its own id still cleans
   it.
+- After a clean, `carwash clean`, `carwash caches clean`, `carwash os clean` and the TUI say
+  how much free space changed ("3.6 GB more") next to the before and after figures. On APFS,
+  where free space can keep rising for a while after a large deletion, a reading well below
+  what was freed now comes with a note that it is not final; `--json` reports this as
+  `free_space_may_rise`.
 - The minimum supported Rust version is now 1.95, which `sysinfo` 0.40 requires.
 - Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
   `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.

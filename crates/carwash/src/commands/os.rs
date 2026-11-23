@@ -324,6 +324,9 @@ struct CleanOut {
     freed: u64,
     free_before: Option<u64>,
     free_after: Option<u64>,
+    /// `free_after` was read right after a large clean on a filesystem (APFS) where free
+    /// space can keep rising for a while, and so far shows less than `freed`.
+    free_space_may_rise: bool,
 }
 
 /// Areas named by id or row number; none means the default tier (without elevated
@@ -470,7 +473,19 @@ fn clean(ctx: &Context, areas: &[Area], picks: &[String], flags: &Flags) -> Resu
     let mut results: Vec<CleanedOut> = Vec::new();
     let finish =
         |results: Vec<CleanedOut>, out: &mut dyn Write, dry_run: bool| -> Result<ExitCode> {
-            let freed = results.iter().map(|r| r.freed).sum();
+            let freed: u64 = results.iter().map(|r| r.freed).sum();
+            let free_after = home.as_deref().and_then(|h| fs4::available_space(h).ok());
+            let change = free_before
+                .zip(free_after)
+                .filter(|_| !dry_run)
+                .map(|(before, after)| super::FreeChange {
+                    before,
+                    after,
+                    freed,
+                    settles_late: home
+                        .as_deref()
+                        .is_some_and(carwash_core::clean::settles_late),
+                });
             // Named areas left undone are a failure; in the default tier, an open app only
             // postpones its cache.
             let incomplete = results.iter().any(|r| match r.outcome {
@@ -485,10 +500,16 @@ fn clean(ctx: &Context, areas: &[Area], picks: &[String], flags: &Flags) -> Resu
                     areas: results,
                     freed,
                     free_before,
-                    free_after: home.as_deref().and_then(|h| fs4::available_space(h).ok()),
+                    free_after,
+                    free_space_may_rise: change.is_some_and(|c| c.may_rise()),
                 };
                 serde_json::to_writer_pretty(&mut *out, &report)?;
                 writeln!(out)?;
+            } else if let Some(change) = change.filter(|_| freed > 0) {
+                writeln!(out, "{}", change.line())?;
+                if change.may_rise() {
+                    writeln!(out, "{}", super::FreeChange::NOTE)?;
+                }
             }
             Ok(if incomplete {
                 ExitCode::FAILURE

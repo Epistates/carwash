@@ -253,6 +253,10 @@ but never protected ones; the root is scanned again first and anything that is n
 artifact is skipped. Prefer paths over numbers when several scans may run at once: numbers
 refer to the most recent `carwash scan` by anyone.
 
+Free space is read again right after deleting and shown next to what was freed. On APFS it
+can keep rising for a while after a large clean; carwash says so when the reading is well
+below the total (`free_space_may_rise` in --json).
+
 Exit status: 0 on success (including nothing to do), 1 when a deletion failed, a picked
 artifact was skipped, or the --free/--until-free goal could not be met, 2 on invalid usage
 or errors.";

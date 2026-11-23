@@ -1126,10 +1126,19 @@ fn render_review(frame: &mut Frame, app: &App, review: &Review) {
                 ),
             ])];
             if let (Some(before), Some(after)) = (report.free_before, report.free_after) {
-                lines.push(Line::from(Span::styled(
-                    format!("Free space {} → {}", fmt::bytes(before), fmt::bytes(after)),
-                    t.subtle(),
-                )));
+                let change = crate::commands::FreeChange {
+                    before,
+                    after,
+                    freed: report.bytes,
+                    settles_late: report.settles_late && review.mode == DeleteMode::Permanent,
+                };
+                lines.push(Line::from(Span::styled(change.line(), t.subtle())));
+                if change.may_rise() {
+                    lines.push(Line::from(Span::styled(
+                        crate::commands::FreeChange::NOTE,
+                        t.muted(),
+                    )));
+                }
             }
             if review.mode == DeleteMode::Trash {
                 lines.push(Line::from(Span::styled(

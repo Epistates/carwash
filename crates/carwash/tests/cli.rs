@@ -150,7 +150,14 @@ fn clean_removes_only_selected_and_records_history() {
         .arg(tree.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Freed"));
+        .stdout(predicate::str::contains("Freed"))
+        // The measured change is spelled out; a clean this small never draws the note
+        // about free space that is still settling.
+        .stdout(
+            predicate::str::is_match(r"Free space: .+ → .+ \((.+ (more|less)|unchanged)\)")
+                .unwrap(),
+        )
+        .stdout(predicate::str::contains("keep rising").not());
     let root = tree.path();
     assert!(!root.join("app/target").exists());
     assert!(!root.join("web/node_modules").exists());
@@ -308,6 +315,7 @@ fn free_goal_takes_the_least_recently_used_first() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["goal"]["met"], true);
     assert_eq!(report["removed"], 1);
+    assert_eq!(report["free_space_may_rise"], false);
     assert!(!tree.path().join("oldest/node_modules").exists());
     assert!(tree.path().join("older/node_modules").exists());
 }
