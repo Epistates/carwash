@@ -604,13 +604,8 @@ mod tests {
 
     /// Sets `path`'s modification time `days` from now.
     fn touch_in(path: &Path, days: u64) {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + days * DAY;
-        let time = filetime::FileTime::from_unix_time(secs as i64, 0);
-        filetime::set_file_mtime(path, time).unwrap();
+        let time = SystemTime::now() + Duration::from_secs(days * DAY);
+        crate::testing::set_modified(path, time);
     }
 
     fn run(root: &Path, options: SweepOptions) -> SweepReport {

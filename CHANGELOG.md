@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The minimum supported Rust version is now 1.95, which `sysinfo` 0.40 requires.
+- Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
+  `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.
+
 ## [0.5.0] - 2026-11-21
 
 ### Added

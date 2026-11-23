@@ -57,3 +57,27 @@ impl Cancel {
         self.0.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::fs::{FileTimes, OpenOptions};
+    use std::path::Path;
+    use std::time::SystemTime;
+
+    /// Sets the modification time of a file or directory.
+    pub(crate) fn set_modified(path: &Path, time: SystemTime) {
+        let mut options = OpenOptions::new();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be opened.
+            options.write(true).custom_flags(0x0200_0000);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options
+            .open(path)
+            .and_then(|file| file.set_times(FileTimes::new().set_modified(time)))
+            .unwrap();
+    }
+}

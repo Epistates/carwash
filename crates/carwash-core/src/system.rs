@@ -391,15 +391,24 @@ fn expand(pattern: &Path) -> Vec<PathBuf> {
 
 /// A snapshot of running process names, to keep from cleaning caches in use.
 #[derive(Debug, Clone, Default)]
-pub struct RunningApps(Vec<String>);
+pub struct RunningApps {
+    names: Vec<String>,
+    /// The process list could not be read.
+    unknown: bool,
+}
 
 impl RunningApps {
     pub fn snapshot() -> Self {
         use sysinfo::{ProcessRefreshKind, RefreshKind, System};
         // Names only: no CPU, memory or command lines.
-        let system = System::new_with_specifics(
+        let Ok(system) = System::new_with_specifics(
             RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
-        );
+        ) else {
+            return Self {
+                names: Vec::new(),
+                unknown: true,
+            };
+        };
         let mut names: Vec<String> = system
             .processes()
             .values()
@@ -410,16 +419,27 @@ impl RunningApps {
             .collect();
         names.sort_unstable();
         names.dedup();
-        Self(names)
+        Self {
+            names,
+            unknown: false,
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn from_names(names: &[&str]) -> Self {
-        Self(names.iter().map(|n| (*n).to_owned()).collect())
+        Self {
+            names: names.iter().map(|n| (*n).to_owned()).collect(),
+            unknown: false,
+        }
     }
 
     /// The patterns (process names, globs, case-insensitive) that match a running process.
+    /// When the process list could not be read, every pattern counts as running: what must
+    /// not be cleaned under a running program is skipped rather than risked.
     pub fn matching(&self, patterns: &[String]) -> Vec<String> {
+        if self.unknown {
+            return patterns.to_vec();
+        }
         patterns
             .iter()
             .filter(|pattern| {
@@ -428,7 +448,7 @@ impl RunningApps {
                     .build()
                     .is_ok_and(|glob| {
                         let matcher = glob.compile_matcher();
-                        self.0.iter().any(|name| matcher.is_match(name))
+                        self.names.iter().any(|name| matcher.is_match(name))
                     })
             })
             .cloned()
@@ -598,6 +618,15 @@ mod tests {
         assert!(
             running.matching(&apps(&["Chrome"])).is_empty(),
             "whole names"
+        );
+        let unreadable = RunningApps {
+            names: Vec::new(),
+            unknown: true,
+        };
+        assert_eq!(
+            unreadable.matching(&apps(&["Slack", "Discord"])),
+            ["Slack", "Discord"],
+            "assumed running when the process list cannot be read"
         );
     }
 }

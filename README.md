@@ -62,7 +62,7 @@ the global store shows how much deleting it would actually free.
 cargo install --locked carwash
 ```
 
-Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rust 1.88 or newer.
+Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rust 1.95 or newer.
 
 ## The TUI
 

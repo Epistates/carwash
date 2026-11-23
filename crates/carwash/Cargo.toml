@@ -48,7 +48,6 @@ rlimit.workspace = true
 tempfile.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
-filetime.workspace = true
 
 [lints]
 workspace = true

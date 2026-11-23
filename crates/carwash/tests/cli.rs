@@ -4,6 +4,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
 
@@ -18,6 +19,23 @@ fn write(root: &Path, rel: &str, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+/// Sets the modification time of a file or directory.
+fn set_modified(path: &Path, time: SystemTime) {
+    let mut options = fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be opened.
+        options.write(true).custom_flags(0x0200_0000);
+    }
+    #[cfg(not(windows))]
+    options.read(true);
+    options
+        .open(path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(time)))
+        .unwrap();
+}
+
 /// Two old artifacts, one recent one, and one with a generic name.
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -30,7 +48,7 @@ fn fixture() -> tempfile::TempDir {
     write(root, "web/dist/bundle.js", "z");
     write(root, "fresh/package.json", "{}");
     write(root, "fresh/node_modules/pkg/index.js", "new");
-    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    let old = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
     for rel in [
         "app/target/CACHEDIR.TAG",
         "app/target/debug/bin",
@@ -42,7 +60,7 @@ fn fixture() -> tempfile::TempDir {
         "web/dist/bundle.js",
         "web/dist",
     ] {
-        filetime::set_file_mtime(root.join(rel), old).unwrap();
+        set_modified(&root.join(rel), old);
     }
     dir
 }
@@ -222,7 +240,7 @@ fn ecosystems_lists_builtins() {
 #[test]
 fn clean_survives_a_low_open_file_limit() {
     let tree = tempfile::tempdir().unwrap();
-    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    let old = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
     for project in 0..24 {
         let root = format!("p{project}");
         write(tree.path(), &format!("{root}/package.json"), "{}");
@@ -230,7 +248,7 @@ fn clean_survives_a_low_open_file_limit() {
             let deep = format!("{root}/node_modules/m{module}/a/b/c/d/e/f/g/h/node_modules/x/y");
             write(tree.path(), &format!("{deep}/index.js"), "x");
         }
-        filetime::set_file_mtime(tree.path().join(format!("{root}/node_modules")), old).unwrap();
+        set_modified(&tree.path().join(format!("{root}/node_modules")), old);
     }
     let home = tempfile::tempdir().unwrap();
     let bin = assert_cmd::cargo::cargo_bin("carwash");
@@ -265,13 +283,13 @@ fn aged_fixture() -> tempfile::TempDir {
             &format!("{name}/node_modules/pkg/index.js"),
             &"x".repeat(20_000),
         );
-        let time = filetime::FileTime::from_unix_time(secs, 0);
+        let time = UNIX_EPOCH + Duration::from_secs(secs);
         for rel in [
             "node_modules/pkg/index.js",
             "node_modules/pkg",
             "node_modules",
         ] {
-            filetime::set_file_mtime(dir.path().join(name).join(rel), time).unwrap();
+            set_modified(&dir.path().join(name).join(rel), time);
         }
     }
     dir
