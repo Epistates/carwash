@@ -1517,10 +1517,10 @@ mod tests {
         use std::time::Duration;
         let mut app = app();
         press(&mut app, KeyCode::Char('4'));
-        let named = |name: &str, days: u64, cache: GlobalCache| GlobalCache {
-            name: name.into(),
-            last_used: Some(app.now - Duration::from_secs(days * 86_400)),
-            ..cache
+        let named = |name: &str, days: u64, mut cache: GlobalCache| {
+            cache.name = name.into();
+            cache.last_used = Some(app.now - Duration::from_secs(days * 86_400));
+            cache
         };
         let caches = vec![
             named("Simulators: iPhone 17 Pro, iOS 27.0", 3, booted("up")),

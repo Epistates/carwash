@@ -33,6 +33,7 @@ const APPLE_EPOCH: u64 = 978_307_200;
 
 /// What a device support folder's name says: `iPad16,3 27.3 (24C5037i)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Support {
     /// The device model, e.g. `iPad16,3`. Folders written by old versions of Xcode have
     /// none: they were shared by every model.
@@ -147,6 +148,7 @@ impl Build {
 
 /// A physical device this Mac has paired with.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Device {
     pub name: String,
     /// The model, e.g. `iPad16,3`.

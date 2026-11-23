@@ -29,6 +29,7 @@ const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CacheSpec {
     pub id: String,
     pub name: String,
@@ -128,6 +129,7 @@ pub fn specs_with_overrides(user: &str) -> Result<Vec<CacheSpec>, String> {
 /// Whether carwash cleans an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Verdict {
     /// Recommended for removal: nothing needs it any more.
     Remove,
@@ -142,12 +144,20 @@ pub enum Verdict {
 
 /// What carwash makes of an entry, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Advice {
     pub verdict: Verdict,
     pub reason: String,
 }
 
 impl Advice {
+    pub fn new(verdict: Verdict, reason: impl Into<String>) -> Self {
+        Self {
+            verdict,
+            reason: reason.into(),
+        }
+    }
+
     pub(crate) fn remove(reason: impl Into<String>) -> Self {
         Self {
             verdict: Verdict::Remove,
@@ -180,6 +190,7 @@ impl Advice {
 /// What an entry is, where its tool describes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[non_exhaustive]
 pub enum Detail {
     Simulator {
         udid: String,
@@ -228,6 +239,7 @@ pub enum Detail {
 
 /// A cache present on this machine.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct GlobalCache {
     /// `spec-id`, or `spec-id/child` for per-child entries.
     pub id: String,
@@ -282,6 +294,7 @@ pub enum Step {
 
 /// Why a cache is not cleaned.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Refusal {
     /// The entry is in use; see [`Advice`].
     #[error("{0}")]
@@ -316,6 +329,28 @@ fn running(programs: &[String]) -> String {
 }
 
 impl GlobalCache {
+    /// An entry with nothing known about it but where it is: no way to clean it, no size,
+    /// no advice. Set the fields that apply.
+    pub fn new(id: impl Into<String>, name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            path: path.into(),
+            ecosystem: None,
+            deletable: false,
+            prune: None,
+            erase: None,
+            apps: Vec::new(),
+            note: None,
+            size: None,
+            last_used: None,
+            advice: None,
+            detail: None,
+            parts: None,
+            fingerprint: None,
+        }
+    }
+
     fn task(&self, name: &str, argv: Option<&Vec<String>>) -> Option<Task> {
         let argv = argv?;
         let program = argv.first()?;
@@ -747,21 +782,13 @@ fn for_child(argv: Option<&Vec<String>>, child: &str) -> Option<Vec<String>> {
 /// The entry for a cache as a whole.
 fn whole(spec: &CacheSpec, path: PathBuf) -> GlobalCache {
     GlobalCache {
-        id: spec.id.clone(),
-        name: spec.name.clone(),
         fingerprint: Fingerprint::of(&path),
-        path,
         ecosystem: spec.ecosystem.clone(),
         deletable: spec.delete,
         prune: spec.prune.clone(),
-        erase: None,
         apps: spec.apps.clone(),
         note: spec.note.clone(),
-        size: None,
-        last_used: None,
-        advice: None,
-        detail: None,
-        parts: None,
+        ..GlobalCache::new(&spec.id, &spec.name, path)
     }
 }
 

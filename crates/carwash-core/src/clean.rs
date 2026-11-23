@@ -58,6 +58,7 @@ pub enum CleanEvent {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[non_exhaustive]
 pub struct CleanReport {
     pub removed: usize,
     pub failed: usize,

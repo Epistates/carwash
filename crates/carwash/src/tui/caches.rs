@@ -602,7 +602,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     Some(Verdict::Keep) => Span::styled("keep", t.muted()),
                     Some(Verdict::Unknown) => Span::styled("kept?", t.fg(t.warning)),
                     Some(Verdict::Protected) => Span::styled("in use", t.fg(t.warning)),
-                    None => Span::default(),
+                    Some(_) | None => Span::default(),
                 }));
             }
             Row::new(cells)
@@ -679,6 +679,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 Verdict::Keep => ("Kept unless marked", t.subtle()),
                 Verdict::Unknown => ("Not known, so kept unless marked", t.fg(t.warning)),
                 Verdict::Protected => ("In use", t.fg(t.warning)),
+                _ => ("Advice", t.subtle()),
             };
             lines.push(Line::from(Span::styled(
                 format!("{label}: {}", advice.reason),
@@ -712,43 +713,31 @@ pub(crate) mod tests {
     }
 
     fn cache(id: &str) -> GlobalCache {
-        GlobalCache {
-            id: id.into(),
-            name: id.into(),
-            path: PathBuf::from(format!("/home/{id}")),
-            ecosystem: None,
-            deletable: true,
-            prune: None,
-            erase: None,
-            apps: Vec::new(),
-            note: None,
-            size: None,
-            last_used: None,
-            advice: None,
-            detail: None,
-            parts: None,
-            fingerprint: None,
-        }
+        let mut cache = GlobalCache::new(id, id, format!("/home/{id}"));
+        cache.deletable = true;
+        cache
     }
 
     pub(crate) fn simulator(id: &str) -> GlobalCache {
-        GlobalCache {
-            deletable: false,
-            prune: Some(vec!["cargo".into(), "delete".into(), id.into()]),
-            erase: Some(vec!["cargo".into(), "erase".into(), id.into()]),
-            apps: vec!["xcodebuild".into()],
-            ..cache(id)
-        }
+        let mut cache = cache(id);
+        cache.deletable = false;
+        cache.prune = Some(vec!["cargo".into(), "delete".into(), id.into()]);
+        cache.erase = Some(vec!["cargo".into(), "erase".into(), id.into()]);
+        cache.apps = vec!["xcodebuild".into()];
+        cache
+    }
+
+    fn advised(mut cache: GlobalCache, verdict: Verdict, reason: &str) -> GlobalCache {
+        cache.advice = Some(carwash_core::caches::Advice::new(verdict, reason));
+        cache
     }
 
     pub(crate) fn booted(id: &str) -> GlobalCache {
-        GlobalCache {
-            advice: Some(carwash_core::caches::Advice {
-                verdict: Verdict::Protected,
-                reason: "booted; shut it down first".into(),
-            }),
-            ..simulator(id)
-        }
+        advised(
+            simulator(id),
+            Verdict::Protected,
+            "booted; shut it down first",
+        )
     }
 
     fn measured(id: &str, size: Size) -> Msg {
@@ -771,9 +760,10 @@ pub(crate) mod tests {
         let remembered = sizes.get(Path::new("/home/a"));
         let two_days = now + Duration::from_secs(2 * 24 * 60 * 60);
         let two_weeks = now + Duration::from_secs(14 * 24 * 60 * 60);
-        let with = |fp| GlobalCache {
-            fingerprint: fp,
-            ..cache("a")
+        let with = |fp| {
+            let mut cache = cache("a");
+            cache.fingerprint = fp;
+            cache
         };
         // Unchanged: trusted for a week.
         assert!(!is_stale(&with(fingerprint(1)), remembered, two_days));
@@ -1027,19 +1017,17 @@ pub(crate) mod tests {
     }
 
     fn toolchain(name: &str) -> GlobalCache {
-        use carwash_core::caches::{Advice, Detail};
-        GlobalCache {
-            detail: Some(Detail::Toolchain {
-                default: false,
-                standing: false,
-                needed_by: None,
-            }),
-            advice: Some(Advice {
-                verdict: Verdict::Unknown,
-                reason: "not checked against any projects".into(),
-            }),
-            ..cache(&format!("rustup-toolchains/{name}-aarch64-apple-darwin"))
-        }
+        let mut cache = advised(
+            cache(&format!("rustup-toolchains/{name}-aarch64-apple-darwin")),
+            Verdict::Unknown,
+            "not checked against any projects",
+        );
+        cache.detail = Some(carwash_core::caches::Detail::Toolchain {
+            default: false,
+            standing: false,
+            needed_by: None,
+        });
+        cache
     }
 
     fn toolchain_verdicts(app: &App) -> Vec<Option<Verdict>> {
@@ -1059,14 +1047,10 @@ pub(crate) mod tests {
     #[test]
     fn toolchains_are_advised_on_once_the_scanned_projects_are_known() {
         use carwash_core::toolchains::{Channel, Pin};
-        let needs = Needs {
-            roots: vec![PathBuf::from("/work")],
-            projects: 1,
-            pins: vec![Pin {
-                channel: Channel::Version(vec![1, 90]),
-                project: PathBuf::from("/work/app"),
-            }],
-        };
+        let mut needs = Needs::default();
+        needs.roots = vec![PathBuf::from("/work")];
+        needs.projects = 1;
+        needs.pins = vec![Pin::new(Channel::Version(vec![1, 90]), "/work/app")];
         let unknown = [Some(Verdict::Unknown), Some(Verdict::Unknown)];
         let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
         assert_eq!(
@@ -1101,11 +1085,9 @@ pub(crate) mod tests {
     fn a_scan_that_finds_no_rust_project_recommends_no_toolchain() {
         let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
         // The folder the TUI was opened on holds no Rust project at all.
-        app.update(Msg::ToolchainNeeds(Needs {
-            roots: vec![PathBuf::from("/work/web")],
-            projects: 0,
-            pins: Vec::new(),
-        }));
+        let mut nothing = Needs::default();
+        nothing.roots = vec![PathBuf::from("/work/web")];
+        app.update(Msg::ToolchainNeeds(nothing));
         assert_eq!(
             toolchain_verdicts(&app),
             [Some(Verdict::Unknown), Some(Verdict::Unknown)]
@@ -1219,13 +1201,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_marks_what_is_recommended_for_removal() {
-        let advised = |id: &str, verdict| GlobalCache {
-            advice: Some(carwash_core::caches::Advice {
-                verdict,
-                reason: "test".into(),
-            }),
-            ..cache(id)
-        };
+        let advised = |id: &str, verdict| advised(cache(id), verdict, "test");
         let mut app = opened(vec![
             advised("old", Verdict::Remove),
             advised("current", Verdict::Keep),

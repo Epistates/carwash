@@ -1474,11 +1474,10 @@ pub(crate) mod tests {
             id: ArtifactId(0),
             bytes: 500,
         }));
-        let effects = app.update(Msg::CleanFinished(CleanReport {
-            removed: 1,
-            bytes: 500,
-            ..CleanReport::default()
-        }));
+        let mut report = CleanReport::default();
+        report.removed = 1;
+        report.bytes = 500;
+        let effects = app.update(Msg::CleanFinished(report));
         assert!(matches!(&effects[0], Effect::RecordHistory(r) if r.len() == 1));
         assert!(app.marked.is_empty());
         app.ensure_rows();

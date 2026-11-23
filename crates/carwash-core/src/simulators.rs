@@ -17,6 +17,7 @@ pub const LIST_TESTING: &[&str] = &[
 
 /// One simulator device.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Simulator {
     pub udid: String,
     pub name: String,

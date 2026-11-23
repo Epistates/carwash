@@ -29,6 +29,7 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 /// A toolchain `rustup toolchain list` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Installed {
     /// The name rustup knows it by, which is also its directory under `toolchains/`.
     pub name: String,
@@ -133,10 +134,20 @@ impl Channel {
 
 /// A toolchain a project asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Pin {
     pub channel: Channel,
     /// The project directory the pin applies to.
     pub project: PathBuf,
+}
+
+impl Pin {
+    pub fn new(channel: Channel, project: impl Into<PathBuf>) -> Self {
+        Self {
+            channel,
+            project: project.into(),
+        }
+    }
 }
 
 fn read(path: &Path) -> Option<String> {
@@ -239,6 +250,7 @@ pub fn pins(projects: &[PathBuf], overrides: &[(String, String)]) -> Vec<Pin> {
 
 /// What the Rust projects under some directories need of the installed toolchains.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Needs {
     /// The directories that were searched.
     pub roots: Vec<PathBuf>,
@@ -813,7 +825,7 @@ pub(crate) mod tests {
             ],
         );
         let found = search(&[&root]);
-        assert_eq!(found.roots, [root.clone()]);
+        assert_eq!(found.roots.as_slice(), std::slice::from_ref(&root));
         assert_eq!(found.projects, 2);
         assert_eq!(
             channels(&found.pins),
