@@ -416,6 +416,27 @@ impl GlobalCache {
         cache
     }
 
+    /// The check made immediately before one cache is cleaned, however long ago it was
+    /// listed and whatever was cleaned before it: its tool is asked again
+    /// ([`GlobalCache::refreshed`]), the running programs are read again (`running`, only
+    /// for a cache that names programs), and the two decide. Returns the entry as it is now
+    /// with what cleaning it takes, or why it is left alone.
+    pub fn checked(
+        &self,
+        mode: Mode,
+        host: &dyn Host,
+        running: &dyn Fn() -> RunningApps,
+    ) -> (Self, Result<Step, Refusal>) {
+        let cache = self.refreshed(host);
+        let running = if cache.apps.is_empty() {
+            RunningApps::default()
+        } else {
+            running()
+        };
+        let step = cache.plan(mode, &running);
+        (cache, step)
+    }
+
     /// Deletes the cache's directory, which must be [`Step::DeleteDirectory`]'s to delete.
     /// On failure, says what happened and where the remainder is.
     pub fn delete_directory(&self, engine: &Engine, cancel: &Cancel) -> Result<(), String> {
@@ -1376,6 +1397,35 @@ pub(crate) mod tests {
         // Unchanged: still free to clean.
         let same = device.refreshed(&simctl(LISTING, TESTING_LISTING));
         assert!(same.advice.is_none());
+    }
+
+    #[test]
+    fn each_cache_is_checked_against_what_runs_at_its_own_turn() {
+        let home = simulator_home();
+        let host = simctl(LISTING, TESTING_LISTING);
+        let caches = simulator_caches(home.path(), &host);
+        let first = find(&caches, &format!("simulators/{SHUT_DOWN}"));
+        let second = find(&caches, "simulators/00000002-0000-4000-8000-000000000002");
+        // A build starts after the first device has been dealt with.
+        let asked = Mutex::new(0);
+        let running = || {
+            let mut asked = asked.lock().unwrap();
+            *asked += 1;
+            match *asked {
+                1 => idle(),
+                _ => RunningApps::from_names(&["xcodebuild"]),
+            }
+        };
+        let (_, step) = first.checked(Mode::Clean, &host, &running);
+        assert!(!matches!(step, Err(Refusal::Busy(_))), "{step:?}");
+        let (_, step) = second.checked(Mode::Clean, &host, &running);
+        assert_eq!(step, Err(Refusal::Busy(vec!["xcodebuild".into()])));
+        assert_eq!(*asked.lock().unwrap(), 2, "read once per cache");
+
+        // A cache that names no programs does not need the process list read at all.
+        let plain = cache("delete = true");
+        let (_, step) = plain.checked(Mode::Clean, &host, &|| panic!("not asked"));
+        assert_eq!(step, Ok(Step::DeleteDirectory));
     }
 
     #[test]

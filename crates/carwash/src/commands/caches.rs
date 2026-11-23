@@ -557,15 +557,11 @@ fn clean(
     let mut records = Vec::new();
     let mut cleaned = Vec::new();
     for (cache, _) in plan {
-        // The plan was made before the question was answered: ask again what is booted
-        // and what is running, so nothing that came into use since is touched.
-        let mut cache = cache.refreshed(cleaner.host());
-        let running = if cache.apps.is_empty() {
-            RunningApps::default()
-        } else {
-            cleaner.running()
-        };
-        let step = match cache.plan(flags.mode, &running) {
+        // The plan was made before the question was answered, and cleaning the caches
+        // before this one took time: ask again what is booted and what is running, so
+        // nothing that came into use since is touched.
+        let (mut cache, step) = cache.checked(flags.mode, cleaner.host(), &|| cleaner.running());
+        let step = match step {
             Ok(step) => step,
             Err(refusal) => {
                 skipped += 1;
@@ -662,7 +658,8 @@ mod tests {
     struct Fake {
         /// Default-set listings, one per call; the last repeats.
         listings: Mutex<Vec<String>>,
-        running: Vec<&'static str>,
+        /// The running programs, one answer per time they are read; the last repeats.
+        running: Mutex<Vec<Vec<&'static str>>>,
         ran: Mutex<Vec<String>>,
         deleted: Mutex<Vec<String>>,
         /// What every deletion fails with, if they are to fail.
@@ -673,7 +670,7 @@ mod tests {
         fn new(listings: &[&str], running: &[&'static str]) -> Self {
             Self {
                 listings: Mutex::new(listings.iter().map(|l| (*l).to_owned()).collect()),
-                running: running.to_vec(),
+                running: Mutex::new(vec![running.to_vec()]),
                 ran: Mutex::default(),
                 deleted: Mutex::default(),
                 delete_fails: None,
@@ -713,7 +710,13 @@ mod tests {
         }
 
         fn running(&self) -> RunningApps {
-            RunningApps::from_names(&self.running)
+            let mut running = self.running.lock().unwrap();
+            let now = if running.len() > 1 {
+                running.remove(0)
+            } else {
+                running[0].clone()
+            };
+            RunningApps::from_names(&now)
         }
 
         fn run(&self, task: &Task) -> bool {
@@ -950,6 +953,26 @@ mod tests {
         assert_eq!(set.clean[0].id, "simulators");
         let twice = select(&caches, &["plain".to_owned(), "plain".to_owned()], false).unwrap();
         assert_eq!(twice.clean.len(), 1);
+    }
+
+    #[test]
+    fn a_build_that_starts_mid_batch_stops_the_caches_after_it() {
+        let fake = Fake::new(&[LISTING], &[]);
+        // Read for the plan, then before each device: the build starts before the second.
+        *fake.running.lock().unwrap() = vec![vec![], vec![], vec!["xcodebuild"]];
+        let first = format!("simulators/{SHUT_DOWN}");
+        let second = "simulators/00000002-0000-4000-8000-000000000002";
+        let (exit, out) = run_clean(&fake, &[&first, second], Mode::Clean, false);
+        assert!(failed(exit), "{out}");
+        assert_eq!(
+            fake.ran(),
+            [format!("cargo simctl delete {SHUT_DOWN}")],
+            "only the device cleaned before the build started"
+        );
+        assert!(
+            out.contains("xcodebuild is running; try again when it has finished"),
+            "{out}"
+        );
     }
 
     #[test]

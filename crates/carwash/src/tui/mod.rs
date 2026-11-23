@@ -422,12 +422,16 @@ impl Runtime<'_> {
                 // it off the event loop.
                 let tx = self.tx.clone();
                 std::thread::spawn(move || {
-                    let running = carwash_core::system::RunningApps::snapshot();
                     for cache in caches {
-                        let cache = cache.refreshed(&carwash_core::caches::LocalHost);
-                        let step = cache
-                            .plan(mode, &running)
-                            .map_err(|refusal| crate::commands::caches::left_alone(&refusal));
+                        // Each cache is checked at its own turn, as the CLI does: a build
+                        // may start while the ones before it are looked at.
+                        let (cache, step) = cache.checked(
+                            mode,
+                            &carwash_core::caches::LocalHost,
+                            &carwash_core::system::RunningApps::snapshot,
+                        );
+                        let step =
+                            step.map_err(|refusal| crate::commands::caches::left_alone(&refusal));
                         let _ = tx.send(Msg::CacheChecked {
                             cache: Box::new(cache),
                             step,
