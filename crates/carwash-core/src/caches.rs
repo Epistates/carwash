@@ -365,15 +365,25 @@ impl GlobalCache {
             Some(Detail::Simulator { udid, .. }) => {
                 let listed = host
                     .output(simulators::LIST)
-                    .and_then(|json| simulators::parse(&json).ok())
-                    .unwrap_or_default();
-                cache.advice = match listed.iter().find(|s| &s.udid == udid) {
-                    Some(simulator) => simulator_advice(simulator),
-                    None => Some(Advice::protected("no longer listed by simctl")),
+                    .and_then(|json| simulators::parse(&json).ok());
+                cache.advice = match listed {
+                    // Not knowing is not the same as knowing it is shut down.
+                    None => Some(Advice::protected(
+                        "simctl could not be asked whether it is booted",
+                    )),
+                    Some(listed) => match listed.iter().find(|s| &s.udid == udid) {
+                        Some(simulator) => simulator_advice(simulator),
+                        None => Some(Advice::protected("no longer listed by simctl")),
+                    },
                 };
             }
             Some(Detail::TestDevices { .. }) => {
-                (cache.detail, cache.advice) = test_devices(host);
+                let (detail, advice) = test_devices(host);
+                cache.advice = advice;
+                // Without an answer, what was counted before still describes the entry.
+                if detail.is_some() {
+                    cache.detail = detail;
+                }
             }
             // Advice on what is still needed does not stand in the way of a clean.
             Some(Detail::DeviceSupport { .. } | Detail::Toolchain { .. }) | None => {}
@@ -781,13 +791,16 @@ fn simulator_advice(simulator: &Simulator) -> Option<Advice> {
     })
 }
 
-/// The test clones, which are left alone while any of them is not shut down.
+/// The test clones, which are left alone while any of them is not shut down, and also
+/// when `simctl` gives no answer (it is missing, fails, times out or prints something
+/// else): not knowing is not the same as knowing that none is booted.
 fn test_devices(host: &dyn Host) -> (Option<Detail>, Option<Advice>) {
     let Some(listed) = host
         .output(simulators::LIST_TESTING)
         .and_then(|json| simulators::parse(&json).ok())
     else {
-        return (None, None);
+        let unknown = Advice::protected("simctl could not be asked whether a test clone is booted");
+        return (None, Some(unknown));
     };
     let booted = listed.iter().filter(|s| !s.is_shut_down()).count();
     let advice = (booted > 0).then(|| {
@@ -1127,15 +1140,25 @@ pub(crate) mod tests {
         ));
         // A device simctl no longer lists, or a simctl that cannot be asked, is left alone.
         let gone = device.refreshed(&simctl("{\"devices\":{}}", TESTING_LISTING));
-        assert!(matches!(
+        assert_eq!(
             gone.plan(Mode::Clean, &idle()),
-            Err(Refusal::Protected(_))
-        ));
-        let unknown = device.refreshed(&Tools::none());
-        assert!(matches!(
-            unknown.plan(Mode::Clean, &idle()),
-            Err(Refusal::Protected(_))
-        ));
+            Err(Refusal::Protected("no longer listed by simctl".into()))
+        );
+        for silent in [
+            Tools::none(),
+            simctl(
+                "CoreSimulatorService connection became invalid",
+                TESTING_LISTING,
+            ),
+        ] {
+            let unknown = device.refreshed(&silent);
+            assert_eq!(
+                unknown.plan(Mode::Clean, &idle()),
+                Err(Refusal::Protected(
+                    "simctl could not be asked whether it is booted".into()
+                ))
+            );
+        }
         // Unchanged: still free to clean.
         let same = device.refreshed(&simctl(LISTING, TESTING_LISTING));
         assert!(same.advice.is_none());
@@ -1150,6 +1173,46 @@ pub(crate) mod tests {
         let set = find(&caches, "simulators");
         assert_eq!(set.name, "Simulators");
         assert!(set.parts.is_none(), "measured whole");
+    }
+
+    /// Not knowing whether a clone is booted must protect the clones like knowing one is.
+    #[test]
+    fn test_clones_stay_protected_when_simctl_cannot_answer() {
+        const UNKNOWN: &str = "simctl could not be asked whether a test clone is booted";
+        let home = simulator_home();
+        // Discovery sees three booted clones: protected.
+        let busy = simulator_caches(home.path(), &simctl(LISTING, LISTING));
+        let clones = find(&busy, "xctest-devices");
+        assert_eq!(
+            clones.plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected("3 test clones are booted".into()))
+        );
+        // Just before cleaning, simctl is missing, fails or times out; or it answers with
+        // something that is not a device list.
+        for silent in [
+            Tools::none(),
+            simctl(LISTING, "CoreSimulatorService connection became invalid"),
+            simctl(LISTING, "{\"devices\": 3}"),
+        ] {
+            let later = clones.refreshed(&silent);
+            assert_eq!(
+                later.plan(Mode::Clean, &idle()),
+                Err(Refusal::Protected(UNKNOWN.into())),
+            );
+            assert!(later.detail.is_some(), "what was counted is kept");
+        }
+        // The same when simctl was already silent at discovery, and it stays that way
+        // until simctl answers.
+        let unknown = simulator_caches(home.path(), &Tools::none());
+        let clones = find(&unknown, "xctest-devices");
+        assert_eq!(
+            clones.plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected(UNKNOWN.into()))
+        );
+        assert_eq!(
+            clones.refreshed(&Tools::none()).plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected(UNKNOWN.into()))
+        );
     }
 
     #[test]
