@@ -98,6 +98,15 @@ fn remember(ctx: &Context, caches: &[GlobalCache]) {
 /// Why a cache is left for now, as the user reads it.
 pub(crate) fn left_alone(refusal: &Refusal) -> String {
     match refusal {
+        Refusal::Busy(programs)
+            if programs
+                .iter()
+                .any(|p| matches!(p.as_str(), "SWBBuildService" | "XCBBuildService")) =>
+        {
+            format!(
+                "{refusal} (Xcode's build service, there while a project is open in Xcode); try again when it has finished"
+            )
+        }
         Refusal::Busy(_) => format!("{refusal}; try again when it has finished"),
         _ => refusal.to_string(),
     }

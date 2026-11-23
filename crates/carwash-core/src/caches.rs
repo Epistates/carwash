@@ -220,6 +220,9 @@ pub enum Detail {
         devices: usize,
         /// Clones that are not shut down.
         booted: usize,
+        /// Folders in the set that `simctl` has no device for. Its command leaves them, so
+        /// they are not part of this entry's size.
+        unlisted: usize,
     },
 }
 
@@ -292,6 +295,10 @@ pub enum Refusal {
     NotErasable,
     #[error("is cleaned with `{0}`; deleting its directory is not safe")]
     NotDeletable(String),
+    /// The entry is only listed: it has no command, and its directory is not carwash's to
+    /// delete.
+    #[error("cannot be cleaned by carwash")]
+    NoAction,
 }
 
 impl Refusal {
@@ -348,6 +355,10 @@ impl GlobalCache {
     /// What cleaning this cache in `mode` takes, or why it is refused. Protection and
     /// running programs are checked first, so nothing is ever planned for an entry in use.
     pub fn plan(&self, mode: Mode, running: &RunningApps) -> Result<Step, Refusal> {
+        // An entry that is only listed stays that way whatever is or is not running.
+        if self.prune.is_none() && self.erase.is_none() && !self.deletable {
+            return Err(Refusal::NoAction);
+        }
         if let Some(advice) = &self.advice
             && advice.verdict == Verdict::Protected
         {
@@ -399,14 +410,14 @@ impl GlobalCache {
                     },
                 };
             }
-            Some(Detail::TestDevices { .. }) => {
-                let (detail, advice) = test_devices(host);
-                cache.advice = advice;
-                // Without an answer, what was counted before still describes the entry.
-                if detail.is_some() {
-                    cache.detail = detail;
+            Some(Detail::TestDevices { .. }) => match TestSet::ask(host, &self.path) {
+                Some(set) => {
+                    cache.advice = set.advice();
+                    cache.detail = Some(set.detail());
                 }
-            }
+                // Without an answer, what was counted before still describes the entry.
+                None => cache.advice = Some(TestSet::unknown()),
+            },
             Some(Detail::Toolchain { .. }) => {
                 // The default may have been changed since the toolchains were listed.
                 if let Some(protected) = default_toolchain_advice(self, host) {
@@ -797,14 +808,7 @@ fn discover_with(
             Some(Adapter::RustToolchains) => {
                 out.extend(toolchain_entries(spec, &path, host, env));
             }
-            Some(Adapter::TestDevices) => {
-                let (detail, advice) = test_devices(host);
-                out.push(GlobalCache {
-                    detail,
-                    advice,
-                    ..whole(spec, path)
-                });
-            }
+            Some(Adapter::TestDevices) => out.extend(test_device_entries(spec, path, host)),
             None if spec.children => {
                 let keep = match spec.keep.as_deref() {
                     Some("rustup-default") => rustup_default(&path),
@@ -1111,29 +1115,105 @@ fn simulator_advice(simulator: &Simulator) -> Option<Advice> {
     })
 }
 
-/// The test clones, which are left alone while any of them is not shut down, and also
-/// when `simctl` gives no answer (it is missing, fails, times out or prints something
-/// else): not knowing is not the same as knowing that none is booted.
-fn test_devices(host: &dyn Host) -> (Option<Detail>, Option<Advice>) {
-    let Some(listed) = host
-        .output(simulators::LIST_TESTING)
-        .and_then(|json| simulators::parse(&json).ok())
-    else {
-        let unknown = Advice::protected("simctl could not be asked whether a test clone is booted");
-        return (None, Some(unknown));
-    };
-    let booted = listed.iter().filter(|s| !s.is_shut_down()).count();
-    let advice = (booted > 0).then(|| {
-        Advice::protected(match booted {
-            1 => "a test clone is booted".to_owned(),
-            n => format!("{n} test clones are booted"),
+/// The device set Xcode keeps for parallel testing, as `simctl` lists it and as it is on
+/// disk.
+struct TestSet {
+    /// How many clones `simctl` lists.
+    listed: usize,
+    /// Their folders: what `delete all` removes.
+    clones: Vec<PathBuf>,
+    booted: usize,
+    /// Device folders `simctl` has no device for, which `delete all` leaves.
+    unlisted: Vec<PathBuf>,
+}
+
+impl TestSet {
+    /// `None` when `simctl` gives no answer (it is missing, fails, times out or prints
+    /// something else).
+    fn ask(host: &dyn Host, set: &Path) -> Option<Self> {
+        let listed = host
+            .output(simulators::LIST_TESTING)
+            .and_then(|json| simulators::parse(&json).ok())?;
+        Some(Self {
+            listed: listed.len(),
+            clones: listed
+                .iter()
+                .map(|clone| set.join(&clone.udid))
+                .filter(|folder| folder.is_dir())
+                .collect(),
+            booted: listed.iter().filter(|s| !s.is_shut_down()).count(),
+            unlisted: subdirectories(set)
+                .into_iter()
+                .filter(|(name, _)| {
+                    simulators::is_udid(name) && !listed.iter().any(|s| &s.udid == name)
+                })
+                .map(|(_, folder)| folder)
+                .collect(),
         })
-    });
-    let detail = Detail::TestDevices {
-        devices: listed.len(),
-        booted,
+    }
+
+    /// Not knowing whether a clone is booted is not the same as knowing that none is.
+    fn unknown() -> Advice {
+        Advice::protected("simctl could not be asked whether a test clone is booted")
+    }
+
+    /// The clones are left alone while any of them is not shut down.
+    fn advice(&self) -> Option<Advice> {
+        (self.booted > 0).then(|| {
+            Advice::protected(match self.booted {
+                1 => "a test clone is booted".to_owned(),
+                n => format!("{n} test clones are booted"),
+            })
+        })
+    }
+
+    fn detail(&self) -> Detail {
+        Detail::TestDevices {
+            devices: self.listed,
+            booted: self.booted,
+            unlisted: self.unlisted.len(),
+        }
+    }
+}
+
+/// The entry for the test clones, sized as what its command removes, and when the set
+/// holds device folders `simctl` does not list, an entry that shows them and their size.
+/// That one is only listed: `simctl` cannot remove what it has no device for, and carwash
+/// does not delete folders in a device set on its own judgement.
+fn test_device_entries(spec: &CacheSpec, path: PathBuf, host: &dyn Host) -> Vec<GlobalCache> {
+    let Some(set) = TestSet::ask(host, &path) else {
+        return vec![GlobalCache {
+            advice: Some(TestSet::unknown()),
+            ..whole(spec, path)
+        }];
     };
-    (Some(detail), advice)
+    let mut out = vec![GlobalCache {
+        advice: set.advice(),
+        detail: Some(set.detail()),
+        parts: Some(set.clones.clone()),
+        ..whole(spec, path.clone())
+    }];
+    if !set.unlisted.is_empty() {
+        let folders = match set.unlisted.len() {
+            1 => "1 folder".to_owned(),
+            n => format!("{n} folders"),
+        };
+        out.push(GlobalCache {
+            id: format!("{}/unlisted", spec.id),
+            name: format!("{}: {folders} simctl does not list", spec.name),
+            prune: None,
+            advice: Some(Advice::unknown(
+                "simctl has no device for them, so its command leaves them",
+            )),
+            note: Some(
+                "Device folders in the test set that simctl does not list. carwash shows what they hold and does not remove them."
+                    .to_owned(),
+            ),
+            parts: Some(set.unlisted),
+            ..whole(spec, path)
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1395,7 +1475,10 @@ pub(crate) mod tests {
             ["xcrun", "simctl", "erase", SHUT_DOWN]
         );
         assert!(!device.deletable, "device folders belong to CoreSimulator");
-        assert_eq!(device.apps, ["xcodebuild", "xctest"]);
+        assert_eq!(
+            device.apps,
+            ["xcodebuild", "xctest", "SWBBuildService", "XCBBuildService"]
+        );
         assert!(device.advice.is_none());
         assert_eq!(
             device.detail,
@@ -1474,6 +1557,18 @@ pub(crate) mod tests {
                 }
             }
         }
+        // Xcode's own build service, which a build or test started in the app runs under.
+        for service in ["SWBBuildService", "XCBBuildService"] {
+            let running = RunningApps::from_names(&["Xcode", service]);
+            for cache in caches.iter().filter(|c| c.advice.is_none()) {
+                assert_eq!(
+                    cache.plan(Mode::Erase, &running),
+                    Err(Refusal::Busy(vec![service.to_owned()])),
+                    "{}",
+                    cache.id
+                );
+            }
+        }
         assert_eq!(
             Refusal::Busy(vec!["xcodebuild".into()]).to_string(),
             "xcodebuild is running"
@@ -1521,6 +1616,64 @@ pub(crate) mod tests {
         // Unchanged: still free to clean.
         let same = device.refreshed(&simctl(LISTING, TESTING_LISTING));
         assert!(same.advice.is_none());
+    }
+
+    #[test]
+    fn test_clones_are_sized_by_what_simctl_will_remove() {
+        let home = simulator_home();
+        let set = home.path().join(TEST_DEVICES);
+        // A clone simctl lists, and two device folders it has no device for.
+        for folder in [
+            SHUT_DOWN,
+            "B9E85B9D-0FEC-4251-B423-098DED3512DF",
+            "079A2128-1379-411E-BAB5-8EEF11ADB5E9",
+            "not-a-device",
+        ] {
+            fs::create_dir_all(set.join(folder).join("data")).unwrap();
+        }
+        let one_clone = format!(
+            "{{\"devices\":{{\"com.apple.CoreSimulator.SimRuntime.iOS-27-0\":[{{\"udid\":\"{SHUT_DOWN}\",\"name\":\"Clone 1 of iPhone 18 Pro\",\"state\":\"Shutdown\",\"isAvailable\":true,\"dataPath\":\"/x\"}}]}}}}"
+        );
+        let caches = simulator_caches(home.path(), &simctl(LISTING, &one_clone));
+        let clones = find(&caches, "xctest-devices");
+        assert_eq!(clones.parts.as_deref(), Some(&[set.join(SHUT_DOWN)][..]));
+        assert_eq!(
+            clones.detail,
+            Some(Detail::TestDevices {
+                devices: 1,
+                booted: 0,
+                unlisted: 2,
+            })
+        );
+        let unlisted = find(&caches, "xctest-devices/unlisted");
+        assert_eq!(
+            unlisted.name,
+            "Simulator test clones: 2 folders simctl does not list"
+        );
+        assert_eq!(
+            unlisted.parts.as_deref(),
+            Some(
+                &[
+                    set.join("079A2128-1379-411E-BAB5-8EEF11ADB5E9"),
+                    set.join("B9E85B9D-0FEC-4251-B423-098DED3512DF"),
+                ][..]
+            )
+        );
+        assert_eq!(unlisted.verdict(), Some(Verdict::Unknown));
+        // carwash has no way to remove them, and says so rather than guessing.
+        for mode in MODES {
+            assert_eq!(
+                unlisted.plan(mode, &idle()),
+                Err(Refusal::NoAction),
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            unlisted.plan(Mode::Clean, &RunningApps::from_names(&["xcodebuild"])),
+            Err(Refusal::NoAction),
+            "not something a finished build would change"
+        );
+        assert!(!Refusal::NoAction.is_temporary());
     }
 
     #[test]
@@ -1614,14 +1767,16 @@ pub(crate) mod tests {
             ["xcrun", "simctl", "--set", "testing", "delete", "all"]
         );
         assert!(!clones.deletable);
-        assert_eq!(clones.apps, ["xcodebuild", "xctest"]);
+        assert_eq!(clones.apps, find(&caches, "simulators").apps);
         assert_eq!(
             clones.detail,
             Some(Detail::TestDevices {
                 devices: 0,
-                booted: 0
+                booted: 0,
+                unlisted: 0,
             })
         );
+        assert_eq!(clones.parts.as_deref(), Some(&[][..]), "nothing to remove");
         assert!(clones.advice.is_none());
         assert_eq!(
             clones.plan(Mode::Clean, &RunningApps::from_names(&["xcodebuild"])),
