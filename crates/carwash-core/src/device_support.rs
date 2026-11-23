@@ -77,10 +77,70 @@ impl Support {
         format!("{} ({})", self.version_text(), self.build)
     }
 
-    fn newer_than(&self, other: &Self) -> bool {
+    /// Whether this folder is known to be for a later build than `other`: a higher OS
+    /// version, or the same version and a build that orders after it. Builds that cannot
+    /// be ordered do not supersede each other.
+    fn supersedes(&self, other: &Self) -> bool {
         match self.version.cmp(&other.version) {
-            Ordering::Equal => self.build > other.build,
-            order => order == Ordering::Greater,
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => {
+                Build::parse(&self.build)
+                    .zip(Build::parse(&other.build))
+                    .and_then(|(mine, theirs)| mine.order(&theirs))
+                    == Some(Ordering::Greater)
+            }
+        }
+    }
+}
+
+/// An Apple build number such as `24C5037i`: a major number, a letter for the update, a
+/// number that counts builds, and on seed (beta) builds a lowercase suffix. Apple does
+/// not publish the format; this is how its build numbers have long been read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Build {
+    major: u32,
+    letter: char,
+    number: u32,
+    /// The lowercase letters after the number, which only seed builds carry.
+    seed: Option<String>,
+}
+
+impl Build {
+    fn parse(text: &str) -> Option<Self> {
+        let digits = |text: &str| text.bytes().take_while(u8::is_ascii_digit).count();
+        let (major, rest) = text.split_at(digits(text));
+        let mut rest = rest.chars();
+        let letter = rest.next().filter(char::is_ascii_uppercase)?;
+        let rest = rest.as_str();
+        let (number, suffix) = rest.split_at(digits(rest));
+        if !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+            return None;
+        }
+        Some(Self {
+            major: major.parse().ok()?,
+            letter,
+            number: number.parse().ok()?,
+            seed: (!suffix.is_empty()).then(|| suffix.to_owned()),
+        })
+    }
+
+    /// How this build orders against another build of the same OS version, or `None` when
+    /// that cannot be told. A release (no suffix) comes after every seed of its version,
+    /// whose numbers run higher; otherwise the numbers decide, as numbers. Two seeds with
+    /// the same number, or builds of different update letters, are not ordered.
+    fn order(&self, other: &Self) -> Option<Ordering> {
+        if (self.major, self.letter) != (other.major, other.letter) {
+            return None;
+        }
+        match (&self.seed, &other.seed) {
+            (None, Some(_)) => Some(Ordering::Greater),
+            (Some(_), None) => Some(Ordering::Less),
+            (None, None) => Some(self.number.cmp(&other.number)),
+            (Some(mine), Some(theirs)) => match self.number.cmp(&other.number) {
+                Ordering::Equal if mine != theirs => None,
+                order => Some(order),
+            },
         }
     }
 }
@@ -271,7 +331,8 @@ pub fn parse(json: &[u8]) -> Result<Vec<Device>, serde_json::Error> {
 /// For every device model, the newest folder is kept, and so is any folder a device that
 /// connected in the last [`RECENT`] days runs right now. Older folders of the same model
 /// are recommended for removal. The only folder of a model is its newest, so it is never
-/// recommended away. Folders whose name cannot be read, or that name no model, get no advice.
+/// recommended away, and two folders whose builds cannot be ordered are both kept. Folders
+/// whose name cannot be read, or that name no model, get no advice.
 pub fn advise(names: &[&str], devices: &[Device], now: SystemTime) -> Vec<Option<Advice>> {
     let folders: Vec<Option<Support>> = names.iter().map(|name| Support::parse(name)).collect();
     folders
@@ -285,28 +346,31 @@ pub fn advise(names: &[&str], devices: &[Device], now: SystemTime) -> Vec<Option
             if let Some(device) = in_use {
                 return Some(Advice::keep(format!("{} runs it", device.name)));
             }
-            let newest = folders
+            // The latest folder known to be for a later build of the same model, if any.
+            let superseded_by = folders
                 .iter()
                 .flatten()
                 .filter(|other| other.model.as_deref() == Some(model))
-                .fold(folder, |newest, other| {
-                    if other.newer_than(newest) {
+                .filter(|other| other.supersedes(folder))
+                .reduce(|latest, other| {
+                    if other.supersedes(latest) {
                         other
                     } else {
-                        newest
+                        latest
                     }
                 });
-            if newest == folder {
-                let connects = devices
-                    .iter()
-                    .any(|d| d.model == model && d.connected_recently(now));
-                Some(Advice::keep(if connects {
-                    format!("newest for {model}, which still connects")
-                } else {
-                    format!("newest for {model}")
-                }))
-            } else {
-                Some(Advice::remove(format!("superseded by {}", newest.label())))
+            match superseded_by {
+                Some(newer) => Some(Advice::remove(format!("superseded by {}", newer.label()))),
+                None => {
+                    let connects = devices
+                        .iter()
+                        .any(|d| d.model == model && d.connected_recently(now));
+                    Some(Advice::keep(if connects {
+                        format!("newest for {model}, which still connects")
+                    } else {
+                        format!("newest for {model}")
+                    }))
+                }
             }
         })
         .collect()
@@ -496,5 +560,86 @@ pub(crate) mod tests {
         let kept = verdicts(&betas, &[], now());
         assert_eq!(kept[0].0, Verdict::Remove);
         assert_eq!(kept[1].0, Verdict::Keep);
+    }
+
+    #[test]
+    fn reads_apple_build_numbers() {
+        let build = |text: &str| Build::parse(text).unwrap();
+        assert_eq!(
+            build("24C5037i"),
+            Build {
+                major: 24,
+                letter: 'C',
+                number: 5037,
+                seed: Some("i".into()),
+            }
+        );
+        assert_eq!(build("23G99").number, 99);
+        assert_eq!(build("23G99").seed, None);
+        assert_eq!(build("21A5248v").seed.as_deref(), Some("v"));
+        for odd in [
+            "", "24", "24C", "C101", "24c101", "24C101I", "24C10-1", "24CC101", "weird",
+        ] {
+            assert_eq!(Build::parse(odd), None, "{odd}");
+        }
+    }
+
+    #[test]
+    fn a_release_supersedes_the_betas_of_its_version() {
+        // The seed's number is higher and its text sorts later; it is still the older build.
+        let folders = ["iPad16,3 27.3 (24C101)", "iPad16,3 27.3 (24C5037i)"];
+        assert_eq!(
+            verdicts(&folders, &[], now()),
+            [
+                (Verdict::Keep, "newest for iPad16,3".into()),
+                (Verdict::Remove, "superseded by 27.3 (24C101)".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_numbers_are_compared_as_numbers() {
+        let folders = ["iPhone15,2 26.6 (23G101)", "iPhone15,2 26.6 (23G99)"];
+        assert_eq!(
+            verdicts(&folders, &[], now()),
+            [
+                (Verdict::Keep, "newest for iPhone15,2".into()),
+                (Verdict::Remove, "superseded by 26.6 (23G101)".into()),
+            ]
+        );
+        // Three in a row name the latest as what replaced them.
+        let folders = [
+            "iPhone15,2 26.6 (23G9)",
+            "iPhone15,2 26.6 (23G101)",
+            "iPhone15,2 26.6 (23G99)",
+        ];
+        let advice = verdicts(&folders, &[], now());
+        assert_eq!(advice[0].1, "superseded by 26.6 (23G101)");
+        assert_eq!(advice[1].0, Verdict::Keep);
+        assert_eq!(advice[2].1, "superseded by 26.6 (23G101)");
+    }
+
+    #[test]
+    fn builds_that_cannot_be_ordered_are_both_kept() {
+        for pair in [
+            // A build that does not read as one.
+            ["iPad16,3 27.3 (24C101)", "iPad16,3 27.3 (weird)"],
+            // Two seeds with the same number.
+            ["iPad16,3 27.3 (24C5037i)", "iPad16,3 27.3 (24C5037j)"],
+            // Different update letters under one version.
+            ["iPad16,3 27.3 (24C101)", "iPad16,3 27.3 (24D5)"],
+        ] {
+            let advice = verdicts(&pair, &[], now());
+            assert_eq!(advice[0].0, Verdict::Keep, "{pair:?}");
+            assert_eq!(advice[1].0, Verdict::Keep, "{pair:?}");
+        }
+        // A higher OS version supersedes whatever the builds look like.
+        let advice = verdicts(
+            &["iPad16,3 27.2 (weird)", "iPad16,3 27.3 (odd)"],
+            &[],
+            now(),
+        );
+        assert_eq!(advice[0].0, Verdict::Remove);
+        assert_eq!(advice[1].0, Verdict::Keep);
     }
 }
