@@ -26,7 +26,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Caches present on this machine, with user overrides from `caches.toml`.
-pub fn present(dirs: Option<&Dirs>) -> Result<Vec<GlobalCache>> {
+///
+/// With `ids`, only the caches they name are looked at, so cleaning one cache does not wait
+/// on the tools that describe the others.
+pub fn present(dirs: Option<&Dirs>, ids: Option<&[String]>) -> Result<Vec<GlobalCache>> {
     let specs = match dirs.map(Dirs::caches_file) {
         Some(path) if path.exists() => {
             let text = std::fs::read_to_string(&path)
@@ -38,7 +41,7 @@ pub fn present(dirs: Option<&Dirs>) -> Result<Vec<GlobalCache>> {
         _ => caches::builtin_specs(),
     };
     let home = carwash_core::paths::home().context("cannot find the home directory")?;
-    Ok(caches::discover(&specs, &home))
+    Ok(caches::discover_for(&specs, &home, &LocalHost, ids))
 }
 
 /// Measures every cache, a few at a time, reporting progress on stderr.
@@ -126,6 +129,10 @@ fn advice(cache: &GlobalCache) -> Cell {
         (Some(advice), Some(Verdict::Keep)) => {
             Cell::styled(format!("keep: {}", advice.reason), Style::new().dimmed())
         }
+        (Some(advice), Some(Verdict::Unknown)) => Cell::styled(
+            format!("unknown, kept: {}", advice.reason),
+            AnsiColor::Yellow.on_default(),
+        ),
         // What is in use is said in CLEAN WITH.
         _ => Cell::new(""),
     }
@@ -159,7 +166,13 @@ fn apply_projects(ctx: &Context, caches: &mut [GlobalCache], roots: &[PathBuf]) 
 }
 
 pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
-    let mut caches = present(ctx.dirs.as_ref())?;
+    // A clean of named caches looks at those only; a listing, and a clean of everything
+    // recommended, looks at all of them.
+    let wanted = match &args.action {
+        Some(CachesAction::Clean { ids, .. }) if !ids.is_empty() => Some(ids.as_slice()),
+        _ => None,
+    };
+    let mut caches = present(ctx.dirs.as_ref(), wanted)?;
     let scanned = !args.projects.is_empty();
     if scanned {
         apply_projects(ctx, &mut caches, &args.projects)?;
@@ -231,9 +244,12 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool, scanned: bool) ->
     }
     columns.push(("CLEAN WITH", Align::Left));
     // What carwash would remove or keep, where it can tell.
-    let advised = caches
-        .iter()
-        .any(|c| matches!(c.verdict(), Some(Verdict::Remove | Verdict::Keep)));
+    let advised = caches.iter().any(|c| {
+        matches!(
+            c.verdict(),
+            Some(Verdict::Remove | Verdict::Keep | Verdict::Unknown)
+        )
+    });
     if advised {
         columns.push(("ADVICE", Align::Left));
     }
@@ -938,6 +954,10 @@ mod tests {
     }
 
     fn device_support_caches(home: &Path) -> Vec<GlobalCache> {
+        device_support_caches_on(home, &Devicectl)
+    }
+
+    fn device_support_caches_on(home: &Path, host: &dyn Host) -> Vec<GlobalCache> {
         for folder in FOLDERS {
             fs::create_dir_all(home.join(SUPPORT).join(folder)).unwrap();
         }
@@ -948,7 +968,32 @@ mod tests {
         for path in &mut specs[0].paths {
             *path = path.trim_start_matches("macos:").to_owned();
         }
-        caches::discover_on(&specs, home, &Devicectl)
+        caches::discover_on(&specs, home, host)
+    }
+
+    /// A machine whose devicectl gives no answer.
+    struct NoDevicectl;
+
+    impl Host for NoDevicectl {
+        fn output(&self, _argv: &[&str]) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn nothing_is_cleaned_or_recommended_when_devices_cannot_be_checked() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches_on(home.path(), &NoDevicectl);
+        let parent = select(&caches, &["xcode-device-support".to_owned()], false).unwrap();
+        assert!(parent.clean.is_empty(), "{:?}", ids(&parent.clean));
+        assert_eq!(parent.kept.len(), 5);
+        assert_eq!(parent.kept[0].1, "connected devices could not be checked");
+        let recommended = select(&caches, &[], true).unwrap();
+        assert!(recommended.clean.is_empty());
+        // Named by its own id, an unknown folder is still cleaned: that is the user's call.
+        let named = "xcode-device-support/iPad16,3 26.7 (23H24)".to_owned();
+        let named = select(&caches, &[named], false).unwrap();
+        assert_eq!(ids(&named.clean), ["iPad16,3 26.7 (23H24)"]);
     }
 
     fn ids(caches: &[GlobalCache]) -> Vec<&str> {

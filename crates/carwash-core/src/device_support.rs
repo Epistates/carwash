@@ -20,7 +20,7 @@ pub const LIST: &[&str] = &[
     "devices",
     "--quiet",
     "--timeout",
-    "10",
+    "5",
     "--json-output",
     "/dev/stdout",
 ];
@@ -158,9 +158,11 @@ pub struct Device {
 }
 
 impl Device {
-    fn connected_recently(&self, now: SystemTime) -> bool {
+    /// Whether the device may still connect to this Mac: it did in the last [`RECENT`]
+    /// days, or nothing says when it last did.
+    fn may_still_connect(&self, now: SystemTime) -> bool {
         self.last_connected
-            .is_some_and(|at| now.duration_since(at).unwrap_or_default() <= RECENT)
+            .is_none_or(|at| now.duration_since(at).unwrap_or_default() <= RECENT)
     }
 
     fn runs(&self, support: &Support) -> bool {
@@ -326,25 +328,35 @@ pub fn parse(json: &[u8]) -> Result<Vec<Device>, serde_json::Error> {
     Ok(devices)
 }
 
-/// What to make of each folder in `names`, in the same order.
+/// What to make of each folder in `names`, in the same order. `devices` are the physical
+/// devices this Mac knows, or `None` when they could not be read.
 ///
-/// For every device model, the newest folder is kept, and so is any folder a device that
-/// connected in the last [`RECENT`] days runs right now. Older folders of the same model
-/// are recommended for removal. The only folder of a model is its newest, so it is never
-/// recommended away, and two folders whose builds cannot be ordered are both kept. Folders
-/// whose name cannot be read, or that name no model, get no advice.
-pub fn advise(names: &[&str], devices: &[Device], now: SystemTime) -> Vec<Option<Advice>> {
+/// For every device model, the newest folder is kept, and so is any folder that a device
+/// runs right now, unless that device last connected more than [`RECENT`] days ago. Older
+/// folders of the same model are recommended for removal. The only folder of a model is
+/// its newest, so it is never recommended away, and two folders whose builds cannot be
+/// ordered are both kept.
+///
+/// What cannot be known is kept, as [`Verdict::Unknown`](crate::caches::Verdict::Unknown)
+/// with the reason: every older folder when the devices could not be read, and folders
+/// whose name cannot be read or names no device model.
+pub fn advise(names: &[&str], devices: Option<&[Device]>, now: SystemTime) -> Vec<Option<Advice>> {
     let folders: Vec<Option<Support>> = names.iter().map(|name| Support::parse(name)).collect();
     folders
         .iter()
         .map(|folder| {
-            let folder = folder.as_ref()?;
-            let model = folder.model.as_deref()?;
+            let Some(folder) = folder else {
+                return Advice::unknown("its name does not read as a device support folder");
+            };
+            let Some(model) = folder.model.as_deref() else {
+                return Advice::unknown("its name does not say which device model it is for");
+            };
             let in_use = devices
+                .unwrap_or_default()
                 .iter()
-                .find(|d| d.connected_recently(now) && d.runs(folder));
+                .find(|d| d.may_still_connect(now) && d.runs(folder));
             if let Some(device) = in_use {
-                return Some(Advice::keep(format!("{} runs it", device.name)));
+                return Advice::keep(format!("{} runs it", device.name));
             }
             // The latest folder known to be for a later build of the same model, if any.
             let superseded_by = folders
@@ -359,20 +371,26 @@ pub fn advise(names: &[&str], devices: &[Device], now: SystemTime) -> Vec<Option
                         latest
                     }
                 });
-            match superseded_by {
-                Some(newer) => Some(Advice::remove(format!("superseded by {}", newer.label()))),
-                None => {
+            match (superseded_by, devices) {
+                (Some(newer), Some(_)) => {
+                    Advice::remove(format!("superseded by {}", newer.label()))
+                }
+                // A device may still run this build: nobody could say.
+                (Some(_), None) => Advice::unknown("connected devices could not be checked"),
+                (None, devices) => {
                     let connects = devices
+                        .unwrap_or_default()
                         .iter()
-                        .any(|d| d.model == model && d.connected_recently(now));
-                    Some(Advice::keep(if connects {
+                        .any(|d| d.model == model && d.may_still_connect(now));
+                    Advice::keep(if connects {
                         format!("newest for {model}, which still connects")
                     } else {
                         format!("newest for {model}")
-                    }))
+                    })
                 }
             }
         })
+        .map(Some)
         .collect()
 }
 
@@ -460,7 +478,7 @@ pub(crate) mod tests {
     }
 
     fn verdicts(names: &[&str], devices: &[Device], now: SystemTime) -> Vec<(Verdict, String)> {
-        advise(names, devices, now)
+        advise(names, Some(devices), now)
             .into_iter()
             .map(|advice| {
                 let advice = advice.expect("advice");
@@ -486,7 +504,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_newest_folder_of_every_model_is_kept_whoever_connects() {
-        // No devicectl, or no devices: only the newest per model is known to matter.
+        // devicectl answered and knows no device: only the newest per model matters.
         assert_eq!(
             verdicts(&FOLDERS, &[], now()),
             [
@@ -549,9 +567,92 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn folders_without_a_model_get_no_advice() {
-        let advice = advise(&["16.4 (20E247)", "15.0 (19A346)", "notes"], &[], now());
-        assert_eq!(advice, [None, None, None]);
+    fn folders_that_name_no_model_are_kept_as_unknown() {
+        let names = ["16.4 (20E247)", "15.0 (19A346)", "notes"];
+        for devices in [Some(&[][..]), None] {
+            let advice: Vec<Advice> = advise(&names, devices, now())
+                .into_iter()
+                .flatten()
+                .collect();
+            assert_eq!(advice.len(), 3);
+            assert!(
+                advice.iter().all(|a| a.verdict == Verdict::Unknown),
+                "{advice:?}"
+            );
+            assert_eq!(
+                advice[0].reason,
+                "its name does not say which device model it is for"
+            );
+            assert_eq!(
+                advice[2].reason,
+                "its name does not read as a device support folder"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_recommended_when_connected_devices_cannot_be_read() {
+        let advice: Vec<(Verdict, String)> = advise(&FOLDERS, None, now())
+            .into_iter()
+            .flatten()
+            .map(|a| (a.verdict, a.reason))
+            .collect();
+        let unknown = (
+            Verdict::Unknown,
+            "connected devices could not be checked".to_owned(),
+        );
+        assert_eq!(
+            advice,
+            [
+                unknown.clone(),
+                unknown.clone(),
+                (Verdict::Keep, "newest for iPad16,3".into()),
+                unknown,
+                (Verdict::Keep, "newest for iPhone14,3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_device_with_no_connection_date_holds_its_folder() {
+        let mut devices = parse(LISTING.as_bytes()).unwrap();
+        // The iPhone is known to run 27.0.1, but devicectl gave no last connection date.
+        devices[1].os_version = "27.0.1".into();
+        devices[1].build = Some("24A446".into());
+        devices[1].last_connected = None;
+        let iphone = verdicts(&FOLDERS[3..], &devices, now());
+        assert_eq!(iphone[0], (Verdict::Keep, "Test iPhone runs it".into()));
+        assert_eq!(
+            iphone[1],
+            (
+                Verdict::Keep,
+                "newest for iPhone14,3, which still connects".into()
+            )
+        );
+    }
+
+    #[test]
+    fn simulated_devices_hold_no_folder() {
+        // The listing's simulators would otherwise match by model and build.
+        let mut doc: serde_json::Value = serde_json::from_str(LISTING).unwrap();
+        for device in doc["result"]["devices"].as_array_mut().unwrap() {
+            for key in ["properties", "hardwareProperties"] {
+                let hardware = if key == "properties" {
+                    &mut device[key]["hardware"]
+                } else {
+                    &mut device[key]
+                };
+                hardware["reality"] = "simulated".into();
+            }
+        }
+        let devices = parse(doc.to_string().as_bytes()).unwrap();
+        assert!(devices.is_empty());
+        let advice = verdicts(&FOLDERS, &devices, now());
+        assert_eq!(advice[1].0, Verdict::Remove);
+        assert_eq!(
+            advice[2].1, "newest for iPad16,3",
+            "no device is said to run it"
+        );
     }
 
     #[test]

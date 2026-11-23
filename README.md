@@ -199,9 +199,15 @@ Xcode copies several gigabytes of symbols from a device for every OS build it co
 and never removes the folders of builds the device has moved past. `carwash caches` reads
 `xcrun devicectl list devices` and gives each folder a verdict in the ADVICE column:
 
-- **keep**: a device connected in the last 90 days runs that build, or it is the newest
-  folder for its device model. The only folder of a model is always kept.
-- **remove**: a newer folder for the same model has replaced it.
+- **keep**: a device runs that build (unless it last connected more than 90 days ago), or it
+  is the newest folder for its device model. The only folder of a model is always kept.
+- **remove**: a newer folder for the same model has replaced it, and no device runs it.
+- **unknown, kept**: carwash could not tell. The connected devices could not be read
+  (`devicectl` is missing, failed or took too long), or the folder's name does not say which
+  device model it is for. What carwash cannot know, it keeps.
+
+Builds are ordered the way Apple numbers them: for one OS version a release such as `24C101`
+is later than a beta such as `24C5037i`. Two builds that cannot be ordered are both kept.
 
 ```bash
 carwash caches clean --recommended --dry-run    # what carwash recommends removing, anywhere
@@ -209,8 +215,9 @@ carwash caches clean xcode-device-support       # device support, except what is
 carwash caches clean "xcode-device-support/iPad16,3 27.3 (24C5037i)"   # one folder, kept or not
 ```
 
-A parent id such as `xcode-device-support` leaves out the children carwash keeps and lists
-them; naming a kept child by its own id cleans it anyway. In the TUI, `a` marks everything
+A parent id such as `xcode-device-support` leaves out the children carwash keeps, including
+the unknown ones, and lists them; naming a kept child by its own id cleans it anyway.
+`devicectl` is only asked when device support is listed or cleaned. In the TUI, `a` marks everything
 recommended for removal.
 
 Rust toolchains get the same treatment once carwash knows your projects:

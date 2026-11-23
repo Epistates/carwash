@@ -410,14 +410,15 @@ Examples:
   carwash caches clean simulators                 Delete simulators whose runtime is gone
   carwash caches clean xctest-devices             Delete Xcode's parallel-testing clones
   carwash caches clean --recommended --dry-run    Show what carwash recommends removing
-  carwash caches clean xcode-device-support       Delete device support no device needs
+  carwash caches clean xcode-device-support       Delete device support that newer folders replaced
   carwash caches --projects ~/work                Also say which Rust toolchains projects need
   carwash caches clean rustup-toolchains --projects ~/work
                                                   Uninstall the toolchains no project needs
 
 A parent id such as `xcode-device-support` selects its children except the ones carwash
-keeps: for device support, the newest folder of each device model and whatever a device
-connected in the last 90 days runs. Name a kept child by its own id to clean it anyway.
+keeps: for device support, the newest folder of each device model, whatever a device still
+runs, and every folder it cannot judge (the connected devices could not be read, or the
+folder names no device model). Name a kept child by its own id to clean it anyway.
 
 Rust toolchains are uninstalled through rustup. The default toolchain is never removed, and
 stable and nightly are kept. With --projects, toolchains that a project under DIR pins

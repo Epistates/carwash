@@ -592,6 +592,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 cells.push(Cell::from(match cache.verdict() {
                     Some(Verdict::Remove) => Span::styled("remove", t.fg(t.success)),
                     Some(Verdict::Keep) => Span::styled("keep", t.muted()),
+                    Some(Verdict::Unknown) => Span::styled("kept?", t.fg(t.warning)),
                     Some(Verdict::Protected) => Span::styled("in use", t.fg(t.warning)),
                     None => Span::default(),
                 }));
@@ -668,6 +669,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             let (label, style) = match advice.verdict {
                 Verdict::Remove => ("Recommended for removal", t.fg(t.success)),
                 Verdict::Keep => ("Kept unless marked", t.subtle()),
+                Verdict::Unknown => ("Not known, so kept unless marked", t.fg(t.warning)),
                 Verdict::Protected => ("In use", t.fg(t.warning)),
             };
             lines.push(Line::from(Span::styled(
@@ -1166,6 +1168,7 @@ pub(crate) mod tests {
         let mut app = opened(vec![
             advised("old", Verdict::Remove),
             advised("current", Verdict::Keep),
+            advised("unchecked", Verdict::Unknown),
             cache("plain"),
             booted("up"),
         ]);

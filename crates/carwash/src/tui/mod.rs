@@ -376,8 +376,8 @@ impl Runtime<'_> {
                 // Fingerprinting reads the top of each cache: keep it off the event loop.
                 let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    let caches =
-                        crate::commands::caches::present(dirs.as_ref()).unwrap_or_else(|error| {
+                    let caches = crate::commands::caches::present(dirs.as_ref(), None)
+                        .unwrap_or_else(|error| {
                             tracing::warn!(%error, "cannot list caches");
                             Vec::new()
                         });

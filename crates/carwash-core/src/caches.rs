@@ -16,9 +16,11 @@ use crate::system::RunningApps;
 use crate::tasks::Task;
 use crate::toolchains::{self, Installed, Pin};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 const BUILTIN: &str = include_str!("caches.toml");
@@ -130,6 +132,9 @@ pub enum Verdict {
     Remove,
     /// Still needed. Left out when its parent is cleaned; cleaned only when named itself.
     Keep,
+    /// carwash could not find out whether it is still needed, and says why. Treated like
+    /// [`Verdict::Keep`]: what cannot be known is kept.
+    Unknown,
     /// Never cleaned, even when named: it is in use.
     Protected,
 }
@@ -152,6 +157,13 @@ impl Advice {
     pub(crate) fn keep(reason: impl Into<String>) -> Self {
         Self {
             verdict: Verdict::Keep,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn unknown(reason: impl Into<String>) -> Self {
+        Self {
+            verdict: Verdict::Unknown,
             reason: reason.into(),
         }
     }
@@ -432,6 +444,32 @@ pub trait Host: Sync {
     }
 }
 
+/// Remembers each answer for the length of one discovery, so a tool that several caches
+/// ask about (`devicectl`, for iOS and watchOS device support) runs once.
+struct Once<'a> {
+    host: &'a dyn Host,
+    answers: Mutex<HashMap<Vec<String>, Option<Vec<u8>>>>,
+}
+
+impl Host for Once<'_> {
+    fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+        let key: Vec<String> = argv.iter().map(|arg| (*arg).to_owned()).collect();
+        if let Some(answer) = self.answers.lock().expect("answers").get(&key) {
+            return answer.clone();
+        }
+        let answer = self.host.output(argv);
+        self.answers
+            .lock()
+            .expect("answers")
+            .insert(key, answer.clone());
+        answer
+    }
+
+    fn now(&self) -> SystemTime {
+        self.host.now()
+    }
+}
+
 /// The machine carwash runs on.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocalHost;
@@ -533,7 +571,39 @@ pub fn discover(specs: &[CacheSpec], home: &Path) -> Vec<GlobalCache> {
 
 /// [`discover`], asking `host` what the machine's tools report.
 pub fn discover_on(specs: &[CacheSpec], home: &Path, host: &dyn Host) -> Vec<GlobalCache> {
-    discover_with(specs, home, &|var| std::env::var(var).ok(), host)
+    discover_for(specs, home, host, None)
+}
+
+/// [`discover_on`] for the caches `ids` name (an id, or the parent of one), when only
+/// those are wanted. The tools behind the other caches are not asked anything, so cleaning
+/// one cache never waits on a tool that describes another.
+pub fn discover_for(
+    specs: &[CacheSpec],
+    home: &Path,
+    host: &dyn Host,
+    ids: Option<&[String]>,
+) -> Vec<GlobalCache> {
+    discover_with(
+        &wanted(specs, ids),
+        home,
+        &|var| std::env::var(var).ok(),
+        host,
+    )
+}
+
+/// The specs `ids` name, each by its own id or by the id of one of its children; all of
+/// them without `ids`.
+fn wanted(specs: &[CacheSpec], ids: Option<&[String]>) -> Vec<CacheSpec> {
+    specs
+        .iter()
+        .filter(|spec| {
+            ids.is_none_or(|ids| {
+                ids.iter()
+                    .any(|id| id == &spec.id || id.starts_with(&format!("{}/", spec.id)))
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// `argv` with `{name}` replaced by a child's name.
@@ -579,6 +649,10 @@ fn discover_with(
     env: &dyn Fn(&str) -> Option<String>,
     host: &dyn Host,
 ) -> Vec<GlobalCache> {
+    let host: &dyn Host = &Once {
+        host,
+        answers: Mutex::default(),
+    };
     let mut out = Vec::new();
     for spec in specs {
         let Some(path) = spec
@@ -705,16 +779,17 @@ pub fn apply_pins(caches: &mut [GlobalCache], pins: &[Pin]) {
 
 /// One entry per device support folder, with what the paired devices make of it: kept
 /// when a device runs that build or it is the newest for its model, recommended for
-/// removal when a newer folder for the same model has replaced it.
+/// removal when a newer folder for the same model has replaced it and the devices could
+/// be checked.
 fn device_support_entries(spec: &CacheSpec, path: &Path, host: &dyn Host) -> Vec<GlobalCache> {
     let folders = subdirectories(path);
-    // Without devicectl, only the newest folder of each model is known to matter.
+    // `None` when devicectl is missing, fails, times out or prints something else: then
+    // nobody knows which folders devices still use, and none is recommended for removal.
     let devices = host
         .output(device_support::LIST)
-        .and_then(|json| device_support::parse(&json).ok())
-        .unwrap_or_default();
+        .and_then(|json| device_support::parse(&json).ok());
     let names: Vec<&str> = folders.iter().map(|(name, _)| name.as_str()).collect();
-    let advice = device_support::advise(&names, &devices, host.now());
+    let advice = device_support::advise(&names, devices.as_deref(), host.now());
     folders
         .iter()
         .zip(advice)
@@ -1316,25 +1391,101 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn without_devicectl_the_newest_device_support_per_model_is_still_kept() {
-        let (_home, caches) = device_support_caches(&Tools::none());
-        let kept: Vec<&str> = verdicts(&caches)
+    fn without_devicectl_no_device_support_is_recommended_for_removal() {
+        for silent in [
+            Tools::none(),
+            Tools(vec![(device_support::LIST, "error: timed out".to_owned())]),
+        ] {
+            let (_home, caches) = device_support_caches(&silent);
+            assert_eq!(
+                verdicts(&caches),
+                [
+                    ("iPad16,3 26.7 (23H24)", Some(Verdict::Unknown)),
+                    ("iPad16,3 27.2 (24B119)", Some(Verdict::Unknown)),
+                    ("iPad16,3 27.3 (24C5037i)", Some(Verdict::Keep)),
+                    ("iPhone14,3 27.0.1 (24A446)", Some(Verdict::Unknown)),
+                    ("iPhone14,3 27.2.1 (24B156)", Some(Verdict::Keep)),
+                ]
+            );
+            assert_eq!(
+                find(&caches, "xcode-device-support/iPad16,3 27.2 (24B119)")
+                    .advice
+                    .as_ref()
+                    .unwrap()
+                    .reason,
+                "connected devices could not be checked"
+            );
+        }
+    }
+
+    /// Counts how often each tool is asked.
+    struct Counting<'a> {
+        tools: &'a Tools,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Host for Counting<'_> {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            self.asked.lock().unwrap().push(argv[..2].join(" "));
+            self.tools.output(argv)
+        }
+
+        fn now(&self) -> SystemTime {
+            self.tools.now()
+        }
+    }
+
+    #[test]
+    fn tools_are_asked_once_and_only_for_the_caches_wanted() {
+        let home = simulator_home();
+        for dir in [
+            "Library/Developer/Xcode/iOS DeviceSupport",
+            "Library/Developer/Xcode/watchOS DeviceSupport",
+            ".npm/_cacache",
+        ] {
+            fs::create_dir_all(home.path().join(dir).join("x")).unwrap();
+        }
+        let specs: Vec<CacheSpec> = builtin_specs()
             .into_iter()
-            .filter(|(_, verdict)| *verdict == Some(Verdict::Keep))
-            .map(|(name, _)| name)
+            .map(|mut spec| {
+                for path in &mut spec.paths {
+                    *path = path.trim_start_matches("macos:").to_owned();
+                }
+                spec
+            })
             .collect();
+        let tools = simctl(LISTING, TESTING_LISTING);
+        let asked = |ids: Option<&[String]>| {
+            let host = Counting {
+                tools: &tools,
+                asked: Mutex::default(),
+            };
+            let caches = discover_with(&wanted(&specs, ids), home.path(), &env(&[]), &host);
+            let mut asked = host.asked.into_inner().unwrap();
+            asked.sort();
+            (caches, asked)
+        };
+        // Listing everything asks devicectl once for both device support caches.
+        let (_, everything) = asked(None);
         assert_eq!(
-            kept,
-            ["iPad16,3 27.3 (24C5037i)", "iPhone14,3 27.2.1 (24B156)"]
+            everything
+                .iter()
+                .filter(|a| *a == "xcrun devicectl")
+                .count(),
+            1,
+            "{everything:?}"
         );
-        assert_eq!(
-            find(&caches, "xcode-device-support/iPad16,3 27.3 (24C5037i)")
-                .advice
-                .as_ref()
-                .unwrap()
-                .reason,
-            "newest for iPad16,3"
-        );
+        // Cleaning npm asks nothing of anyone.
+        let npm = ["npm".to_owned()];
+        let (caches, nothing) = asked(Some(&npm));
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].id, "npm");
+        assert!(nothing.is_empty(), "{nothing:?}");
+        // A child id is enough to want its parent's listing, and nothing else.
+        let one = [format!("simulators/{SHUT_DOWN}")];
+        let (caches, simctl_only) = asked(Some(&one));
+        assert!(caches.iter().any(|c| c.id == one[0]));
+        assert_eq!(simctl_only, ["xcrun simctl"]);
     }
 
     const TOOLCHAINS: &str = ".rustup/toolchains";
