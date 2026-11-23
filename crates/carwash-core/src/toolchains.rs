@@ -23,6 +23,14 @@ pub struct Installed {
     pub default: bool,
 }
 
+/// Whether `name` can be a toolchain's name: one path component (it is also the toolchain's
+/// directory), and nothing `rustup toolchain uninstall` would read as an option.
+pub fn is_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.'])
+        && !name.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\'))
+}
+
 /// Parses `rustup toolchain list`: a name per line, followed by `(active, default)`,
 /// `(default)` or `(active)` where they apply.
 pub fn parse_list(output: &str) -> Vec<Installed> {
@@ -34,8 +42,8 @@ pub fn parse_list(output: &str) -> Vec<Installed> {
                 Some((name, markers)) => (name, markers.trim_end_matches(')')),
                 None => (line, ""),
             };
-            // "no installed toolchains", and anything else that is not a single name.
-            if name.is_empty() || name.contains(char::is_whitespace) {
+            // "no installed toolchains", and anything else that is not a toolchain's name.
+            if !is_name(name) {
                 return None;
             }
             Some(Installed {
@@ -289,6 +297,10 @@ pub(crate) mod tests {
                 .any(|t| t.name == "1.90.0-aarch64-apple-darwin")
         );
         assert!(parse_list("no installed toolchains\n").is_empty());
+        assert!(
+            parse_list("--help\n-v (default)\n../outside\n/etc\n.hidden\nc:\\x\n").is_empty(),
+            "nothing rustup would read as an option, and nothing outside its folder"
+        );
         assert_eq!(
             parse_list("nightly-x86_64-unknown-linux-gnu (default)\nmine (active)\n"),
             [
