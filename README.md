@@ -108,7 +108,7 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | `carwash tasks [PATH]` | Tasks per project. `--all` for every project's list |
 | `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
-| `carwash caches` | Global caches and their sizes |
+| `carwash caches` | Global caches and their sizes. `--projects DIR` also says which Rust toolchains your projects need |
 | `carwash caches clean [ID...]` | Clean caches; a parent id such as `rustup-toolchains` selects its children, except the ones carwash keeps. `--recommended` takes only what carwash recommends removing, `--erase` clears simulators and keeps them, `--dry-run`, `--yes` |
 | `carwash os` | The operating system's caches, logs, trash and temp files, with what cleaning frees |
 | `carwash os clean [AREA...]` | Clean the default tier, or areas by id or number. `--escalate`, `--dry-run`, `--yes` |
@@ -201,6 +201,19 @@ carwash caches clean "xcode-device-support/iPad16,3 27.3 (24C5037i)"   # one fol
 A parent id such as `xcode-device-support` leaves out the children carwash keeps and lists
 them; naming a kept child by its own id cleans it anyway. In the TUI, `a` marks everything
 recommended for removal.
+
+Rust toolchains get the same treatment once carwash knows your projects:
+
+```bash
+carwash caches --projects ~/work                              # which toolchains do projects need?
+carwash caches clean rustup-toolchains --projects ~/work      # uninstall the ones none needs
+```
+
+A toolchain is kept when a project under the directory pins it (`rust-toolchain.toml` or
+`rust-toolchain`) or declares it as its `rust-version`; a pin of `1.90` keeps both `1.90` and
+`1.90.0`. `stable`, `nightly` and toolchains with a `rustup override` are always kept, and the
+default toolchain is never removed. The rest are recommended for removal and uninstalled with
+`rustup toolchain uninstall`. The TUI does this for the folder it scanned.
 
 ### OS mode
 

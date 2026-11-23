@@ -14,6 +14,7 @@ use crate::scan::Engine;
 use crate::simulators::{self, Simulator};
 use crate::system::RunningApps;
 use crate::tasks::Task;
+use crate::toolchains::{self, Installed, Pin};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -47,8 +48,8 @@ pub struct CacheSpec {
     /// Programs that must not be running while the cache is cleaned (process names, globs).
     #[serde(default)]
     pub apps: Vec<String>,
-    /// Built-in knowledge about the cache's entries: `simulators`, `test-devices` or
-    /// `device-support`.
+    /// Built-in knowledge about the cache's entries: `simulators`, `test-devices`,
+    /// `device-support` or `rust-toolchains`.
     #[serde(default)]
     pub adapter: Option<String>,
     #[serde(default)]
@@ -65,6 +66,9 @@ enum Adapter {
     /// Children are device support folders, advised on by what `devicectl` says the
     /// paired devices run.
     DeviceSupport,
+    /// Children are the toolchains rustup has installed. The default is never cleaned;
+    /// `stable`, `nightly` and what projects pin are kept.
+    RustToolchains,
 }
 
 impl Adapter {
@@ -73,6 +77,7 @@ impl Adapter {
             "simulators" => Some(Self::Simulators),
             "test-devices" => Some(Self::TestDevices),
             "device-support" => Some(Self::DeviceSupport),
+            "rust-toolchains" => Some(Self::RustToolchains),
             _ => None,
         }
     }
@@ -178,6 +183,14 @@ pub enum Detail {
         model: Option<String>,
         os_version: String,
         build: String,
+    },
+    /// A Rust toolchain rustup installed.
+    Toolchain {
+        /// rustup's default toolchain.
+        default: bool,
+        /// The projects that pin it or declare it as their minimum version, once projects
+        /// have been scanned. Not looked up for toolchains rustup itself keeps.
+        needed_by: Option<Vec<PathBuf>>,
     },
     /// The simulator clones Xcode keeps for parallel testing.
     TestDevices {
@@ -363,7 +376,7 @@ impl GlobalCache {
                 (cache.detail, cache.advice) = test_devices(host);
             }
             // Advice on what is still needed does not stand in the way of a clean.
-            Some(Detail::DeviceSupport { .. }) | None => {}
+            Some(Detail::DeviceSupport { .. } | Detail::Toolchain { .. }) | None => {}
         }
         cache
     }
@@ -571,6 +584,7 @@ fn discover_with(
             Some(Adapter::DeviceSupport) => {
                 out.extend(device_support_entries(spec, &path, host));
             }
+            Some(Adapter::RustToolchains) => out.extend(toolchain_entries(spec, &path, host)),
             Some(Adapter::TestDevices) => {
                 let (detail, advice) = test_devices(host);
                 out.push(GlobalCache {
@@ -612,6 +626,70 @@ fn subdirectories(path: &Path) -> Vec<(String, PathBuf)> {
         .collect();
     found.sort();
     found
+}
+
+/// One entry per toolchain rustup has installed, with what rustup itself says must stay:
+/// the default (never cleaned), `stable` and `nightly`, and directory overrides. What
+/// projects need is added by [`apply_pins`] once they have been scanned.
+fn toolchain_entries(spec: &CacheSpec, path: &Path, host: &dyn Host) -> Vec<GlobalCache> {
+    let settings = path
+        .parent()
+        .and_then(|rustup| std::fs::read_to_string(rustup.join("settings.toml")).ok())
+        .unwrap_or_default();
+    let overrides = toolchains::overrides(&settings);
+    let listed = host
+        .output(toolchains::LIST)
+        .and_then(|output| String::from_utf8(output).ok())
+        .map(|output| toolchains::parse_list(&output))
+        .filter(|listed| !listed.is_empty());
+    // Without rustup's own list, the directories and its settings say the same.
+    let installed = listed.unwrap_or_else(|| {
+        let default = rustup_default(path);
+        subdirectories(path)
+            .into_iter()
+            .map(|(name, _)| Installed {
+                default: default
+                    .as_ref()
+                    .is_some_and(|d| &name == d || name.starts_with(&format!("{d}-"))),
+                name,
+            })
+            .collect()
+    });
+    installed
+        .iter()
+        // Linked toolchains are symlinks to someone's build directory: not rustup's to size
+        // or remove with the rest.
+        .filter(|toolchain| {
+            std::fs::symlink_metadata(path.join(&toolchain.name)).is_ok_and(|m| m.is_dir())
+        })
+        .map(|toolchain| GlobalCache {
+            advice: toolchains::standing_advice(toolchain, &overrides),
+            detail: Some(Detail::Toolchain {
+                default: toolchain.default,
+                needed_by: None,
+            }),
+            ..child(spec, &toolchain.name, path.join(&toolchain.name))
+        })
+        .collect()
+}
+
+/// Applies what scanned projects need to the Rust toolchains among `caches`: a toolchain a
+/// project pins or declares as its minimum version is kept, and one no project needs is
+/// recommended for removal. Toolchains rustup itself keeps (the default, `stable`,
+/// `nightly`, directory overrides) are left as they are.
+pub fn apply_pins(caches: &mut [GlobalCache], pins: &[Pin]) {
+    for cache in caches {
+        let Some(Detail::Toolchain { needed_by, .. }) = &mut cache.detail else {
+            continue;
+        };
+        // Standing advice was given without looking at projects.
+        if cache.advice.is_some() && needed_by.is_none() {
+            continue;
+        }
+        let name = cache.id.rsplit('/').next().unwrap_or_default();
+        *needed_by = Some(toolchains::needed_by(name, pins).unwrap_or_default());
+        cache.advice = Some(toolchains::advice_from_pins(name, pins));
+    }
 }
 
 /// One entry per device support folder, with what the paired devices make of it: kept
@@ -822,10 +900,11 @@ pub(crate) mod tests {
         assert!(ids.contains(&"npm"));
         assert!(ids.contains(&"rustup-toolchains/nightly-aarch64-apple-darwin"));
         assert!(ids.contains(&"rustup-toolchains/1.80-aarch64-apple-darwin"));
-        assert!(
-            !ids.iter().any(|id| id.contains("stable")),
-            "default toolchain kept: {ids:?}"
-        );
+        let default = caches
+            .iter()
+            .find(|c| c.id == "rustup-toolchains/stable-aarch64-apple-darwin")
+            .expect("the default toolchain is listed");
+        assert_eq!(default.verdict(), Some(Verdict::Protected));
         let nightly = caches
             .iter()
             .find(|c| c.id.ends_with("nightly-aarch64-apple-darwin"))
@@ -1192,6 +1271,180 @@ pub(crate) mod tests {
                 .reason,
             "newest for iPad16,3"
         );
+    }
+
+    const TOOLCHAINS: &str = ".rustup/toolchains";
+
+    /// A rustup home holding every toolchain in the captured list, and one linked build.
+    fn rustup_home(settings: &str) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let toolchains = home.path().join(TOOLCHAINS);
+        for toolchain in toolchains::parse_list(toolchains::tests::LISTING) {
+            fs::create_dir_all(toolchains.join(toolchain.name)).unwrap();
+        }
+        fs::write(home.path().join(".rustup/settings.toml"), settings).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(home.path(), toolchains.join("stage1")).unwrap();
+        home
+    }
+
+    fn rustup(listing: &str) -> Tools {
+        Tools(vec![(toolchains::LIST, listing.to_owned())])
+    }
+
+    fn toolchain_caches(home: &Path, host: &Tools) -> Vec<GlobalCache> {
+        let specs: Vec<CacheSpec> = builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "rustup-toolchains")
+            .collect();
+        discover_with(&specs, home, &env(&[]), host)
+    }
+
+    const SETTINGS: &str = "version = \"12\"\ndefault_toolchain = \"stable-aarch64-apple-darwin\"\nprofile = \"default\"\n\n[overrides]\n";
+
+    #[test]
+    fn lists_installed_toolchains_and_always_keeps_stable_nightly_and_the_default() {
+        let home = rustup_home(SETTINGS);
+        let listing = format!("{}stage1\n", toolchains::tests::LISTING);
+        let caches = toolchain_caches(home.path(), &rustup(&listing));
+        assert_eq!(
+            caches.len(),
+            18,
+            "the linked toolchain is not rustup's to remove"
+        );
+
+        let default = find(&caches, "rustup-toolchains/stable-aarch64-apple-darwin");
+        assert_eq!(default.verdict(), Some(Verdict::Protected));
+        for mode in MODES {
+            assert_eq!(
+                default.plan(mode, &idle()),
+                Err(Refusal::Protected("the default toolchain".into())),
+                "{mode:?}"
+            );
+        }
+        let nightly = find(&caches, "rustup-toolchains/nightly-aarch64-apple-darwin");
+        assert_eq!(nightly.verdict(), Some(Verdict::Keep));
+        assert_eq!(
+            nightly.advice.as_ref().unwrap().reason,
+            "the nightly channel"
+        );
+
+        let release = find(&caches, "rustup-toolchains/1.88-aarch64-apple-darwin");
+        assert_eq!(release.advice, None, "nothing is known about projects yet");
+        assert_eq!(
+            release.prune.as_deref().unwrap(),
+            [
+                "rustup",
+                "toolchain",
+                "uninstall",
+                "1.88-aarch64-apple-darwin"
+            ]
+        );
+        assert!(!release.deletable, "only rustup removes a toolchain");
+        assert_eq!(
+            release.detail,
+            Some(Detail::Toolchain {
+                default: false,
+                needed_by: None
+            })
+        );
+    }
+
+    #[test]
+    fn toolchains_no_project_needs_are_recommended_once_projects_are_known() {
+        let home = rustup_home(SETTINGS);
+        let mut caches = toolchain_caches(home.path(), &rustup(toolchains::tests::LISTING));
+        let work = tempfile::tempdir().unwrap();
+        let pins = toolchains::pins(&toolchains::tests::projects(work.path()), work.path());
+        // Applying twice changes nothing more.
+        apply_pins(&mut caches, &pins);
+        apply_pins(&mut caches, &pins);
+
+        let verdict = |name: &str| find(&caches, &format!("rustup-toolchains/{name}")).verdict();
+        // What the projects pin (1.98.1, 1.90.0, 1.99) or declare as rust-version (1.95, 1.88).
+        for needed in [
+            "1.88-aarch64-apple-darwin",
+            "1.90-aarch64-apple-darwin",
+            "1.90.0-aarch64-apple-darwin",
+            "1.95-aarch64-apple-darwin",
+            "1.95.0-aarch64-apple-darwin",
+            "1.98.1-aarch64-apple-darwin",
+            "1.99-aarch64-apple-darwin",
+            "1.99.0-aarch64-apple-darwin",
+            "1.99.1-aarch64-apple-darwin",
+        ] {
+            assert_eq!(verdict(needed), Some(Verdict::Keep), "{needed}");
+        }
+        for unused in [
+            "1.89-aarch64-apple-darwin",
+            "1.91-aarch64-apple-darwin",
+            "1.91.0-aarch64-apple-darwin",
+            "1.94-aarch64-apple-darwin",
+            "1.97-aarch64-apple-darwin",
+            "1.98.0-aarch64-apple-darwin",
+            "1.100.0-aarch64-apple-darwin",
+        ] {
+            assert_eq!(verdict(unused), Some(Verdict::Remove), "{unused}");
+        }
+        // Whatever projects say, these stay as they were.
+        assert_eq!(
+            verdict("stable-aarch64-apple-darwin"),
+            Some(Verdict::Protected)
+        );
+        assert_eq!(verdict("nightly-aarch64-apple-darwin"), Some(Verdict::Keep));
+        let pinned = find(&caches, "rustup-toolchains/1.98.1-aarch64-apple-darwin");
+        assert_eq!(
+            pinned.detail,
+            Some(Detail::Toolchain {
+                default: false,
+                needed_by: Some(vec![work.path().join("pinned")]),
+            })
+        );
+    }
+
+    #[test]
+    fn a_directory_override_keeps_its_toolchain() {
+        let settings = format!("{SETTINGS}\"/work/old\" = \"1.89-aarch64-apple-darwin\"\n");
+        let home = rustup_home(&settings);
+        let mut caches = toolchain_caches(home.path(), &rustup(toolchains::tests::LISTING));
+        apply_pins(&mut caches, &[]);
+        let overridden = find(&caches, "rustup-toolchains/1.89-aarch64-apple-darwin");
+        assert_eq!(overridden.verdict(), Some(Verdict::Keep));
+        assert_eq!(
+            overridden.advice.as_ref().unwrap().reason,
+            "override for /work/old"
+        );
+        assert_eq!(
+            find(&caches, "rustup-toolchains/1.91-aarch64-apple-darwin").verdict(),
+            Some(Verdict::Remove)
+        );
+    }
+
+    #[test]
+    fn without_rustup_the_toolchain_directories_and_settings_are_read() {
+        let home = rustup_home(SETTINGS);
+        let caches = toolchain_caches(home.path(), &Tools::none());
+        assert_eq!(caches.len(), 18);
+        assert_eq!(
+            find(&caches, "rustup-toolchains/stable-aarch64-apple-darwin").verdict(),
+            Some(Verdict::Protected)
+        );
+        assert_eq!(
+            find(&caches, "rustup-toolchains/nightly-aarch64-apple-darwin").verdict(),
+            Some(Verdict::Keep)
+        );
+    }
+
+    #[test]
+    fn user_specs_can_still_hide_the_default_toolchain() {
+        let home = rustup_home("default_toolchain = \"stable\"\n");
+        let spec: CacheSpec = toml::from_str(
+            "id = \"mine\"\nname = \"Mine\"\npaths = [\"~/.rustup/toolchains\"]\nchildren = true\nkeep = \"rustup-default\"\nchild_prune = [\"rustup\", \"toolchain\", \"uninstall\", \"{name}\"]\n",
+        )
+        .unwrap();
+        let caches = discover_with(&[spec], home.path(), &env(&[]), &Tools::none());
+        assert!(!caches.iter().any(|c| c.id.contains("stable")));
+        assert!(caches.iter().any(|c| c.id.contains("nightly")));
     }
 
     fn cache(extra: &str) -> GlobalCache {

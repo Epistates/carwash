@@ -7,7 +7,9 @@ use crate::table::{Align, Cell, Table};
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context as _, Result, bail};
 use carwash_core::cache::Fingerprint;
-use carwash_core::caches::{self, GlobalCache, Host, LocalHost, Mode, Refusal, Step, Verdict};
+use carwash_core::caches::{
+    self, Detail, GlobalCache, Host, LocalHost, Mode, Refusal, Step, Verdict,
+};
 use carwash_core::clean::{CleanItem, CleanOptions, DeleteMode};
 use carwash_core::history::{self, Record};
 use carwash_core::paths::Dirs;
@@ -17,6 +19,7 @@ use carwash_core::{ArtifactId, ArtifactKind, Cancel, fmt};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::io::{BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -140,10 +143,29 @@ fn last_used(cache: &GlobalCache, now: SystemTime) -> String {
     }
 }
 
+/// Marks the Rust toolchains among `caches` as needed or not by the projects under `roots`.
+fn apply_projects(ctx: &Context, caches: &mut [GlobalCache], roots: &[PathBuf]) -> Result<()> {
+    let mut pins = Vec::new();
+    for dir in roots {
+        // Projects are found by their manifests alone: nothing is measured or asked of git.
+        let walk = crate::cli::WalkArgs::for_path(dir.clone());
+        let (root, options) = ctx.scan_options(&walk, false, false)?;
+        let snapshot = ctx.run_scan(&root, &options, true);
+        let projects: Vec<PathBuf> = snapshot.projects.into_iter().map(|p| p.path).collect();
+        pins.extend(carwash_core::toolchains::pins(&projects, &root));
+    }
+    caches::apply_pins(caches, &pins);
+    Ok(())
+}
+
 pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
     let mut caches = present(ctx.dirs.as_ref())?;
+    let scanned = !args.projects.is_empty();
+    if scanned {
+        apply_projects(ctx, &mut caches, &args.projects)?;
+    }
     match &args.action {
-        None => list(ctx, &mut caches, args.json),
+        None => list(ctx, &mut caches, args.json, scanned),
         Some(CachesAction::Clean {
             ids,
             yes,
@@ -176,7 +198,7 @@ struct CacheOut<'a> {
     blocked_by: Vec<String>,
 }
 
-fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCode> {
+fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool, scanned: bool) -> Result<ExitCode> {
     measure(ctx, caches, !json);
     caches.sort_by_key(|c| std::cmp::Reverse(c.size.map_or(0, |s| s.on_disk)));
     let running = RunningApps::snapshot();
@@ -262,6 +284,16 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
                     .map(|s| s.on_disk)
                     .sum()
             )
+        )?;
+    }
+    if !scanned
+        && caches
+            .iter()
+            .any(|c| matches!(c.detail, Some(Detail::Toolchain { .. })))
+    {
+        writeln!(
+            out,
+            "Rust toolchains: add `--projects <DIR>` to see which ones your projects still need."
         )?;
     }
     if caches.iter().any(|c| c.erase.is_some()) {

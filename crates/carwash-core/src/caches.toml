@@ -21,7 +21,9 @@
 #                       device `simctl` reports and never touches a booted one; `test-devices`
 #                       leaves Xcode's test clones alone while one is booted;
 #                       `device-support` keeps the folders that paired devices still use
-#                       and the newest for each model, and recommends removing the rest
+#                       and the newest for each model, and recommends removing the rest;
+#                       `rust-toolchains` lists what rustup has installed, never offers the
+#                       default, and keeps stable, nightly and what projects pin
 #   note                shown next to the entry
 
 schema = 1
@@ -46,10 +48,10 @@ id = "rustup-toolchains"
 name = "Rust toolchains"
 ecosystem = "rust"
 paths = ["$RUSTUP_HOME/toolchains", "~/.rustup/toolchains"]
+adapter = "rust-toolchains"
 children = true
 child_prune = ["rustup", "toolchain", "uninstall", "{name}"]
-keep = "rustup-default"
-note = "Your default toolchain is not listed."
+note = "Uninstalled through rustup. The default toolchain is never removed, and stable, nightly and toolchains with a directory override are kept. With your projects scanned, the toolchains they pin or declare as `rust-version` are kept and the rest are recommended for removal."
 
 [[cache]]
 id = "npm"

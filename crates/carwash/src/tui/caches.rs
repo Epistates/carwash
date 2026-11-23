@@ -5,6 +5,7 @@ use super::keymap::Action;
 use super::widgets::{pane, spinner};
 use carwash_core::cache::{CachedSize, Fingerprint, SizeCache};
 use carwash_core::caches::{GlobalCache, Mode, Step, Verdict};
+use carwash_core::toolchains::Pin;
 use carwash_core::{Size, fmt};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -36,6 +37,8 @@ pub struct CachesState {
     remeasure_all: bool,
     /// The user has moved the cursor.
     moved: bool,
+    /// The Rust toolchains the scanned projects need, once the scan has finished.
+    pins: Option<Vec<Pin>>,
 }
 
 impl CachesState {
@@ -44,8 +47,19 @@ impl CachesState {
         for cache in &mut caches {
             cache.size = sizes.get(&cache.path).map(|c| c.size);
         }
+        if let Some(pins) = &self.pins {
+            carwash_core::caches::apply_pins(&mut caches, pins);
+        }
         self.caches = Some(caches);
         self.sort();
+    }
+
+    /// Takes what the scanned projects need, and advises on the toolchains listed.
+    pub fn set_pins(&mut self, pins: Vec<Pin>) {
+        if let Some(caches) = &mut self.caches {
+            carwash_core::caches::apply_pins(caches, &pins);
+        }
+        self.pins = Some(pins);
     }
 
     /// Records a measurement; returns the cache's path.
@@ -955,6 +969,46 @@ pub(crate) mod tests {
             app.caches_clean_preview().unwrap(),
             "up: left alone (booted; shut it down first)"
         );
+    }
+
+    #[test]
+    fn toolchains_are_advised_on_once_the_scanned_projects_are_known() {
+        use carwash_core::caches::Detail;
+        use carwash_core::toolchains::Channel;
+        let toolchain = |name: &str| GlobalCache {
+            detail: Some(Detail::Toolchain {
+                default: false,
+                needed_by: None,
+            }),
+            ..cache(&format!("rustup-toolchains/{name}-aarch64-apple-darwin"))
+        };
+        let pins = vec![Pin {
+            channel: Channel::Version(vec![1, 90]),
+            project: PathBuf::from("/work/app"),
+        }];
+        let verdicts = |app: &App| -> Vec<Option<Verdict>> {
+            let caches = app.caches.caches.as_ref().unwrap();
+            ["1.90", "1.91"]
+                .iter()
+                .map(|name| {
+                    caches
+                        .iter()
+                        .find(|c| c.id.contains(&format!("/{name}-")))
+                        .unwrap()
+                        .verdict()
+                })
+                .collect()
+        };
+        let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
+        assert_eq!(verdicts(&app), [None, None], "projects not scanned yet");
+        app.update(Msg::ToolchainPins(pins));
+        assert_eq!(verdicts(&app), [Some(Verdict::Keep), Some(Verdict::Remove)]);
+        // Listing the caches again keeps the advice.
+        app.update(Msg::CachesDiscovered(vec![
+            toolchain("1.90"),
+            toolchain("1.91"),
+        ]));
+        assert_eq!(verdicts(&app), [Some(Verdict::Keep), Some(Verdict::Remove)]);
     }
 
     #[test]

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version and build.
 - `carwash caches clean --recommended` cleans what carwash recommends removing, among the ids
   given or among all caches. In the Caches tab, `a` marks the same set.
+- Rust toolchain advice: `carwash caches --projects DIR` (and the Caches tab, for the folder
+  it scanned) keeps the toolchains a project pins in `rust-toolchain.toml` or `rust-toolchain`
+  or declares as its `rust-version`, and recommends removing the ones no project needs.
+  `stable`, `nightly` and toolchains with a directory override are always kept. In `--json`,
+  `detail` lists the projects that need each toolchain.
 
 ### Changed
 - The `simulators` cache now measures what its command removes, the devices whose runtime is
@@ -35,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own row. `carwash caches clean simulators` still runs `xcrun simctl delete unavailable`.
 - `carwash caches clean` exits with status 1 when a cache it was asked to clean is in use and
   was left alone.
+- The default Rust toolchain is now listed in `carwash caches`, marked as never cleaned,
+  instead of being left out; `stable` and `nightly` are no longer selected by
+  `carwash caches clean rustup-toolchains`. Toolchains are read from `rustup toolchain list`
+  when rustup is installed, and still uninstalled with `rustup toolchain uninstall`.
 - A parent id passed to `carwash caches clean` no longer selects the children carwash keeps:
   `carwash caches clean xcode-device-support` leaves the newest folder per device model and
   the ones connected devices run, and says so. Naming a kept child by its own id still cleans

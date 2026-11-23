@@ -18,6 +18,7 @@ use carwash_core::select::{Hold, Policy};
 use carwash_core::sweep::SweepReport;
 use carwash_core::system::Area;
 use carwash_core::tasks::Task;
+use carwash_core::toolchains::Pin;
 use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, Size, fmt};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
@@ -74,6 +75,8 @@ pub enum Msg {
         /// Taken just before measuring.
         fingerprint: Option<Fingerprint>,
     },
+    /// The Rust toolchains the scanned projects pin or declare as their minimum version.
+    ToolchainPins(Vec<Pin>),
     /// A cache checked just before cleaning: what cleaning it takes, or why it is left
     /// alone.
     CacheChecked {
@@ -146,6 +149,12 @@ pub enum Effect {
     },
     /// Measures each cache and reports it with [`Msg::CacheMeasured`].
     MeasureCaches(Vec<GlobalCache>),
+    /// Reads which Rust toolchains the projects under `root` need, and reports them with
+    /// [`Msg::ToolchainPins`].
+    FindToolchainPins {
+        projects: Vec<PathBuf>,
+        root: PathBuf,
+    },
     DiscoverSystem,
     /// Dry-runs each area and reports it with [`Msg::SystemMeasured`].
     MeasureSystem(Vec<Area>),
@@ -551,6 +560,10 @@ impl App {
                 fingerprint,
             } => self.on_cache_measured(&id, size, fingerprint),
             Msg::CacheChecked { cache, step } => self.on_cache_checked(cache, step),
+            Msg::ToolchainPins(pins) => {
+                self.caches.set_pins(pins);
+                Vec::new()
+            }
             Msg::SystemDiscovered(areas) => self.on_system_discovered(areas),
             Msg::SystemMeasured {
                 id,
@@ -635,7 +648,14 @@ impl App {
                 self.scan.running = false;
                 self.scan.elapsed = Some(*elapsed);
                 self.store.apply(event, &self.cache);
-                return vec![Effect::SaveSizes(self.cache.clone())];
+                return vec![
+                    Effect::SaveSizes(self.cache.clone()),
+                    // The Caches tab advises on Rust toolchains by what these projects need.
+                    Effect::FindToolchainPins {
+                        projects: self.store.projects.iter().map(|p| p.path.clone()).collect(),
+                        root: self.store.root.clone(),
+                    },
+                ];
             }
             _ => {}
         }

@@ -392,6 +392,14 @@ impl Runtime<'_> {
                     }
                 });
             }
+            Effect::FindToolchainPins { projects, root } => {
+                // Reads a few small files per project: keep it off the event loop.
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let pins = carwash_core::toolchains::pins(&projects, &root);
+                    let _ = tx.send(Msg::ToolchainPins(pins));
+                });
+            }
             Effect::SaveSizes(sizes) => {
                 if let Some(dirs) = &self.ctx.dirs {
                     let mut sizes = sizes;

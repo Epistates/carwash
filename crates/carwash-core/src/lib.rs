@@ -33,6 +33,7 @@ pub mod simulators;
 pub mod sweep;
 pub mod system;
 pub mod tasks;
+pub mod toolchains;
 
 pub use discover::{Counters, DiscoverOptions};
 pub use ecosystem::{EcoId, Registry, RuleId};

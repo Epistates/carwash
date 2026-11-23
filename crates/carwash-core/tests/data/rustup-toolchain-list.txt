@@ -1,0 +1,18 @@
+stable-aarch64-apple-darwin (active, default)
+nightly-aarch64-apple-darwin
+1.88-aarch64-apple-darwin
+1.89-aarch64-apple-darwin
+1.90-aarch64-apple-darwin
+1.90.0-aarch64-apple-darwin
+1.91-aarch64-apple-darwin
+1.91.0-aarch64-apple-darwin
+1.94-aarch64-apple-darwin
+1.95-aarch64-apple-darwin
+1.95.0-aarch64-apple-darwin
+1.97-aarch64-apple-darwin
+1.98.0-aarch64-apple-darwin
+1.98.1-aarch64-apple-darwin
+1.99-aarch64-apple-darwin
+1.99.0-aarch64-apple-darwin
+1.99.1-aarch64-apple-darwin
+1.100.0-aarch64-apple-darwin

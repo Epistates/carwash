@@ -354,6 +354,11 @@ pub struct CachesArgs {
     #[command(subcommand)]
     pub action: Option<CachesAction>,
 
+    /// Directory of projects to check Rust toolchains against (repeatable): toolchains
+    /// they pin or declare as `rust-version` are kept, the rest recommended for removal.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub projects: Vec<PathBuf>,
+
     /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
@@ -402,10 +407,18 @@ Examples:
   carwash caches clean xctest-devices             Delete Xcode's parallel-testing clones
   carwash caches clean --recommended --dry-run    Show what carwash recommends removing
   carwash caches clean xcode-device-support       Delete device support no device needs
+  carwash caches --projects ~/work                Also say which Rust toolchains projects need
+  carwash caches clean rustup-toolchains --projects ~/work
+                                                  Uninstall the toolchains no project needs
 
 A parent id such as `xcode-device-support` selects its children except the ones carwash
 keeps: for device support, the newest folder of each device model and whatever a device
 connected in the last 90 days runs. Name a kept child by its own id to clean it anyway.
+
+Rust toolchains are uninstalled through rustup. The default toolchain is never removed, and
+stable and nightly are kept. With --projects, toolchains that a project under DIR pins
+(rust-toolchain.toml, rust-toolchain) or declares as its `rust-version` are kept too, and
+the others are recommended for removal.
 
 Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
 touched, and none is while xcodebuild or xctest is running; carwash names what is in the
