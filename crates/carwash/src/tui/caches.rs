@@ -549,10 +549,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let rows: Vec<Row> = caches
         .iter()
         .map(|cache| {
-            let mark = if app.caches.busy.contains(&cache.id) {
-                Span::styled(spinner(app), t.fg(t.accent))
-            } else if app.caches.marked.contains(&cache.id) {
+            // A mark is the user's own, and what a pending "clean N caches" counts: it shows
+            // even while the row is being measured.
+            let mark = if app.caches.marked.contains(&cache.id) {
                 Span::styled(app.glyphs.marked, t.bold(t.accent2))
+            } else if app.caches.busy.contains(&cache.id) {
+                Span::styled(spinner(app), t.fg(t.accent))
             } else {
                 Span::styled(app.glyphs.unmarked, t.muted())
             };

@@ -1511,6 +1511,58 @@ mod tests {
     }
 
     #[test]
+    fn marked_caches_show_their_mark_while_a_clean_awaits_its_second_press() {
+        use crate::tui::caches::tests::simulator;
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(crate::tui::app::Msg::CachesDiscovered(vec![
+            simulator("one"),
+            simulator("two"),
+            simulator("three"),
+        ]));
+        // The first row's size has arrived; the other two are still being measured.
+        app.update(crate::tui::app::Msg::CacheMeasured {
+            id: "one".into(),
+            size: carwash_core::Size::default(),
+            fingerprint: None,
+        });
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('d'));
+        let screen = draw(&mut app, 160, 16);
+        assert!(
+            screen.contains("Press d again to clean 2 caches"),
+            "{screen}"
+        );
+        assert!(screen.contains("2 marked"), "{screen}");
+        let row = |name: &str| {
+            screen
+                .lines()
+                .find(|line| line.contains(&format!("cargo delete {name}")))
+                .unwrap_or_else(|| panic!("no row for {name} in {screen}"))
+        };
+        // Each marked row shows its mark, the one still being measured included, and the
+        // third row does not.
+        let marked = app.glyphs.marked;
+        assert_eq!(app.caches.marked.len(), 2);
+        assert!(
+            app.caches
+                .marked
+                .iter()
+                .any(|id| app.caches.busy.contains(id)),
+            "one marked row is still being measured"
+        );
+        for id in ["one", "two", "three"] {
+            assert_eq!(
+                row(id).contains(marked),
+                app.caches.marked.contains(id),
+                "{}",
+                row(id)
+            );
+        }
+    }
+
+    #[test]
     fn caches_tab_shows_when_simulators_were_used_and_which_are_left_alone() {
         use crate::tui::caches::tests::{booted, simulator};
         use carwash_core::caches::GlobalCache;
