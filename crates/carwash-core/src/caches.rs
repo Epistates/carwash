@@ -1502,10 +1502,7 @@ pub(crate) mod tests {
             ["xcrun", "simctl", "erase", SHUT_DOWN]
         );
         assert!(!device.deletable, "device folders belong to CoreSimulator");
-        assert_eq!(
-            device.apps,
-            ["xcodebuild", "xctest", "SWBBuildService", "XCBBuildService"]
-        );
+        assert_eq!(device.apps, ["xcodebuild", "xctest"]);
         assert!(device.advice.is_none());
         assert_eq!(
             device.detail,
@@ -1584,17 +1581,15 @@ pub(crate) mod tests {
                 }
             }
         }
-        // Xcode's own build service, which a build or test started in the app runs under.
-        for service in ["SWBBuildService", "XCBBuildService"] {
-            let running = RunningApps::from_names(&["Xcode", service]);
-            for cache in caches.iter().filter(|c| c.advice.is_none()) {
-                assert_eq!(
-                    cache.plan(Mode::Erase, &running),
-                    Err(Refusal::Busy(vec![service.to_owned()])),
-                    "{}",
-                    cache.id
-                );
-            }
+        // Xcode being open, with the helpers it keeps running, holds nothing back: only
+        // the two names are looked for.
+        let xcode_open = RunningApps::from_names(&["Xcode", "SWBBuildService", "Simulator"]);
+        for cache in caches.iter().filter(|c| c.advice.is_none()) {
+            assert!(
+                !matches!(cache.plan(Mode::Clean, &xcode_open), Err(Refusal::Busy(_))),
+                "{}",
+                cache.id
+            );
         }
         assert_eq!(
             Refusal::Busy(vec!["xcodebuild".into()]).to_string(),
@@ -1603,6 +1598,34 @@ pub(crate) mod tests {
         assert_eq!(
             Refusal::Busy(vec!["xcodebuild".into(), "xctest".into()]).to_string(),
             "xcodebuild, xctest are running"
+        );
+    }
+
+    /// A copy of the built-in entry in the user's caches.toml, with more programs to wait
+    /// for, replaces it.
+    #[test]
+    fn a_user_entry_can_hold_simulators_back_for_more_programs() {
+        let specs = specs_with_overrides(
+            "schema = 1\n[[cache]]\nid = \"simulators\"\nname = \"Simulators\"\necosystem = \"xcode\"\npaths = [\"~/Library/Developer/CoreSimulator/Devices\"]\nadapter = \"simulators\"\nchildren = true\nchild_prune = [\"xcrun\", \"simctl\", \"delete\", \"{name}\"]\nchild_erase = [\"xcrun\", \"simctl\", \"erase\", \"{name}\"]\nprune = [\"xcrun\", \"simctl\", \"delete\", \"unavailable\"]\napps = [\"xcodebuild\", \"xctest\", \"Xcode\"]\n",
+        )
+        .unwrap();
+        let specs: Vec<CacheSpec> = specs.into_iter().filter(|s| s.id == "simulators").collect();
+        assert_eq!(
+            specs.len(),
+            1,
+            "the user's entry stands in for the built-in one"
+        );
+        let home = simulator_home();
+        let caches = discover_with(
+            &specs,
+            home.path(),
+            &env(&[]),
+            &simctl(LISTING, TESTING_LISTING),
+        );
+        let device = find(&caches, &format!("simulators/{SHUT_DOWN}"));
+        assert_eq!(
+            device.plan(Mode::Erase, &RunningApps::from_names(&["Xcode"])),
+            Err(Refusal::Busy(vec!["Xcode".into()]))
         );
     }
 

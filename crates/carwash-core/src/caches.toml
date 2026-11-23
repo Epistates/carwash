@@ -237,10 +237,8 @@ children = true
 child_prune = ["xcrun", "simctl", "delete", "{name}"]
 child_erase = ["xcrun", "simctl", "erase", "{name}"]
 prune = ["xcrun", "simctl", "delete", "unavailable"]
-# Builds and tests from the command line, and Xcode's build service, which runs for as long
-# as a project is open in Xcode (SWBBuildService; XCBBuildService in older versions).
-apps = ["xcodebuild", "xctest", "SWBBuildService", "XCBBuildService"]
-note = "Cleaning a device deletes it; erasing clears its contents and settings and keeps it. Booted devices are never touched, and none are while `xcodebuild` or `xctest` runs or a project is open in Xcode. `simulators` itself removes the devices whose runtime is no longer installed (old runtimes: `xcrun simctl runtime list`)."
+apps = ["xcodebuild", "xctest"]
+note = "Cleaning a device deletes it; erasing clears its contents and settings and keeps it. A booted device is never touched, and none is while a process named `xcodebuild` or `xctest` is running. `simulators` itself removes the devices whose runtime is no longer installed (old runtimes: `xcrun simctl runtime list`)."
 
 [[cache]]
 id = "xctest-devices"
@@ -249,10 +247,8 @@ ecosystem = "xcode"
 paths = ["macos:~/Library/Developer/XCTestDevices"]
 adapter = "test-devices"
 prune = ["xcrun", "simctl", "--set", "testing", "delete", "all"]
-# Builds and tests from the command line, and Xcode's build service, which runs for as long
-# as a project is open in Xcode (SWBBuildService; XCBBuildService in older versions).
-apps = ["xcodebuild", "xctest", "SWBBuildService", "XCBBuildService"]
-note = "Clones of simulators that Xcode makes for parallel testing, and makes again when it next needs them. Left alone while one is booted, while `xcodebuild` or `xctest` runs, or while a project is open in Xcode."
+apps = ["xcodebuild", "xctest"]
+note = "Clones of simulators that Xcode makes for parallel testing, and makes again when it next needs them. Left alone while one is booted, and while a process named `xcodebuild` or `xctest` is running."
 
 [[cache]]
 id = "cocoapods"

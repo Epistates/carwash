@@ -430,9 +430,9 @@ holds no Rust project, nothing is recommended. A toolchain only named on a comma
 (`cargo +1.88` in a script or CI file) cannot be seen.
 
 Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
-touched. None is while xcodebuild or xctest is running, while a project is open in Xcode
-(its build service, SWBBuildService, is running), or when simctl cannot be asked what is
-booted. carwash names what is in the way, and checks again just before each device.
+touched. None is while a process named xcodebuild or xctest is running, or when simctl
+cannot be asked what is booted. carwash names what is in the way, and checks again just
+before each device.
 
 Exit status: 0 on success, 1 when a cache failed to clean or was left alone because it is
 in use, 2 on invalid usage or errors.";

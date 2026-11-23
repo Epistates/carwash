@@ -191,12 +191,17 @@ carwash caches clean xctest-devices               # delete the clones Xcode make
 ```
 
 Everything goes through `xcrun simctl`; carwash never removes a device's folder itself. A
-booted simulator is never erased or deleted. No simulator is touched while `xcodebuild` or
-`xctest` is running, or while Xcode's build service is (`SWBBuildService`, which is there
-for as long as a project is open in Xcode, so close the project first). When `simctl` cannot
-be asked what is booted, nothing is touched either. carwash says what is in the way, and
-checks again just before each device, so a simulator that boots after you confirmed is
-still left alone. Add `--dry-run` to see the commands first.
+booted simulator is never erased or deleted. No simulator is touched while a process named
+`xcodebuild` or `xctest` is running, or when `simctl` cannot be asked what is booted.
+carwash says what is in the way, and checks again just before each device, so a simulator
+that boots after you confirmed is still left alone. Add `--dry-run` to see the commands
+first.
+
+Those two process names are all that carwash looks for; it does not look for the Xcode app.
+To hold simulators back while other programs run, copy the `simulators` entry from the
+built-in [`caches.toml`](crates/carwash-core/src/caches.toml) into
+`~/.config/carwash/caches.toml` and add their process names to `apps`. An entry with the
+same `id` replaces the built-in one.
 
 `xctest-devices` is sized by the clones `simctl` lists, which is what its command removes.
 Device folders in that set that `simctl` has no device for are shown on a row of their own

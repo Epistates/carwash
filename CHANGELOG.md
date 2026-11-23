@@ -12,10 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime, size, when it was last used and whether it is booted.
   `carwash caches clean simulators/<UDID>` deletes a device, and `--erase` (`e` in the TUI)
   clears its contents and settings and keeps it. Both go through `xcrun simctl`. A booted
-  simulator is never touched. None is while `xcodebuild` or `xctest` is running, while a
-  project is open in Xcode (its build service, `SWBBuildService`, is running), or when
-  `simctl` cannot be asked what is booted. carwash names what is in the way, and checks
-  again just before each device.
+  simulator is never touched. None is while a process named `xcodebuild` or `xctest` is
+  running, or when `simctl` cannot be asked what is booted. carwash names what is in the
+  way, and checks again just before each device.
 - `xctest-devices`: the simulator clones Xcode keeps for parallel testing
   (`~/Library/Developer/XCTestDevices`), cleaned with `xcrun simctl --set testing delete all`
   under the same checks and sized by the clones `simctl` lists. Device folders in that set
