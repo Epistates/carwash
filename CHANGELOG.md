@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Simulators are listed one by one in `carwash caches` and the Caches tab, each with its
+  runtime, size, when it was last used and whether it is booted.
+  `carwash caches clean simulators/<UDID>` deletes a device, and `--erase` (`e` in the TUI)
+  clears its contents and settings and keeps it. Both go through `xcrun simctl`. A booted
+  simulator is never touched, and none is while `xcodebuild` or `xctest` is running: carwash
+  names what is in the way, and checks again just before each device.
+- `xctest-devices`: the simulator clones Xcode keeps for parallel testing
+  (`~/Library/Developer/XCTestDevices`), cleaned with `xcrun simctl --set testing delete all`
+  under the same checks.
+- `carwash caches --json` entries gain `erase`, `apps`, `blocked_by`, `last_used`, `advice`
+  and `detail`. `carwash caches` shows a LAST USED column when a cache records it.
+- Caches in `caches.toml` can list `apps` that must not be running while they are cleaned.
+
 ### Changed
+- The `simulators` cache now measures what its command removes, the devices whose runtime is
+  no longer installed, instead of the whole CoreSimulator folder; every other device has its
+  own row. `carwash caches clean simulators` still runs `xcrun simctl delete unavailable`.
+- `carwash caches clean` exits with status 1 when a cache it was asked to clean is in use and
+  was left alone.
 - The minimum supported Rust version is now 1.95, which `sysinfo` 0.40 requires.
 - Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
   `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.

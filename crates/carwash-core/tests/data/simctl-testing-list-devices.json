@@ -1,0 +1,8 @@
+{
+  "devices": {
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [],
+    "com.apple.CoreSimulator.SimRuntime.watchOS-26-5": [],
+    "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [],
+    "com.apple.CoreSimulator.SimRuntime.iOS-18-6": []
+  }
+}

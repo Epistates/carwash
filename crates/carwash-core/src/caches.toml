@@ -13,7 +13,13 @@
 #   prune               the tool's own cleanup command, preferred when the tool is installed
 #   children            list each subdirectory as its own entry (toolchains, OS versions)
 #   child_prune         command for one child; `{name}` is the child's directory name
+#   child_erase         command that empties one child and keeps it (a simulator's contents)
 #   keep                children never offered: `rustup-default` keeps the default toolchain
+#   apps                programs that must not be running while the cache is cleaned (process
+#                       names, globs)
+#   adapter             optional built-in knowledge of the entries: `simulators` lists each
+#                       device `simctl` reports and never touches a booted one; `test-devices`
+#                       leaves Xcode's test clones alone while one is booted
 #   note                shown next to the entry
 
 schema = 1
@@ -216,11 +222,26 @@ delete = true
 
 [[cache]]
 id = "simulators"
-name = "iOS simulators"
+name = "Simulators"
 ecosystem = "xcode"
-paths = ["macos:~/Library/Developer/CoreSimulator"]
+paths = ["macos:~/Library/Developer/CoreSimulator/Devices"]
+adapter = "simulators"
+children = true
+child_prune = ["xcrun", "simctl", "delete", "{name}"]
+child_erase = ["xcrun", "simctl", "erase", "{name}"]
 prune = ["xcrun", "simctl", "delete", "unavailable"]
-note = "Removes simulators for runtimes no longer installed. Old runtimes: `xcrun simctl runtime list`."
+apps = ["xcodebuild", "xctest"]
+note = "Cleaning a device deletes it; erasing clears its contents and settings and keeps it. Booted devices are never touched, and none are while a build or test runs. `simulators` itself removes the devices whose runtime is no longer installed (old runtimes: `xcrun simctl runtime list`)."
+
+[[cache]]
+id = "xctest-devices"
+name = "Simulator test clones"
+ecosystem = "xcode"
+paths = ["macos:~/Library/Developer/XCTestDevices"]
+adapter = "test-devices"
+prune = ["xcrun", "simctl", "--set", "testing", "delete", "all"]
+apps = ["xcodebuild", "xctest"]
+note = "Clones of simulators that Xcode makes for parallel testing, and makes again when it next needs them. Left alone while a build or test runs."
 
 [[cache]]
 id = "cocoapods"

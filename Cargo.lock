@@ -242,6 +242,7 @@ dependencies = [
  "etcetera",
  "fs4",
  "globset",
+ "jiff",
  "nodejs-semver",
  "pep440_rs",
  "rayon",

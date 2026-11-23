@@ -34,6 +34,7 @@ toml = "1.2"
 toml_edit = "0.25"
 yaml_serde = "0.10"
 semver = { version = "1.0", features = ["serde"] }
+jiff = { version = "1.0", default-features = false, features = ["std"] }
 nodejs-semver = "7.0"
 pep440_rs = "0.7"
 ureq = { version = "3.5", features = ["json"] }

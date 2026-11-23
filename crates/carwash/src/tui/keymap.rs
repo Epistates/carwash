@@ -19,6 +19,7 @@ pub enum Action {
     MarkAll,
     Unmark,
     Clean,
+    Erase,
     Search,
     Sort,
     Group,
@@ -636,6 +637,14 @@ pub const CACHES: &[Binding] = &[
         "clean marked (or selected) caches; press twice",
     )
     .hint("clean"),
+    bind(
+        &[(Char('e'), NONE)],
+        "e",
+        A::Erase,
+        S::Select,
+        "erase marked (or selected) simulators, keeping the devices; press twice",
+    )
+    .hint("erase"),
     bind(
         &[(Char('r'), NONE)],
         "r",

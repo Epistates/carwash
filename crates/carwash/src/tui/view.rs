@@ -1500,4 +1500,35 @@ mod tests {
         assert!(screen.contains("report"), "{screen}");
         assert!(screen.contains("About App caches."), "{screen}");
     }
+
+    #[test]
+    fn caches_tab_shows_when_simulators_were_used_and_which_are_left_alone() {
+        use crate::tui::caches::tests::{booted, simulator};
+        use carwash_core::caches::GlobalCache;
+        use std::time::Duration;
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        let named = |name: &str, days: u64, cache: GlobalCache| GlobalCache {
+            name: name.into(),
+            last_used: Some(app.now - Duration::from_secs(days * 86_400)),
+            ..cache
+        };
+        let caches = vec![
+            named("Simulators: iPhone 17 Pro, iOS 27.0", 3, booted("up")),
+            named("Simulators: iPad mini, iOS 26.5", 90, simulator("down")),
+        ];
+        app.update(crate::tui::app::Msg::CachesDiscovered(caches));
+        let screen = draw(&mut app, 160, 16);
+        assert!(screen.contains("USED"), "{screen}");
+        assert!(screen.contains("3d"), "{screen}");
+        assert!(screen.contains("3mo"), "{screen}");
+        assert!(
+            screen.contains("left alone: booted; shut it down first"),
+            "{screen}"
+        );
+        assert!(screen.contains("cargo delete down"), "{screen}");
+        assert!(screen.contains("last used 3d ago"), "{screen}");
+        // `e` is offered, and says what it would do.
+        assert!(screen.contains("erase"), "{screen}");
+    }
 }

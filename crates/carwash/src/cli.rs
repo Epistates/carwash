@@ -62,7 +62,8 @@ pub enum Command {
     Run(RunArgs),
     /// Show outdated and vulnerable dependencies (Rust, JavaScript, Python, Go).
     Outdated(OutdatedArgs),
-    /// List and clean per-user caches (package stores, toolchains, SDK and IDE caches).
+    /// List and clean per-user caches (package stores, toolchains, simulators, SDK and IDE caches).
+    #[command(after_long_help = CACHES_EXAMPLES)]
     Caches(CachesArgs),
     /// List and clean the operating system's caches, logs, trash and temporary files.
     #[command(after_long_help = OS_EXAMPLES)]
@@ -362,7 +363,8 @@ pub struct CachesArgs {
 pub enum CachesAction {
     /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children.
     Clean {
-        /// Cache ids, e.g. `npm` or `rustup-toolchains/nightly-aarch64-apple-darwin`.
+        /// Cache ids, e.g. `npm`, `rustup-toolchains/nightly-aarch64-apple-darwin` or
+        /// `simulators/<UDID>`.
         #[arg(required = true, value_name = "ID")]
         ids: Vec<String>,
 
@@ -377,8 +379,29 @@ pub enum CachesAction {
         /// Delete the directory even when the tool's own prune command is available.
         #[arg(long)]
         delete: bool,
+
+        /// Erase simulators (their contents and settings) and keep the devices, instead of
+        /// deleting them.
+        #[arg(long, conflicts_with = "delete")]
+        erase: bool,
     },
 }
+
+const CACHES_EXAMPLES: &str = "\
+Examples:
+  carwash caches                                  List caches, largest first
+  carwash caches clean npm uv --dry-run           Show what cleaning them would run
+  carwash caches clean simulators/<UDID> --erase  Clear one simulator and keep the device
+  carwash caches clean simulators/<UDID>          Delete one simulator
+  carwash caches clean simulators                 Delete simulators whose runtime is gone
+  carwash caches clean xctest-devices             Delete Xcode's parallel-testing clones
+
+Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
+touched, and none is while xcodebuild or xctest is running; carwash names what is in the
+way, and checks again just before each device.
+
+Exit status: 0 on success, 1 when a cache failed to clean or was left alone because it is
+in use, 2 on invalid usage or errors.";
 
 #[derive(Debug, Args)]
 pub struct OsArgs {

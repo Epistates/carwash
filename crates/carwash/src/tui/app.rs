@@ -10,7 +10,7 @@ use super::tasks::{After, JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use super::updates::UpdatesState;
 use carwash_core::cache::{Fingerprint, SizeCache};
-use carwash_core::caches::GlobalCache;
+use carwash_core::caches::{GlobalCache, Mode as CleanMode, Step};
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
 use carwash_core::history::Record;
@@ -74,6 +74,12 @@ pub enum Msg {
         /// Taken just before measuring.
         fingerprint: Option<Fingerprint>,
     },
+    /// A cache checked just before cleaning: what cleaning it takes, or why it is left
+    /// alone.
+    CacheChecked {
+        cache: Box<GlobalCache>,
+        step: Result<Step, String>,
+    },
     SystemDiscovered(Vec<Area>),
     /// A dry-run sweep of an area, with the running programs that block it.
     SystemMeasured {
@@ -125,13 +131,21 @@ pub enum Effect {
         size: (u16, u16),
     },
     DiscoverCaches,
-    /// Prunes (as jobs) or deletes each cache, then measures it again.
+    /// Checks each cache against what is booted and running now, and reports it with
+    /// [`Msg::CacheChecked`].
     CleanCaches {
         caches: Vec<GlobalCache>,
+        mode: CleanMode,
+    },
+    /// Carries out one checked step, a command (as a job) or a deletion, then measures the
+    /// cache again.
+    CleanCache {
+        cache: Box<GlobalCache>,
+        step: Step,
         size: (u16, u16),
     },
-    /// Measures each `(id, path)` and reports it with [`Msg::CacheMeasured`].
-    MeasureCaches(Vec<(String, PathBuf)>),
+    /// Measures each cache and reports it with [`Msg::CacheMeasured`].
+    MeasureCaches(Vec<GlobalCache>),
     DiscoverSystem,
     /// Dry-runs each area and reports it with [`Msg::SystemMeasured`].
     MeasureSystem(Vec<Area>),
@@ -437,6 +451,7 @@ impl App {
                 fmt::bytes(self.marked_bytes())
             )),
             (Tab::Caches, Action::Clean) => self.caches_clean_preview(),
+            (Tab::Caches, Action::Erase) => self.caches_erase_preview(),
             (Tab::System, Action::Clean) => self.system_clean_preview(),
             _ => None,
         }
@@ -535,6 +550,7 @@ impl App {
                 size,
                 fingerprint,
             } => self.on_cache_measured(&id, size, fingerprint),
+            Msg::CacheChecked { cache, step } => self.on_cache_checked(cache, step),
             Msg::SystemDiscovered(areas) => self.on_system_discovered(areas),
             Msg::SystemMeasured {
                 id,
@@ -598,9 +614,7 @@ impl App {
                     .any(|j| j.status == JobStatus::Running && j.after == after);
                 match after {
                     After::Recheck(path) if !pending => self.recheck(&path),
-                    After::Remeasure { id, path } if !pending => {
-                        vec![Effect::MeasureCaches(vec![(id, path)])]
-                    }
+                    After::Remeasure(id) if !pending => self.remeasure_cache(&id),
                     After::RemeasureArea(id) if !pending => self.measure_area(&id),
                     _ => Vec::new(),
                 }

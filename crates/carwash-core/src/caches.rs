@@ -2,12 +2,21 @@
 //!
 //! Entries are data (`caches.toml`), resolved against the environment and platform. Each says
 //! whether deleting the directory is safe and which command the tool offers to prune it.
+//! Where a tool can describe its own entries (`simctl` for simulators), an adapter adds what
+//! it reports: names, when an entry was last used, and whether it is in use.
 
+use crate::Cancel;
 use crate::cache::Fingerprint;
-use crate::model::Size;
+use crate::model::{Size, unix_secs_opt};
+use crate::scan::Engine;
+use crate::simulators::{self, Simulator};
+use crate::system::RunningApps;
 use crate::tasks::Task;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 
 const BUILTIN: &str = include_str!("caches.toml");
 const SCHEMA_VERSION: u32 = 1;
@@ -28,10 +37,38 @@ pub struct CacheSpec {
     pub children: bool,
     #[serde(default)]
     pub child_prune: Option<Vec<String>>,
+    /// Command that empties one child and keeps it; `{name}` is the child's directory name.
+    #[serde(default)]
+    pub child_erase: Option<Vec<String>>,
     #[serde(default)]
     pub keep: Option<String>,
+    /// Programs that must not be running while the cache is cleaned (process names, globs).
+    #[serde(default)]
+    pub apps: Vec<String>,
+    /// Built-in knowledge about the cache's entries: `simulators` or `test-devices`.
+    #[serde(default)]
+    pub adapter: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+}
+
+/// Built-in knowledge about a cache's entries, selected by a spec's `adapter` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Adapter {
+    /// Children are the simulators `simctl` lists, with their runtime, state and last use.
+    Simulators,
+    /// The clones Xcode keeps for parallel testing: left alone while one is booted.
+    TestDevices,
+}
+
+impl Adapter {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "simulators" => Some(Self::Simulators),
+            "test-devices" => Some(Self::TestDevices),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +83,13 @@ fn parse(source: &str) -> Result<Vec<CacheSpec>, String> {
     let file: CachesFile = toml::from_str(source).map_err(|e| e.to_string())?;
     if file.schema != SCHEMA_VERSION {
         return Err(format!("unsupported caches schema {}", file.schema));
+    }
+    for spec in &file.cache {
+        if let Some(adapter) = &spec.adapter
+            && Adapter::parse(adapter).is_none()
+        {
+            return Err(format!("cache {}: unknown adapter `{adapter}`", spec.id));
+        }
     }
     Ok(file.cache)
 }
@@ -66,6 +110,52 @@ pub fn specs_with_overrides(user: &str) -> Result<Vec<CacheSpec>, String> {
     Ok(specs)
 }
 
+/// Whether carwash cleans an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Never cleaned, even when named: it is in use.
+    Protected,
+}
+
+/// What carwash makes of an entry, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Advice {
+    pub verdict: Verdict,
+    pub reason: String,
+}
+
+impl Advice {
+    fn protected(reason: impl Into<String>) -> Self {
+        Self {
+            verdict: Verdict::Protected,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// What an entry is, where its tool describes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Detail {
+    Simulator {
+        udid: String,
+        /// The device's name, e.g. `iPhone 17 Pro`.
+        device: String,
+        /// The runtime it runs, e.g. `iOS 27.0`.
+        runtime: String,
+        /// `simctl`'s state in lower case: `shutdown`, `booted`...
+        state: String,
+    },
+    /// The simulator clones Xcode keeps for parallel testing.
+    TestDevices {
+        /// Clones in the set.
+        devices: usize,
+        /// Clones that are not shut down.
+        booted: usize,
+    },
+}
+
 /// A cache present on this machine.
 #[derive(Debug, Clone, Serialize)]
 pub struct GlobalCache {
@@ -78,22 +168,86 @@ pub struct GlobalCache {
     pub deletable: bool,
     /// The tool's own cleanup command.
     pub prune: Option<Vec<String>>,
+    /// The tool's command that empties the entry and keeps it (a simulator's contents and
+    /// settings).
+    pub erase: Option<Vec<String>>,
+    /// Programs that must not be running while it is cleaned (process names, globs).
+    pub apps: Vec<String>,
     pub note: Option<String>,
     pub size: Option<Size>,
+    /// When the entry was last used, where that is known.
+    #[serde(with = "unix_secs_opt")]
+    pub last_used: Option<SystemTime>,
+    /// Set when carwash will not clean the entry.
+    pub advice: Option<Advice>,
+    pub detail: Option<Detail>,
+    /// The directories whose sizes make up this entry's, when that is not all of `path`.
+    #[serde(skip)]
+    pub parts: Option<Vec<PathBuf>>,
     /// Taken at discovery, to tell whether a remembered size is still current.
     #[serde(skip)]
     pub fingerprint: Option<Fingerprint>,
 }
 
+/// How a cache is to be cleaned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// With the tool's own command when it is installed, otherwise by deleting the directory
+    /// when that is safe.
+    #[default]
+    Clean,
+    /// By deleting the directory even when the tool's command is available.
+    Delete,
+    /// By emptying the entry and keeping it.
+    Erase,
+}
+
+/// What cleaning a cache takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Run(Task),
+    DeleteDirectory,
+}
+
+/// Why a cache is not cleaned.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Refusal {
+    /// The entry is in use; see [`Advice`].
+    #[error("{0}")]
+    Protected(String),
+    /// Programs that must be closed first are running.
+    #[error("{}", running(.0))]
+    Busy(Vec<String>),
+    #[error("can only be cleaned with `{0}`, which is not installed")]
+    ToolMissing(String),
+    #[error("cannot be erased, only cleaned")]
+    NotErasable,
+    #[error("is cleaned with `{0}`; deleting its directory is not safe")]
+    NotDeletable(String),
+}
+
+impl Refusal {
+    /// The entry is left for now, as opposed to a request that can never work.
+    pub fn is_temporary(&self) -> bool {
+        matches!(self, Self::Protected(_) | Self::Busy(_))
+    }
+}
+
+fn running(programs: &[String]) -> String {
+    match programs {
+        [one] => format!("{one} is running"),
+        many => format!("{} are running", many.join(", ")),
+    }
+}
+
 impl GlobalCache {
-    /// The prune command as a task, when its program is installed.
-    pub fn prune_task(&self) -> Option<Task> {
-        let argv = self.prune.as_ref()?;
+    fn task(&self, name: &str, argv: Option<&Vec<String>>) -> Option<Task> {
+        let argv = argv?;
         let program = argv.first()?;
         find_program(program)?;
         let cwd = crate::paths::home().unwrap_or_else(|| PathBuf::from("/"));
         Some(Task {
-            name: format!("prune {}", self.id),
+            name: format!("{name} {}", self.id),
             source: "cache".into(),
             program: program.clone(),
             args: argv[1..].to_vec(),
@@ -101,6 +255,93 @@ impl GlobalCache {
             cwd,
             standard: true,
         })
+    }
+
+    /// The prune command as a task, when its program is installed.
+    pub fn prune_task(&self) -> Option<Task> {
+        self.task("prune", self.prune.as_ref())
+    }
+
+    /// The erase command as a task, when the entry has one and its program is installed.
+    pub fn erase_task(&self) -> Option<Task> {
+        self.task("erase", self.erase.as_ref())
+    }
+
+    /// The running programs among [`GlobalCache::apps`].
+    pub fn blocked_by(&self, running: &RunningApps) -> Vec<String> {
+        running.matching(&self.apps)
+    }
+
+    /// What cleaning this cache in `mode` takes, or why it is refused. Protection and
+    /// running programs are checked first, so nothing is ever planned for an entry in use.
+    pub fn plan(&self, mode: Mode, running: &RunningApps) -> Result<Step, Refusal> {
+        if let Some(advice) = &self.advice
+            && advice.verdict == Verdict::Protected
+        {
+            return Err(Refusal::Protected(advice.reason.clone()));
+        }
+        let blocked = self.blocked_by(running);
+        if !blocked.is_empty() {
+            return Err(Refusal::Busy(blocked));
+        }
+        let program = |argv: &Option<Vec<String>>| {
+            argv.as_ref()
+                .and_then(|argv| argv.first().cloned())
+                .unwrap_or_default()
+        };
+        match mode {
+            Mode::Erase => match (&self.erase, self.erase_task()) {
+                (_, Some(task)) => Ok(Step::Run(task)),
+                (Some(_), None) => Err(Refusal::ToolMissing(program(&self.erase))),
+                (None, None) => Err(Refusal::NotErasable),
+            },
+            Mode::Delete if self.deletable => Ok(Step::DeleteDirectory),
+            Mode::Delete => Err(Refusal::NotDeletable(program(&self.prune))),
+            Mode::Clean => match self.prune_task() {
+                Some(task) => Ok(Step::Run(task)),
+                None if self.deletable => Ok(Step::DeleteDirectory),
+                None => Err(Refusal::ToolMissing(program(&self.prune))),
+            },
+        }
+    }
+
+    /// The entry as it is now: what a tool reported at discovery (a simulator being shut
+    /// down) is asked again, so a clean planned earlier cannot touch what came into use
+    /// since. Entries no tool describes are returned unchanged.
+    pub fn refreshed(&self, host: &dyn Host) -> Self {
+        let mut cache = self.clone();
+        match &self.detail {
+            Some(Detail::Simulator { udid, .. }) => {
+                let listed = host
+                    .output(simulators::LIST)
+                    .and_then(|json| simulators::parse(&json).ok())
+                    .unwrap_or_default();
+                cache.advice = match listed.iter().find(|s| &s.udid == udid) {
+                    Some(simulator) => simulator_advice(simulator),
+                    None => Some(Advice::protected("no longer listed by simctl")),
+                };
+            }
+            Some(Detail::TestDevices { .. }) => {
+                (cache.detail, cache.advice) = test_devices(host);
+            }
+            None => {}
+        }
+        cache
+    }
+
+    /// Measures the cache: all of `path`, or its `parts` when only some of it counts.
+    pub fn measure(&self, engine: &Engine, cancel: &Cancel) -> Size {
+        match &self.parts {
+            None if self.path.exists() => engine.measure_path(&self.path, cancel),
+            None => Size::default(),
+            Some(parts) => {
+                let mut total = Size::default();
+                for part in parts {
+                    total.merge(engine.measure_path(part, cancel));
+                }
+                total
+            }
+        }
     }
 }
 
@@ -114,6 +355,58 @@ pub fn find_program(program: &str) -> Option<PathBuf> {
             [plain, exe]
         })
         .find(|candidate| candidate.is_file())
+}
+
+/// What the machine's tools report about its caches. Discovery only ever reads through
+/// this, and tests replace it with captured output.
+pub trait Host: Sync {
+    /// The standard output of a read-only command; `None` when its program is missing, it
+    /// fails, or it does not finish in time.
+    fn output(&self, argv: &[&str]) -> Option<Vec<u8>>;
+}
+
+/// The machine carwash runs on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LocalHost;
+
+impl LocalHost {
+    /// Long enough for a tool that has to start its service first.
+    const TIMEOUT: Duration = Duration::from_secs(20);
+}
+
+impl Host for LocalHost {
+    fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+        let (program, args) = argv.split_first()?;
+        find_program(program)?;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let deadline = Instant::now() + Self::TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        let bytes = reader.join().ok()?.ok()?;
+        status?.success().then_some(bytes)
+    }
 }
 
 fn platform_ok(prefix: &str) -> bool {
@@ -168,13 +461,56 @@ fn rustup_default(toolchains: &Path) -> Option<String> {
 
 /// Caches present under `home`, children expanded, in spec order. Sizes are not measured.
 pub fn discover(specs: &[CacheSpec], home: &Path) -> Vec<GlobalCache> {
-    discover_with(specs, home, &|var| std::env::var(var).ok())
+    discover_on(specs, home, &LocalHost)
+}
+
+/// [`discover`], asking `host` what the machine's tools report.
+pub fn discover_on(specs: &[CacheSpec], home: &Path, host: &dyn Host) -> Vec<GlobalCache> {
+    discover_with(specs, home, &|var| std::env::var(var).ok(), host)
+}
+
+/// `argv` with `{name}` replaced by a child's name.
+fn for_child(argv: Option<&Vec<String>>, child: &str) -> Option<Vec<String>> {
+    argv.map(|argv| argv.iter().map(|a| a.replace("{name}", child)).collect())
+}
+
+/// The entry for a cache as a whole.
+fn whole(spec: &CacheSpec, path: PathBuf) -> GlobalCache {
+    GlobalCache {
+        id: spec.id.clone(),
+        name: spec.name.clone(),
+        fingerprint: Fingerprint::of(&path),
+        path,
+        ecosystem: spec.ecosystem.clone(),
+        deletable: spec.delete,
+        prune: spec.prune.clone(),
+        erase: None,
+        apps: spec.apps.clone(),
+        note: spec.note.clone(),
+        size: None,
+        last_used: None,
+        advice: None,
+        detail: None,
+        parts: None,
+    }
+}
+
+/// The entry for one subdirectory of a cache.
+fn child(spec: &CacheSpec, name: &str, path: PathBuf) -> GlobalCache {
+    GlobalCache {
+        id: format!("{}/{name}", spec.id),
+        name: format!("{}: {name}", spec.name),
+        prune: for_child(spec.child_prune.as_ref(), name),
+        erase: for_child(spec.child_erase.as_ref(), name),
+        ..whole(spec, path)
+    }
 }
 
 fn discover_with(
     specs: &[CacheSpec],
     home: &Path,
     env: &dyn Fn(&str) -> Option<String>,
+    host: &dyn Host,
 ) -> Vec<GlobalCache> {
     let mut out = Vec::new();
     for spec in specs {
@@ -186,61 +522,132 @@ fn discover_with(
         else {
             continue;
         };
-        if !spec.children {
-            out.push(GlobalCache {
-                id: spec.id.clone(),
-                name: spec.name.clone(),
-                fingerprint: Fingerprint::of(&path),
-                path,
-                ecosystem: spec.ecosystem.clone(),
-                deletable: spec.delete,
-                prune: spec.prune.clone(),
-                note: spec.note.clone(),
-                size: None,
-            });
-            continue;
-        }
-        let keep = match spec.keep.as_deref() {
-            Some("rustup-default") => rustup_default(&path),
-            _ => None,
-        };
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        let mut children: Vec<(String, PathBuf)> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
-            .filter(|(name, _)| !name.starts_with('.'))
-            .filter(|(name, _)| {
-                keep.as_ref()
-                    .is_none_or(|k| name != k && !name.starts_with(&format!("{k}-")))
-            })
-            .collect();
-        children.sort();
-        for (child, child_path) in children {
-            out.push(GlobalCache {
-                id: format!("{}/{child}", spec.id),
-                name: format!("{}: {child}", spec.name),
-                fingerprint: Fingerprint::of(&child_path),
-                path: child_path,
-                ecosystem: spec.ecosystem.clone(),
-                deletable: spec.delete,
-                prune: spec
-                    .child_prune
-                    .as_ref()
-                    .map(|argv| argv.iter().map(|a| a.replace("{name}", &child)).collect()),
-                note: spec.note.clone(),
-                size: None,
-            });
+        match spec.adapter.as_deref().and_then(Adapter::parse) {
+            Some(Adapter::Simulators) => out.extend(simulator_entries(spec, path, host)),
+            Some(Adapter::TestDevices) => {
+                let (detail, advice) = test_devices(host);
+                out.push(GlobalCache {
+                    detail,
+                    advice,
+                    ..whole(spec, path)
+                });
+            }
+            None if spec.children => {
+                let keep = match spec.keep.as_deref() {
+                    Some("rustup-default") => rustup_default(&path),
+                    _ => None,
+                };
+                let Ok(entries) = std::fs::read_dir(&path) else {
+                    continue;
+                };
+                let mut children: Vec<(String, PathBuf)> = entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
+                    .filter(|(name, _)| !name.starts_with('.'))
+                    .filter(|(name, _)| {
+                        keep.as_ref()
+                            .is_none_or(|k| name != k && !name.starts_with(&format!("{k}-")))
+                    })
+                    .collect();
+                children.sort();
+                for (name, child_path) in children {
+                    out.push(child(spec, &name, child_path));
+                }
+            }
+            None => out.push(whole(spec, path)),
         }
     }
     out
 }
 
+/// One entry per simulator `simctl` lists in the device set at `devices`, and one for the
+/// devices whose runtime is gone, which the set's own command removes together.
+fn simulator_entries(spec: &CacheSpec, devices: PathBuf, host: &dyn Host) -> Vec<GlobalCache> {
+    let listed = host
+        .output(simulators::LIST)
+        .and_then(|json| simulators::parse(&json).ok());
+    let Some(mut listed) = listed else {
+        // Without simctl's view, the device set is one entry.
+        return vec![whole(spec, devices)];
+    };
+    listed.sort_by(|a, b| (&a.name, &a.runtime, &a.udid).cmp(&(&b.name, &b.runtime, &b.udid)));
+    let mut out = Vec::new();
+    let mut unavailable = Vec::new();
+    for simulator in listed {
+        let device = devices.join(&simulator.udid);
+        if !device.is_dir() {
+            continue;
+        }
+        if !simulator.available {
+            unavailable.push(device);
+            continue;
+        }
+        out.push(GlobalCache {
+            name: format!("{}: {}, {}", spec.name, simulator.name, simulator.runtime),
+            last_used: simulator
+                .last_used
+                .or_else(|| modified(&device.join("data"))),
+            advice: simulator_advice(&simulator),
+            detail: Some(Detail::Simulator {
+                udid: simulator.udid.clone(),
+                device: simulator.name.clone(),
+                runtime: simulator.runtime.clone(),
+                state: simulator.state.to_lowercase(),
+            }),
+            ..child(spec, &simulator.udid, device)
+        });
+    }
+    out.push(GlobalCache {
+        name: format!("{}: unavailable devices", spec.name),
+        parts: Some(unavailable),
+        ..whole(spec, devices)
+    });
+    out
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+/// A simulator that is not shut down is in use and never touched.
+fn simulator_advice(simulator: &Simulator) -> Option<Advice> {
+    (!simulator.is_shut_down()).then(|| {
+        Advice::protected(format!(
+            "{}; shut it down first",
+            simulator.state.to_lowercase()
+        ))
+    })
+}
+
+/// The test clones, which are left alone while any of them is not shut down.
+fn test_devices(host: &dyn Host) -> (Option<Detail>, Option<Advice>) {
+    let Some(listed) = host
+        .output(simulators::LIST_TESTING)
+        .and_then(|json| simulators::parse(&json).ok())
+    else {
+        return (None, None);
+    };
+    let booted = listed.iter().filter(|s| !s.is_shut_down()).count();
+    let advice = (booted > 0).then(|| {
+        Advice::protected(match booted {
+            1 => "a test clone is booted".to_owned(),
+            n => format!("{n} test clones are booted"),
+        })
+    });
+    let detail = Detail::TestDevices {
+        devices: listed.len(),
+        booted,
+    };
+    (Some(detail), advice)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::simulators::tests::{LISTING, TESTING_LISTING};
     use std::fs;
 
     fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
@@ -248,6 +655,24 @@ mod tests {
             vars.iter()
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    /// Answers tool invocations with captured output; anything else is "not installed".
+    pub(crate) struct Tools(pub Vec<(&'static [&'static str], String)>);
+
+    impl Tools {
+        pub(crate) fn none() -> Self {
+            Self(Vec::new())
+        }
+    }
+
+    impl Host for Tools {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            self.0
+                .iter()
+                .find(|(command, _)| *command == argv)
+                .map(|(_, output)| output.clone().into_bytes())
         }
     }
 
@@ -307,7 +732,7 @@ mod tests {
         )
         .unwrap();
 
-        let caches = discover_with(&builtin_specs(), root, &env(&[]));
+        let caches = discover_with(&builtin_specs(), root, &env(&[]), &Tools::none());
         let ids: Vec<&str> = caches.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"npm"));
         assert!(ids.contains(&"rustup-toolchains/nightly-aarch64-apple-darwin"));
@@ -347,5 +772,327 @@ mod tests {
         );
         assert!(specs.iter().any(|s| s.id == "acme"));
         assert!(specs_with_overrides("schema = 9").is_err());
+        assert!(
+            specs_with_overrides(
+                "schema = 1\n[[cache]]\nid = \"x\"\nname = \"X\"\npaths = [\"~/x\"]\ndelete = true\nadapter = \"nope\"\n"
+            )
+            .is_err(),
+            "unknown adapter"
+        );
+    }
+
+    const DEVICES: &str = "Library/Developer/CoreSimulator/Devices";
+    const TEST_DEVICES: &str = "Library/Developer/XCTestDevices";
+    const SHUT_DOWN: &str = "00000001-0000-4000-8000-000000000001";
+    const BOOTED: &str = "0000000A-0000-4000-8000-00000000000A";
+    const UNAVAILABLE: &str = "00000384-0000-4000-8000-000000000384";
+
+    /// The built-in simulator caches, on every platform.
+    pub(crate) fn simulator_specs() -> Vec<CacheSpec> {
+        builtin_specs()
+            .into_iter()
+            .filter(|s| matches!(s.id.as_str(), "simulators" | "xctest-devices"))
+            .map(|mut spec| {
+                for path in &mut spec.paths {
+                    *path = path.trim_start_matches("macos:").to_owned();
+                }
+                spec
+            })
+            .collect()
+    }
+
+    /// A home directory holding a folder for every simulator in the captured listing.
+    pub(crate) fn simulator_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        for simulator in simulators::parse(LISTING.as_bytes()).unwrap() {
+            fs::create_dir_all(home.path().join(DEVICES).join(simulator.udid).join("data"))
+                .unwrap();
+        }
+        fs::create_dir_all(home.path().join(TEST_DEVICES)).unwrap();
+        home
+    }
+
+    pub(crate) fn simctl(listing: &str, testing: &str) -> Tools {
+        Tools(vec![
+            (simulators::LIST, listing.to_owned()),
+            (simulators::LIST_TESTING, testing.to_owned()),
+        ])
+    }
+
+    fn simulator_caches(home: &Path, host: &Tools) -> Vec<GlobalCache> {
+        discover_with(&simulator_specs(), home, &env(&[]), host)
+    }
+
+    fn find<'a>(caches: &'a [GlobalCache], id: &str) -> &'a GlobalCache {
+        caches
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("no cache {id}"))
+    }
+
+    fn idle() -> RunningApps {
+        RunningApps::from_names(&["Finder", "zsh"])
+    }
+
+    const MODES: [Mode; 3] = [Mode::Clean, Mode::Delete, Mode::Erase];
+
+    #[test]
+    fn lists_each_simulator_with_its_runtime_state_and_commands() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        let devices: Vec<&GlobalCache> = caches
+            .iter()
+            .filter(|c| c.id.starts_with("simulators/"))
+            .collect();
+        assert_eq!(devices.len(), 63, "every available device");
+
+        let device = find(&caches, &format!("simulators/{SHUT_DOWN}"));
+        assert_eq!(device.name, "Simulators: iPhone 18 Pro, iOS 27.0");
+        assert_eq!(device.path, home.path().join(DEVICES).join(SHUT_DOWN));
+        assert_eq!(
+            device.prune.as_deref().unwrap(),
+            ["xcrun", "simctl", "delete", SHUT_DOWN]
+        );
+        assert_eq!(
+            device.erase.as_deref().unwrap(),
+            ["xcrun", "simctl", "erase", SHUT_DOWN]
+        );
+        assert!(!device.deletable, "device folders belong to CoreSimulator");
+        assert_eq!(device.apps, ["xcodebuild", "xctest"]);
+        assert!(device.advice.is_none());
+        assert_eq!(
+            device.detail,
+            Some(Detail::Simulator {
+                udid: SHUT_DOWN.into(),
+                device: "iPhone 18 Pro".into(),
+                runtime: "iOS 27.0".into(),
+                state: "shutdown".into(),
+            })
+        );
+        assert!(
+            devices.iter().all(|c| c.last_used.is_some()),
+            "simctl's record, or the data folder's date for a device never booted"
+        );
+    }
+
+    #[test]
+    fn unavailable_simulators_are_one_entry_cleaned_by_simctl() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        assert!(
+            !caches.iter().any(|c| c.id.ends_with(UNAVAILABLE)),
+            "not listed on its own"
+        );
+        let set = find(&caches, "simulators");
+        assert_eq!(set.name, "Simulators: unavailable devices");
+        assert_eq!(
+            set.prune.as_deref().unwrap(),
+            ["xcrun", "simctl", "delete", "unavailable"]
+        );
+        assert_eq!(
+            set.parts.as_deref().unwrap(),
+            [home.path().join(DEVICES).join(UNAVAILABLE)]
+        );
+        assert!(set.erase.is_none());
+    }
+
+    #[test]
+    fn a_booted_simulator_is_never_cleaned() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        let booted: Vec<&GlobalCache> = caches.iter().filter(|c| c.advice.is_some()).collect();
+        assert_eq!(booted.len(), 3);
+        let device = find(&caches, &format!("simulators/{BOOTED}"));
+        for mode in MODES {
+            assert_eq!(
+                device.plan(mode, &idle()),
+                Err(Refusal::Protected("booted; shut it down first".into())),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_running_build_or_test_blocks_every_simulator_action() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        assert!(caches.len() > 60);
+        for (names, blocked) in [
+            (&["xcodebuild", "zsh"][..], vec!["xcodebuild".to_owned()]),
+            (&["xctest"][..], vec!["xctest".to_owned()]),
+            (
+                &["XCTest", "xcodebuild"][..],
+                vec!["xcodebuild".to_owned(), "xctest".to_owned()],
+            ),
+        ] {
+            let running = RunningApps::from_names(names);
+            for cache in caches.iter().filter(|c| c.advice.is_none()) {
+                for mode in MODES {
+                    assert_eq!(
+                        cache.plan(mode, &running),
+                        Err(Refusal::Busy(blocked.clone())),
+                        "{} {mode:?}",
+                        cache.id
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            Refusal::Busy(vec!["xcodebuild".into()]).to_string(),
+            "xcodebuild is running"
+        );
+        assert_eq!(
+            Refusal::Busy(vec!["xcodebuild".into(), "xctest".into()]).to_string(),
+            "xcodebuild, xctest are running"
+        );
+    }
+
+    #[test]
+    fn a_simulator_booted_after_discovery_is_refused_at_cleaning_time() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        let device = find(&caches, &format!("simulators/{SHUT_DOWN}"));
+        assert!(device.advice.is_none());
+
+        let now_booted = LISTING.replacen("\"state\": \"Shutdown\"", "\"state\": \"Booted\"", 64);
+        let fresh = device.refreshed(&simctl(&now_booted, TESTING_LISTING));
+        assert!(matches!(
+            fresh.plan(Mode::Erase, &idle()),
+            Err(Refusal::Protected(_))
+        ));
+        // A device simctl no longer lists, or a simctl that cannot be asked, is left alone.
+        let gone = device.refreshed(&simctl("{\"devices\":{}}", TESTING_LISTING));
+        assert!(matches!(
+            gone.plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected(_))
+        ));
+        let unknown = device.refreshed(&Tools::none());
+        assert!(matches!(
+            unknown.plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected(_))
+        ));
+        // Unchanged: still free to clean.
+        let same = device.refreshed(&simctl(LISTING, TESTING_LISTING));
+        assert!(same.advice.is_none());
+    }
+
+    #[test]
+    fn without_simctl_the_device_set_is_one_entry() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &Tools::none());
+        let ids: Vec<&str> = caches.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["simulators", "xctest-devices"]);
+        let set = find(&caches, "simulators");
+        assert_eq!(set.name, "Simulators");
+        assert!(set.parts.is_none(), "measured whole");
+    }
+
+    #[test]
+    fn test_clones_are_cleaned_through_simctl_unless_one_is_booted() {
+        let home = simulator_home();
+        let caches = simulator_caches(home.path(), &simctl(LISTING, TESTING_LISTING));
+        let clones = find(&caches, "xctest-devices");
+        assert_eq!(clones.path, home.path().join(TEST_DEVICES));
+        assert_eq!(
+            clones.prune.as_deref().unwrap(),
+            ["xcrun", "simctl", "--set", "testing", "delete", "all"]
+        );
+        assert!(!clones.deletable);
+        assert_eq!(clones.apps, ["xcodebuild", "xctest"]);
+        assert_eq!(
+            clones.detail,
+            Some(Detail::TestDevices {
+                devices: 0,
+                booted: 0
+            })
+        );
+        assert!(clones.advice.is_none());
+        assert_eq!(
+            clones.plan(Mode::Clean, &RunningApps::from_names(&["xcodebuild"])),
+            Err(Refusal::Busy(vec!["xcodebuild".into()]))
+        );
+
+        // The default set's listing has the shape of a test set with booted clones.
+        let busy = simulator_caches(home.path(), &simctl(LISTING, LISTING));
+        let clones = find(&busy, "xctest-devices");
+        assert_eq!(
+            clones.plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected("3 test clones are booted".into()))
+        );
+        let later = clones.refreshed(&simctl(LISTING, TESTING_LISTING));
+        assert!(later.advice.is_none(), "asked again before cleaning");
+    }
+
+    fn cache(extra: &str) -> GlobalCache {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join("store")).unwrap();
+        let spec: CacheSpec = toml::from_str(&format!(
+            "id = \"store\"\nname = \"Store\"\npaths = [\"~/store\"]\n{extra}"
+        ))
+        .unwrap();
+        discover_with(&[spec], home.path(), &env(&[]), &Tools::none()).remove(0)
+    }
+
+    #[test]
+    fn plans_the_tool_then_deletion_and_refuses_what_cannot_work() {
+        // `cargo` is on PATH while tests run; nothing here is executed.
+        let pruned = cache("delete = true\nprune = [\"cargo\", \"clean\"]");
+        let Ok(Step::Run(task)) = pruned.plan(Mode::Clean, &idle()) else {
+            panic!("expected the tool's command");
+        };
+        assert_eq!(task.command_line(), "cargo clean");
+        assert_eq!(
+            pruned.plan(Mode::Delete, &idle()),
+            Ok(Step::DeleteDirectory)
+        );
+        assert_eq!(pruned.plan(Mode::Erase, &idle()), Err(Refusal::NotErasable));
+
+        let missing = cache("delete = true\nprune = [\"carwash-no-such-tool\", \"gc\"]");
+        assert_eq!(
+            missing.plan(Mode::Clean, &idle()),
+            Ok(Step::DeleteDirectory)
+        );
+
+        let tool_only = cache("prune = [\"carwash-no-such-tool\", \"gc\"]");
+        assert_eq!(
+            tool_only.plan(Mode::Clean, &idle()),
+            Err(Refusal::ToolMissing("carwash-no-such-tool".into()))
+        );
+        assert_eq!(
+            tool_only.plan(Mode::Delete, &idle()),
+            Err(Refusal::NotDeletable("carwash-no-such-tool".into()))
+        );
+        assert!(!Refusal::NotErasable.is_temporary());
+        assert!(Refusal::Busy(Vec::new()).is_temporary());
+
+        let guarded = cache("delete = true\napps = [\"acme-daemon\"]");
+        assert_eq!(
+            guarded.plan(Mode::Clean, &RunningApps::from_names(&["acme-daemon"])),
+            Err(Refusal::Busy(vec!["acme-daemon".into()]))
+        );
+        assert_eq!(
+            guarded.plan(Mode::Clean, &idle()),
+            Ok(Step::DeleteDirectory)
+        );
+    }
+
+    #[test]
+    fn measures_only_its_parts_when_it_has_them() {
+        let home = tempfile::tempdir().unwrap();
+        for (dir, bytes) in [("set/a", 8_000), ("set/b", 64_000)] {
+            fs::create_dir_all(home.path().join(dir)).unwrap();
+            fs::write(home.path().join(dir).join("blob"), vec![1u8; bytes]).unwrap();
+        }
+        let engine = Engine::new(crate::Registry::builtin());
+        let mut set = cache("delete = true");
+        set.path = home.path().join("set");
+        let everything = set.measure(&engine, &Cancel::new());
+        assert_eq!(everything.files, 2);
+        set.parts = Some(vec![home.path().join("set/a")]);
+        let part = set.measure(&engine, &Cancel::new());
+        assert_eq!(part.files, 1);
+        assert!(part.on_disk < everything.on_disk);
+        set.parts = Some(Vec::new());
+        assert_eq!(set.measure(&engine, &Cancel::new()), Size::default());
     }
 }

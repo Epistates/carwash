@@ -20,6 +20,7 @@ mod widgets;
 use crate::context::Context;
 use anyhow::Result;
 use app::{App, Effect, Msg};
+use carwash_core::caches::{GlobalCache, Step};
 use carwash_core::clean::CleanOptions;
 use carwash_core::deps::Checker;
 use carwash_core::tasks::Task;
@@ -386,8 +387,8 @@ impl Runtime<'_> {
             Effect::MeasureCaches(targets) => {
                 let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    for (id, path) in targets {
-                        let _ = tx.send(measure_cache(&engine, id, &path));
+                    for cache in targets {
+                        let _ = tx.send(measure_cache(&engine, &cache));
                     }
                 });
             }
@@ -399,23 +400,35 @@ impl Runtime<'_> {
                     }
                 }
             }
-            Effect::CleanCaches { caches, size } => {
-                for cache in caches {
-                    if let Some(task) = cache.prune_task() {
-                        let after = tasks::After::Remeasure {
-                            id: cache.id.clone(),
-                            path: cache.path.clone(),
-                        };
-                        self.start_job(cache.name.clone(), task, size, after);
-                        continue;
+            Effect::CleanCaches { caches, mode } => {
+                // Asking simctl what is booted and listing processes takes a moment: keep
+                // it off the event loop.
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let running = carwash_core::system::RunningApps::snapshot();
+                    for cache in caches {
+                        let cache = cache.refreshed(&carwash_core::caches::LocalHost);
+                        let step = cache
+                            .plan(mode, &running)
+                            .map_err(|refusal| crate::commands::caches::left_alone(&refusal));
+                        let _ = tx.send(Msg::CacheChecked {
+                            cache: Box::new(cache),
+                            step,
+                        });
                     }
+                });
+            }
+            Effect::CleanCache { cache, step, size } => match step {
+                Step::Run(task) => {
+                    let after = tasks::After::Remeasure(cache.id.clone());
+                    self.start_job(cache.name.clone(), task, size, after);
+                }
+                Step::DeleteDirectory => {
                     let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                     let history = self.ctx.dirs.as_ref().map(|d| d.history_file());
                     std::thread::spawn(move || {
                         let before = cache.size.map_or(0, |s| s.on_disk);
-                        if cache.deletable
-                            && let Some(parent) = cache.path.parent()
-                        {
+                        if let Some(parent) = cache.path.parent() {
                             let report = engine.clean(
                                 &[carwash_core::clean::CleanItem {
                                     id: carwash_core::ArtifactId(0),
@@ -443,10 +456,10 @@ impl Runtime<'_> {
                                 let _ = history::append(&file, &[record]);
                             }
                         }
-                        let _ = tx.send(measure_cache(&engine, cache.id, &cache.path));
+                        let _ = tx.send(measure_cache(&engine, &cache));
                     });
                 }
-            }
+            },
             Effect::DiscoverSystem => {
                 // Expanding patterns reads directories: keep it off the event loop.
                 let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
@@ -542,16 +555,11 @@ impl Runtime<'_> {
 
 /// Shows `path` in the platform file manager, detached from the terminal.
 /// Fingerprints then measures one global cache (a missing directory measures as empty).
-fn measure_cache(engine: &carwash_core::Engine, id: String, path: &Path) -> Msg {
-    let fingerprint = carwash_core::cache::Fingerprint::of(path);
-    let size = if path.exists() {
-        engine.measure_path(path, &Cancel::new())
-    } else {
-        carwash_core::Size::default()
-    };
+fn measure_cache(engine: &carwash_core::Engine, cache: &GlobalCache) -> Msg {
+    let fingerprint = carwash_core::cache::Fingerprint::of(&cache.path);
     Msg::CacheMeasured {
-        id,
-        size,
+        id: cache.id.clone(),
+        size: cache.measure(engine, &Cancel::new()),
         fingerprint,
     }
 }

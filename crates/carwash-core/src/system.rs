@@ -425,8 +425,8 @@ impl RunningApps {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_names(names: &[&str]) -> Self {
+    /// A snapshot holding exactly `names`, for callers that already know what is running.
+    pub fn from_names(names: &[&str]) -> Self {
         Self {
             names: names.iter().map(|n| (*n).to_owned()).collect(),
             unknown: false,

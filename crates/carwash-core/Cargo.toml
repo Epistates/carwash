@@ -25,6 +25,7 @@ toml.workspace = true
 yaml_serde.workspace = true
 toml_edit.workspace = true
 semver.workspace = true
+jiff.workspace = true
 nodejs-semver.workspace = true
 pep440_rs.workspace = true
 ureq.workspace = true

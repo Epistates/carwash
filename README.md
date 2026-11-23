@@ -79,7 +79,9 @@ Run `carwash [PATH]`. Five tabs, switched with `1` to `5`:
    updates within your requirements, `U` upgrades to latest (and edits manifests). Projects are
    re-checked after the update finishes.
 4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
-   when it is installed, or deletes the directory when that is safe. Sizes are remembered, so
+   when it is installed, or deletes the directory when that is safe. Simulators are listed one
+   by one: `d` deletes the marked devices and `e` (twice) erases them, keeping the devices;
+   booted ones are left alone. Sizes are remembered, so
    the tab opens instantly. A cache is measured again when the top of its tree has changed
    (entries added or removed there), after a week otherwise, or when you press `r`.
 5. **System**: [OS mode](#os-mode), the operating system's caches, logs, trash and temporary
@@ -106,7 +108,7 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
 | `carwash caches` | Global caches and their sizes |
-| `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children |
+| `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children. `--erase` clears simulators and keeps them, `--dry-run`, `--yes` |
 | `carwash os` | The operating system's caches, logs, trash and temp files, with what cleaning frees |
 | `carwash os clean [AREA...]` | Clean the default tier, or areas by id or number. `--escalate`, `--dry-run`, `--yes` |
 | `carwash ecosystems` | Recognised ecosystems |
@@ -159,6 +161,25 @@ reason), `removed`, `failed`, `bytes`, `free_before`, `free_after` and, with a g
 `goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
 do, 1 when a deletion failed, a pick was skipped or the goal could not be met, and 2 on
 invalid usage or errors.
+
+### Simulators
+
+`carwash caches` lists every simulator on its own row, with its runtime, size, when it was
+last used and whether it is booted, so you can see which devices hold the space:
+
+```bash
+carwash caches                                    # simulators are the rows simulators/<UDID>
+carwash caches clean simulators/<UDID> --erase    # clear its contents and settings, keep the device
+carwash caches clean simulators/<UDID>            # delete the device
+carwash caches clean simulators                   # delete devices whose runtime is no longer installed
+carwash caches clean xctest-devices               # delete the clones Xcode makes for parallel testing
+```
+
+Everything goes through `xcrun simctl`; carwash never removes a device's folder itself. A
+booted simulator is never erased or deleted, and no simulator is touched while `xcodebuild`
+or `xctest` is running. carwash says what is in the way, and checks again just before each
+device, so a simulator that boots after you confirmed is still left alone. Add `--dry-run` to
+see the commands first.
 
 ### OS mode
 
