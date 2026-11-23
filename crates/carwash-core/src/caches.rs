@@ -2336,12 +2336,16 @@ pub(crate) mod tests {
         let same = release.refreshed(&rustup(toolchains::tests::LISTING));
         assert_eq!(same.verdict(), Some(Verdict::Unknown));
         // `rustup default 1.91` was run in the meantime.
-        let moved = toolchains::tests::LISTING
-            .replace(" (active, default)", "")
-            .replace(
-                "1.91-aarch64-apple-darwin\n",
-                "1.91-aarch64-apple-darwin (active, default)\n",
-            );
+        let moved: String = toolchains::tests::LISTING
+            .lines()
+            .map(|line| {
+                let name = line.split(' ').next().unwrap_or_default();
+                match name {
+                    "1.91-aarch64-apple-darwin" => format!("{name} (active, default)\n"),
+                    _ => format!("{name}\n"),
+                }
+            })
+            .collect();
         let now_default = release.refreshed(&rustup(&moved));
         for mode in MODES {
             assert_eq!(
