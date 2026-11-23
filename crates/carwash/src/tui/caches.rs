@@ -5,7 +5,7 @@ use super::keymap::Action;
 use super::widgets::{pane, spinner};
 use carwash_core::cache::{CachedSize, Fingerprint, SizeCache};
 use carwash_core::caches::{GlobalCache, Mode, Step, Verdict};
-use carwash_core::toolchains::Pin;
+use carwash_core::toolchains::Needs;
 use carwash_core::{Size, fmt};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -46,8 +46,8 @@ pub struct CachesState {
     remeasure_all: bool,
     /// The user has moved the cursor.
     moved: bool,
-    /// The Rust toolchains the scanned projects need, once the scan has finished.
-    pins: Option<Vec<Pin>>,
+    /// What the Rust projects in the scanned folder need, once they have been looked for.
+    needs: Option<Needs>,
 }
 
 impl CachesState {
@@ -56,19 +56,19 @@ impl CachesState {
         for cache in &mut caches {
             cache.size = sizes.get(&cache.path).map(|c| c.size);
         }
-        if let Some(pins) = &self.pins {
-            carwash_core::caches::apply_pins(&mut caches, pins);
+        if let Some(needs) = &self.needs {
+            carwash_core::caches::apply_needs(&mut caches, needs);
         }
         self.caches = Some(caches);
         self.sort();
     }
 
     /// Takes what the scanned projects need, and advises on the toolchains listed.
-    pub fn set_pins(&mut self, pins: Vec<Pin>) {
+    pub fn set_needs(&mut self, needs: Needs) {
         if let Some(caches) = &mut self.caches {
-            carwash_core::caches::apply_pins(caches, &pins);
+            carwash_core::caches::apply_needs(caches, &needs);
         }
-        self.pins = Some(pins);
+        self.needs = Some(needs);
     }
 
     /// Records a measurement; returns the cache's path.
@@ -1018,44 +1018,97 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn toolchains_are_advised_on_once_the_scanned_projects_are_known() {
-        use carwash_core::caches::Detail;
-        use carwash_core::toolchains::Channel;
-        let toolchain = |name: &str| GlobalCache {
+    fn toolchain(name: &str) -> GlobalCache {
+        use carwash_core::caches::{Advice, Detail};
+        GlobalCache {
             detail: Some(Detail::Toolchain {
                 default: false,
+                standing: false,
                 needed_by: None,
             }),
+            advice: Some(Advice {
+                verdict: Verdict::Unknown,
+                reason: "not checked against any projects".into(),
+            }),
             ..cache(&format!("rustup-toolchains/{name}-aarch64-apple-darwin"))
+        }
+    }
+
+    fn toolchain_verdicts(app: &App) -> Vec<Option<Verdict>> {
+        let caches = app.caches.caches.as_ref().unwrap();
+        ["1.90", "1.91"]
+            .iter()
+            .map(|name| {
+                caches
+                    .iter()
+                    .find(|c| c.id.contains(&format!("/{name}-")))
+                    .unwrap()
+                    .verdict()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn toolchains_are_advised_on_once_the_scanned_projects_are_known() {
+        use carwash_core::toolchains::{Channel, Pin};
+        let needs = Needs {
+            roots: vec![PathBuf::from("/work")],
+            projects: 1,
+            pins: vec![Pin {
+                channel: Channel::Version(vec![1, 90]),
+                project: PathBuf::from("/work/app"),
+            }],
         };
-        let pins = vec![Pin {
-            channel: Channel::Version(vec![1, 90]),
-            project: PathBuf::from("/work/app"),
-        }];
-        let verdicts = |app: &App| -> Vec<Option<Verdict>> {
-            let caches = app.caches.caches.as_ref().unwrap();
-            ["1.90", "1.91"]
-                .iter()
-                .map(|name| {
-                    caches
-                        .iter()
-                        .find(|c| c.id.contains(&format!("/{name}-")))
-                        .unwrap()
-                        .verdict()
-                })
-                .collect()
-        };
+        let unknown = [Some(Verdict::Unknown), Some(Verdict::Unknown)];
         let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
-        assert_eq!(verdicts(&app), [None, None], "projects not scanned yet");
-        app.update(Msg::ToolchainPins(pins));
-        assert_eq!(verdicts(&app), [Some(Verdict::Keep), Some(Verdict::Remove)]);
+        assert_eq!(
+            toolchain_verdicts(&app),
+            unknown,
+            "projects not scanned yet"
+        );
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.caches.marked.is_empty(), "nothing to recommend yet");
+
+        app.update(Msg::ToolchainNeeds(needs));
+        let advised = [Some(Verdict::Keep), Some(Verdict::Remove)];
+        assert_eq!(toolchain_verdicts(&app), advised);
         // Listing the caches again keeps the advice.
         app.update(Msg::CachesDiscovered(vec![
             toolchain("1.90"),
             toolchain("1.91"),
         ]));
-        assert_eq!(verdicts(&app), [Some(Verdict::Keep), Some(Verdict::Remove)]);
+        assert_eq!(toolchain_verdicts(&app), advised);
+        let reason = |app: &App| {
+            app.caches.caches.as_ref().unwrap()[1]
+                .advice
+                .as_ref()
+                .unwrap()
+                .reason
+                .clone()
+        };
+        assert_eq!(reason(&app), "no project under /work needs it");
+    }
+
+    #[test]
+    fn a_scan_that_finds_no_rust_project_recommends_no_toolchain() {
+        let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
+        // The folder the TUI was opened on holds no Rust project at all.
+        app.update(Msg::ToolchainNeeds(Needs {
+            roots: vec![PathBuf::from("/work/web")],
+            projects: 0,
+            pins: Vec::new(),
+        }));
+        assert_eq!(
+            toolchain_verdicts(&app),
+            [Some(Verdict::Unknown), Some(Verdict::Unknown)]
+        );
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.caches.marked.is_empty(), "{:?}", app.caches.marked);
+        assert!(
+            toast_text(&app).contains("Nothing here is recommended"),
+            "{}",
+            toast_text(&app)
+        );
     }
 
     fn toast_text(app: &App) -> String {

@@ -359,7 +359,7 @@ pub struct CachesArgs {
     pub action: Option<CachesAction>,
 
     /// Directory of projects to check Rust toolchains against (repeatable): toolchains
-    /// they pin or declare as `rust-version` are kept, the rest recommended for removal.
+    /// they need are kept, the rest recommended for removal.
     #[arg(long, global = true, value_name = "DIR")]
     pub projects: Vec<PathBuf>,
 
@@ -421,9 +421,12 @@ runs, and every folder it cannot judge (the connected devices could not be read,
 folder names no device model). Name a kept child by its own id to clean it anyway.
 
 Rust toolchains are uninstalled through rustup. The default toolchain is never removed, and
-stable and nightly are kept. With --projects, toolchains that a project under DIR pins
-(rust-toolchain.toml, rust-toolchain) or declares as its `rust-version` are kept too, and
-the others are recommended for removal.
+stable, nightly and the one RUSTUP_TOOLCHAIN names are kept. With --projects, toolchains
+that a project under DIR needs are kept too: the one rustup would use there (a directory
+override, rust-toolchain or rust-toolchain.toml, looked for up to the root of the disk) and
+its `rust-version`. The others are recommended for removal. Without --projects, or when DIR
+holds no Rust project, nothing is recommended. A toolchain only named on a command line
+(`cargo +1.88` in a script or CI file) cannot be seen.
 
 Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
 touched, and none is while xcodebuild or xctest is running; carwash names what is in the

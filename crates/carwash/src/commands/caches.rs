@@ -15,6 +15,7 @@ use carwash_core::history::{self, Record};
 use carwash_core::paths::Dirs;
 use carwash_core::system::RunningApps;
 use carwash_core::tasks::Task;
+use carwash_core::toolchains::{self, Needs};
 use carwash_core::{ArtifactId, ArtifactKind, Cancel, fmt};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
@@ -150,18 +151,32 @@ fn last_used(cache: &GlobalCache, now: SystemTime) -> String {
     }
 }
 
-/// Marks the Rust toolchains among `caches` as needed or not by the projects under `roots`.
+/// Says which of the Rust toolchains among `caches` the projects under `roots` need.
 fn apply_projects(ctx: &Context, caches: &mut [GlobalCache], roots: &[PathBuf]) -> Result<()> {
-    let mut pins = Vec::new();
+    if !caches
+        .iter()
+        .any(|c| matches!(c.detail, Some(Detail::Toolchain { .. })))
+    {
+        return Ok(());
+    }
+    let overrides = toolchains::local_overrides();
+    let mut needs = Needs::default();
     for dir in roots {
         // Projects are found by their manifests alone: nothing is measured or asked of git.
         let walk = crate::cli::WalkArgs::for_path(dir.clone());
         let (root, options) = ctx.scan_options(&walk, false, false)?;
-        let snapshot = ctx.run_scan(&root, &options, true);
-        let projects: Vec<PathBuf> = snapshot.projects.into_iter().map(|p| p.path).collect();
-        pins.extend(carwash_core::toolchains::pins(&projects, &root));
+        let found = toolchains::needs(
+            &ctx.engine,
+            &[root],
+            &options.discover,
+            &overrides,
+            &Cancel::new(),
+        );
+        needs.roots.extend(found.roots);
+        needs.projects += found.projects;
+        needs.pins.extend(found.pins);
     }
-    caches::apply_pins(caches, &pins);
+    caches::apply_needs(caches, &needs);
     Ok(())
 }
 

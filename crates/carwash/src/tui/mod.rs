@@ -392,12 +392,21 @@ impl Runtime<'_> {
                     }
                 });
             }
-            Effect::FindToolchainPins { projects, root } => {
-                // Reads a few small files per project: keep it off the event loop.
-                let tx = self.tx.clone();
+            Effect::FindToolchainNeeds => {
+                // A search of its own: unlike the scan on screen it enters hidden folders
+                // and follows symlinked project folders, since a toolchain nothing was
+                // seen to need gets recommended for removal. Off the event loop.
+                let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
+                let (root, options) = (self.root.clone(), self.options.discover.clone());
                 std::thread::spawn(move || {
-                    let pins = carwash_core::toolchains::pins(&projects, &root);
-                    let _ = tx.send(Msg::ToolchainPins(pins));
+                    let needs = carwash_core::toolchains::needs(
+                        &engine,
+                        &[root],
+                        &options,
+                        &carwash_core::toolchains::local_overrides(),
+                        &Cancel::new(),
+                    );
+                    let _ = tx.send(Msg::ToolchainNeeds(needs));
                 });
             }
             Effect::SaveSizes(sizes) => {

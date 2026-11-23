@@ -227,11 +227,25 @@ carwash caches --projects ~/work                              # which toolchains
 carwash caches clean rustup-toolchains --projects ~/work      # uninstall the ones none needs
 ```
 
-A toolchain is kept when a project under the directory pins it (`rust-toolchain.toml` or
-`rust-toolchain`) or declares it as its `rust-version`; a pin of `1.90` keeps both `1.90` and
-`1.90.0`. `stable`, `nightly` and toolchains with a `rustup override` are always kept, and the
-default toolchain is never removed. The rest are recommended for removal and uninstalled with
-`rustup toolchain uninstall`. The TUI does this for the folder it scanned.
+A toolchain is kept when a project under the directory needs it. That is the toolchain
+rustup would use in the project's folder: a `rustup override`, a `rust-toolchain` file or a
+`rust-toolchain.toml`, looked for from that folder up to the root of the disk, in rustup's
+own order. It is also the project's `rust-version`. A pin of `1.90` keeps both `1.90` and
+`1.90.0`. `stable`, `nightly`, the toolchain `RUSTUP_TOOLCHAIN` names and toolchains with a
+`rustup override` are always kept, and the default toolchain is never removed. The rest are
+recommended for removal, with the directory named in the reason ("no project under
+/Users/you/work needs it"), and uninstalled with `rustup toolchain uninstall`. The TUI does
+this for the folder it scanned.
+
+The search for projects enters hidden folders, and follows a symlink to another folder when
+the link is within three levels of the directory (each target once). It does not look inside
+build output, dependency folders, or the crates cargo and rustup downloaded. Without
+`--projects`, or when the directory holds no Rust project, carwash has nothing to go by: the
+verdict is unknown and no toolchain is recommended for removal.
+
+The advice cannot see a toolchain that is only named on a command line, such as
+`cargo +1.88 test` in a script, a justfile or a CI workflow. Check those before you remove
+what carwash recommends; rustup installs a toolchain again when something asks for it.
 
 ### OS mode
 
