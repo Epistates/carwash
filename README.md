@@ -56,6 +56,11 @@ Sizes are allocated blocks, not apparent sizes, with hard links counted once. "R
 counts data whose every link is inside the artifact, so a pnpm `node_modules` hard-linked into
 the global store shows how much deleting it would actually free.
 
+If another program is still writing into a directory while it is deleted (a build that has
+not quite finished, say), carwash retries for a moment. If that is not enough, it reports
+that directory as failed, says where the remainder is so the next scan can finish it, and
+cleans everything else as planned.
+
 ## Install
 
 ```bash
@@ -158,8 +163,9 @@ most recent scan on the machine.
 
 Without a terminal, `clean` refuses to delete unless given `--yes`. With `--json`, stdout is one
 JSON document: `selected`, `held` (counts by reason), `skipped` (picks it refused, with the
-reason), `removed`, `failed`, `bytes`, `free_before`, `free_after` and, with a goal,
-`goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
+reason), `removed`, `failed`, `bytes`, `free_before`, `free_after`, `free_space_may_rise`
+(true when `free_after` was read right after a large clean on APFS and may not have settled)
+and, with a goal, `goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
 do, 1 when a deletion failed, a pick was skipped or the goal could not be met, and 2 on
 invalid usage or errors.
 

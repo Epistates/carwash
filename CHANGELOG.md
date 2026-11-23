@@ -52,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
   `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.
 
+### Fixed
+- Deleting a directory that another program was still writing into could fail with
+  "Directory not empty (os error 66)". Once the directory has been moved aside, the removal
+  is now retried for a moment; if the writer outlasts that, the failure says what happened,
+  where the remainder is, and that nothing else was affected. The rest of the clean carries
+  on as before.
+
 ## [0.5.0] - 2026-11-21
 
 ### Added
