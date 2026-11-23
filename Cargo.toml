@@ -9,7 +9,6 @@ edition = "2024"
 rust-version = "1.95"
 authors = ["Nicholas Paterno <nick@epistates.com>"]
 license = "MIT"
-homepage = "https://github.com/epistates/carwash"
 repository = "https://github.com/epistates/carwash"
 
 [workspace.dependencies]

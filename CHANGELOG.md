@@ -12,27 +12,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime, size, when it was last used and whether it is booted.
   `carwash caches clean simulators/<UDID>` deletes a device, and `--erase` (`e` in the TUI)
   clears its contents and settings and keeps it. Both go through `xcrun simctl`. A booted
-  simulator is never touched, and none is while `xcodebuild` or `xctest` is running: carwash
-  names what is in the way, and checks again just before each device.
+  simulator is never touched. None is while `xcodebuild` or `xctest` is running, while a
+  project is open in Xcode (its build service, `SWBBuildService`, is running), or when
+  `simctl` cannot be asked what is booted. carwash names what is in the way, and checks
+  again just before each device.
 - `xctest-devices`: the simulator clones Xcode keeps for parallel testing
   (`~/Library/Developer/XCTestDevices`), cleaned with `xcrun simctl --set testing delete all`
-  under the same checks.
-- `carwash caches --json` entries gain `erase`, `apps`, `blocked_by`, `last_used`, `advice`
-  and `detail`. `carwash caches` shows a LAST USED column when a cache records it.
-- Caches in `caches.toml` can list `apps` that must not be running while they are cleaned.
-- Device support advice: `carwash caches` marks each iOS and watchOS device support folder
-  `keep` or `remove` in a new ADVICE column. The newest folder for each device model is kept,
-  and so is whatever a device connected in the last 90 days runs (read from
-  `xcrun devicectl list devices`); older folders of the same model are recommended for
-  removal. In `--json`, `advice` carries the verdict and reason, and `detail` the model, OS
-  version and build.
+  under the same checks and sized by the clones `simctl` lists. Device folders in that set
+  that `simctl` has no device for are shown on a row of their own; carwash does not remove
+  them.
+- Advice: an ADVICE column in `carwash caches`, with a verdict and a reason for the caches
+  carwash can judge. `remove` is recommended for removal, `keep` is still needed, and
+  `unknown, kept` means carwash could not find out, which it treats as keep. In `--json`,
+  `advice` carries the verdict (`remove`, `keep`, `unknown` or `protected`) and the reason.
+- Device support advice: the newest iOS or watchOS device support folder for each device
+  model is kept, and so is whatever a device runs, unless it last connected more than 90
+  days ago (read from `xcrun devicectl list devices`). Older folders of the same model are
+  recommended for removal. Builds are ordered as Apple numbers them, so a release is later
+  than the betas of its version. When the connected devices cannot be read, or a folder
+  names no device model, the verdict is unknown and nothing is recommended.
+- Rust toolchain advice: `carwash caches --projects DIR` (and the Caches tab, for the folder
+  it scanned) keeps the toolchains that a Rust project under DIR needs: the one rustup would
+  use in the project's folder (a directory override, `rust-toolchain` or
+  `rust-toolchain.toml`, looked for up to the root of the disk in rustup's order) and its
+  `rust-version`. Toolchains no project needs are recommended for removal, with DIR named in
+  the reason. `stable`, `nightly`, the toolchain `RUSTUP_TOOLCHAIN` names and toolchains
+  with a directory override are always kept. Without `--projects`, or when DIR holds no
+  Rust project, the verdict is unknown and nothing is recommended. A toolchain that is only
+  named on a command line (`cargo +1.88` in a script or CI file) cannot be seen.
 - `carwash caches clean --recommended` cleans what carwash recommends removing, among the ids
   given or among all caches. In the Caches tab, `a` marks the same set.
-- Rust toolchain advice: `carwash caches --projects DIR` (and the Caches tab, for the folder
-  it scanned) keeps the toolchains a project pins in `rust-toolchain.toml` or `rust-toolchain`
-  or declares as its `rust-version`, and recommends removing the ones no project needs.
-  `stable`, `nightly` and toolchains with a directory override are always kept. In `--json`,
-  `detail` lists the projects that need each toolchain.
+- What an unfinished clean left of a cache (a `.carwash-trash-*` folder beside it) is listed
+  in `carwash caches` and the Caches tab as a leftover with its size, recommended for
+  removal and cleaned together with that cache.
+- `carwash caches --json` entries gain `erase`, `apps`, `blocked_by`, `last_used`, `advice`
+  and `detail` (what the entry is: a simulator, a device support folder, a toolchain, the
+  test clones or a leftover, with its particulars). `carwash caches` shows a LAST USED
+  column when a cache records it.
+- `caches.toml` gains three keys: `apps`, the programs that must not be running while a
+  cache is cleaned; `child_erase`, a command that empties one child and keeps it; and
+  `adapter`, which selects carwash's built-in knowledge of a cache's entries (`simulators`,
+  `test-devices`, `device-support`, `rust-toolchains`).
 
 ### Changed
 - The `simulators` cache now measures what its command removes, the devices whose runtime is
@@ -41,13 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `carwash caches clean` exits with status 1 when a cache it was asked to clean is in use and
   was left alone.
 - The default Rust toolchain is now listed in `carwash caches`, marked as never cleaned,
-  instead of being left out; `stable` and `nightly` are no longer selected by
-  `carwash caches clean rustup-toolchains`. Toolchains are read from `rustup toolchain list`
-  when rustup is installed, and still uninstalled with `rustup toolchain uninstall`.
-- A parent id passed to `carwash caches clean` no longer selects the children carwash keeps:
-  `carwash caches clean xcode-device-support` leaves the newest folder per device model and
-  the ones connected devices run, and says so. Naming a kept child by its own id still cleans
-  it.
+  instead of being left out. Toolchains are read from `rustup toolchain list` when rustup is
+  installed, and still uninstalled with `rustup toolchain uninstall`; rustup is asked again
+  which one is the default right before each uninstall.
+- A parent id passed to `carwash caches clean` no longer selects the children carwash keeps
+  or cannot judge. `carwash caches clean xcode-device-support` leaves the newest folder per
+  device model and the ones devices run, and `carwash caches clean rustup-toolchains` leaves
+  `stable`, `nightly` and, unless `--projects` shows them unused, every other toolchain. The
+  kept ones are listed. Naming a cache by its own id still cleans it, wherever its parent
+  stands among the arguments.
+- `carwash caches clean ID...` looks only at the caches named, so cleaning one cache does
+  not wait on the tools that describe others. `xcrun` is only run when a developer directory
+  is selected (`xcode-select -p`), and a tool that does not answer in time is stopped
+  together with anything it started.
+- When a cache's directory cannot be deleted, `carwash caches clean` says why on stderr and
+  the Caches tab shows it, instead of a bare "failed to clean".
 - After a clean, `carwash clean`, `carwash caches clean`, `carwash os clean` and the TUI say
   how much free space changed ("3.6 GB more") next to the before and after figures. On APFS,
   where free space can keep rising for a while after a large deletion, a reading well below
@@ -56,6 +84,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The minimum supported Rust version is now 1.95, which `sysinfo` 0.40 requires.
 - Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
   `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.
+- The crates no longer declare a `homepage` that repeated `repository`.
+
+### Changed in `carwash-core`
+These affect code that uses the engine crate directly, and make this a breaking release for
+it.
+- `caches::GlobalCache` has new fields (`erase`, `apps`, `last_used`, `advice`, `detail`,
+  `parts`), `caches::CacheSpec` has `child_erase`, `apps` and `adapter`, and
+  `clean::CleanReport` has `settles_late`. All three are now `#[non_exhaustive]`, so later
+  fields will not break callers: build a `GlobalCache` with `GlobalCache::new` and set its
+  fields, a `CleanReport` with `Default`, and a `CacheSpec` by parsing TOML.
+- New in `caches`: `Advice` and `Verdict`, `Detail`, `Mode`, `Step` and `Refusal`, the `Host`
+  trait with `LocalHost`, `discover_on` and `discover_for`, `apply_needs`, and on
+  `GlobalCache` the methods `plan`, `checked`, `refreshed`, `measure`, `delete_directory`,
+  `blocked_by`, `verdict` and `erase_task`. `Verdict`, `Detail`, `Refusal` and `Advice` are
+  `#[non_exhaustive]`.
+- New modules: `simulators` (`simctl` listings), `device_support` (`devicectl` listings and
+  folder advice) and `toolchains` (rustup listings, pins, `Needs` and `needs`). Their
+  structs are `#[non_exhaustive]`.
+- `system::RunningApps::from_names` is public, and `matching` counts every pattern as running
+  when the process list cannot be read.
+- `clean::settles_late` and `model::Size::merge` are new.
+- The `filetime` dependency is gone, and `jiff` is new.
 
 ### Fixed
 - Deleting a directory that another program was still writing into could fail with

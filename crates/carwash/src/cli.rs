@@ -370,7 +370,8 @@ pub struct CachesArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum CachesAction {
-    /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children.
+    /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children,
+    /// except the ones carwash keeps.
     Clean {
         /// Cache ids, e.g. `npm`, `rustup-toolchains/nightly-aarch64-apple-darwin` or
         /// `simulators/<UDID>`.
