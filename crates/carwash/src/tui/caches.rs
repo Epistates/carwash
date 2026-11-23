@@ -20,6 +20,15 @@ const SIZES_FRESH_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// ...or younger than this when the cache's fingerprint shows no change.
 const UNCHANGED_FRESH_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// What the first press of `d` or `e` named, for the second press to confirm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Armed {
+    mode: Mode,
+    /// The caches the first press named. The second press cleans these and nothing else,
+    /// wherever the cursor is by then.
+    ids: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct CachesState {
     /// `None` until discovery finished.
@@ -29,7 +38,7 @@ pub struct CachesState {
     /// Being cleaned or measured.
     pub busy: HashSet<String>,
     /// The clean or erase that the next press of the same key confirms.
-    armed: Option<Mode>,
+    armed: Option<Armed>,
     requested: bool,
     /// The tab has been shown; stale sizes are measured from then on.
     opened: bool,
@@ -275,11 +284,68 @@ impl App {
             Mode::Erase => ("erase", "e"),
             Mode::Clean | Mode::Delete => ("clean", "d"),
         };
+        let cleanable = |cache: &GlobalCache| {
+            protection(cache).is_none() && (mode != Mode::Erase || cache.erase.is_some())
+        };
+        // The second press confirms exactly what the first one named. The list may have
+        // been sorted or listed again in between, so the cursor is not asked again: the
+        // named caches are looked up by id, and if any is gone or has come into use the
+        // confirmation is void.
+        if let Some(armed) = self.caches.armed.take()
+            && armed.mode == mode
+        {
+            let listed = self.caches.caches.as_deref().unwrap_or_default();
+            let confirmed: Option<Vec<GlobalCache>> = armed
+                .ids
+                .iter()
+                .map(|id| {
+                    listed
+                        .iter()
+                        .find(|c| &c.id == id)
+                        .filter(|c| cleanable(c))
+                        .cloned()
+                })
+                .collect();
+            let Some(selected) = confirmed else {
+                self.toast(
+                    format!(
+                        "The caches changed since the first press; press {key} to choose again"
+                    ),
+                    Level::Warn,
+                );
+                return Vec::new();
+            };
+            let bytes: u64 = selected
+                .iter()
+                .filter_map(|c| c.size)
+                .map(|s| s.on_disk)
+                .sum();
+            for cache in &selected {
+                self.caches.marked.remove(&cache.id);
+                self.caches.busy.insert(cache.id.clone());
+            }
+            self.toast(
+                format!(
+                    "{} {}; commands run in the Tasks tab (2)",
+                    if mode == Mode::Erase {
+                        "Erasing"
+                    } else {
+                        "Cleaning"
+                    },
+                    fmt::bytes(bytes)
+                ),
+                Level::Info,
+            );
+            return vec![Effect::CleanCaches {
+                caches: selected,
+                mode,
+            }];
+        }
+
         let mut selected = self.selected_caches();
         if mode == Mode::Erase {
             selected.retain(|c| c.erase.is_some());
             if selected.is_empty() {
-                self.caches.armed = None;
                 self.toast("Only simulators can be erased", Level::Warn);
                 return Vec::new();
             }
@@ -291,7 +357,6 @@ impl App {
             .collect();
         selected.retain(|c| protection(c).is_none());
         if selected.is_empty() {
-            self.caches.armed = None;
             if let Some(message) = in_use.into_iter().next() {
                 self.toast(message, Level::Warn);
             }
@@ -306,43 +371,23 @@ impl App {
             .filter_map(|c| c.size)
             .map(|s| s.on_disk)
             .sum();
-        if self.caches.armed != Some(mode) {
-            self.caches.armed = Some(mode);
-            self.toast(
-                format!(
-                    "Press {key} again to {verb} {} ({}){left}",
-                    if selected.len() == 1 {
-                        selected[0].name.clone()
-                    } else {
-                        format!("{} caches", selected.len())
-                    },
-                    fmt::bytes(bytes)
-                ),
-                Level::Warn,
-            );
-            return Vec::new();
-        }
-        self.caches.armed = None;
-        for cache in &selected {
-            self.caches.marked.remove(&cache.id);
-            self.caches.busy.insert(cache.id.clone());
-        }
         self.toast(
             format!(
-                "{} {}; commands run in the Tasks tab (2)",
-                if mode == Mode::Erase {
-                    "Erasing"
+                "Press {key} again to {verb} {} ({}){left}",
+                if selected.len() == 1 {
+                    selected[0].name.clone()
                 } else {
-                    "Cleaning"
+                    format!("{} caches", selected.len())
                 },
                 fmt::bytes(bytes)
             ),
-            Level::Info,
+            Level::Warn,
         );
-        vec![Effect::CleanCaches {
-            caches: selected,
+        self.caches.armed = Some(Armed {
             mode,
-        }]
+            ids: selected.into_iter().map(|c| c.id).collect(),
+        });
+        Vec::new()
     }
 
     /// A cache was checked just before cleaning: what it takes, or why it is left alone
@@ -1009,6 +1054,104 @@ pub(crate) mod tests {
             toolchain("1.91"),
         ]));
         assert_eq!(verdicts(&app), [Some(Verdict::Keep), Some(Verdict::Remove)]);
+    }
+
+    fn toast_text(app: &App) -> String {
+        format!("{:?}", app.toast)
+    }
+
+    fn cleaned(effects: &[Effect]) -> Vec<&str> {
+        match effects.first() {
+            Some(Effect::CleanCaches { caches, .. }) => {
+                caches.iter().map(|c| c.id.as_str()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_second_press_cleans_what_the_first_named_after_a_resort() {
+        // The tab was just opened: the cursor has not moved and sits on the first row.
+        let mut app = opened(vec![cache("a"), cache("b")]);
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean a"), "{}", toast_text(&app));
+        // A measurement arrives and the list is sorted again: `b` is now the first row.
+        let size = Size {
+            on_disk: 1_000,
+            ..Size::default()
+        };
+        app.update(measured("b", size));
+        assert_eq!(
+            app.caches.caches.as_ref().unwrap()[app.caches.cursor].id,
+            "b"
+        );
+        let effects = press(&mut app, KeyCode::Char('d'));
+        assert_eq!(cleaned(&effects), ["a"], "the cache the toast named");
+    }
+
+    #[test]
+    fn the_second_press_cleans_what_the_first_named_after_a_relisting() {
+        let mut app = opened(vec![cache("a"), cache("b"), cache("c")]);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('r'));
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean b"), "{}", toast_text(&app));
+        // The list is discovered again with a new entry ahead of the others.
+        app.update(Msg::CachesDiscovered(vec![
+            cache("new"),
+            cache("a"),
+            cache("b"),
+            cache("c"),
+        ]));
+        let effects = press(&mut app, KeyCode::Char('d'));
+        assert_eq!(cleaned(&effects), ["b"], "the cache the toast named");
+    }
+
+    #[test]
+    fn a_confirmation_is_void_when_what_it_named_is_gone_or_in_use() {
+        // Gone.
+        let mut app = opened(vec![cache("a"), cache("b")]);
+        press(&mut app, KeyCode::Char('d'));
+        app.update(Msg::CachesDiscovered(vec![cache("b")]));
+        app.caches.busy.clear();
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(app.caches.busy.is_empty());
+        assert!(toast_text(&app).contains("changed"), "{}", toast_text(&app));
+        // The press after that starts over, naming what is selected now.
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean b"), "{}", toast_text(&app));
+        assert_eq!(cleaned(&press(&mut app, KeyCode::Char('d'))), ["b"]);
+
+        // Booted since the first press.
+        for key in ['d', 'e'] {
+            let mut app = opened(vec![simulator("sim"), cache("other")]);
+            press(&mut app, KeyCode::Char(key));
+            app.update(Msg::CachesDiscovered(vec![booted("sim"), cache("other")]));
+            app.caches.busy.clear();
+            assert!(press(&mut app, KeyCode::Char(key)).is_empty(), "{key}");
+            assert!(app.caches.busy.is_empty());
+        }
+    }
+
+    #[test]
+    fn marked_caches_are_confirmed_as_a_set() {
+        let mut app = opened(vec![cache("a"), cache("b"), cache("c")]);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('d'));
+        // Marking another one between the presses does not add it to what was confirmed:
+        // marking is an action of its own, and voids the confirmation.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            press(&mut app, KeyCode::Char('d')).is_empty(),
+            "armed again"
+        );
+        let mut ids = cleaned(&press(&mut app, KeyCode::Char('d')))
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     #[test]
