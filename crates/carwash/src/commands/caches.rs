@@ -206,6 +206,7 @@ pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
                 yes: *yes,
                 dry_run: *dry_run,
                 recommended: *recommended,
+                scanned,
                 mode: match (*erase, *delete) {
                     (true, _) => Mode::Erase,
                     (false, true) => Mode::Delete,
@@ -343,6 +344,8 @@ struct Flags {
     mode: Mode,
     /// Only what carwash recommends removing.
     recommended: bool,
+    /// Folders of projects were given to check Rust toolchains against.
+    scanned: bool,
 }
 
 /// Carries out what a clean decided, and reports the machine's state just before each
@@ -507,13 +510,49 @@ fn clean(
             dim.render_reset()
         )?;
     }
+    if plan.is_empty() && skipped == 0 && !kept.is_empty() {
+        writeln!(out, "Nothing to clean: {}.", all_kept(kept.len()))?;
+    }
     if !kept.is_empty() && !flags.recommended {
-        writeln!(
-            out,
-            "{}Name a kept cache by its own id to clean it anyway.{}",
-            dim.render(),
-            dim.render_reset()
-        )?;
+        // What to do next. An id of one's own cleans a kept cache, unless it is in use.
+        // The example is one carwash knows nothing against, never one it found a need
+        // for.
+        let named = "Name a kept cache by its own id to clean it anyway";
+        let example = kept
+            .iter()
+            .map(|(cache, _)| cache)
+            .find(|cache| cache.verdict() == Some(Verdict::Unknown));
+        let hint = match example {
+            Some(cache) => Some(format!(
+                "{named}, for example: {}",
+                carwash_core::tasks::command_line(["carwash", "caches", "clean", &cache.id])
+            )),
+            None => kept
+                .iter()
+                .any(|(cache, _)| cache.verdict() != Some(Verdict::Protected))
+                .then(|| format!("{named}.")),
+        };
+        if let Some(hint) = hint {
+            writeln!(out, "{}{hint}{}", dim.render(), dim.render_reset())?;
+        }
+        let unchecked = kept.iter().any(|(cache, _)| {
+            cache.verdict() == Some(Verdict::Unknown)
+                && matches!(
+                    cache.detail,
+                    Some(Detail::Toolchain {
+                        standing: false,
+                        ..
+                    })
+                )
+        });
+        if unchecked && !flags.scanned {
+            writeln!(
+                out,
+                "{}Rust toolchains were not checked against any projects. Add `--projects DIR` to have carwash find the ones no project under DIR needs, and clean only those.{}",
+                dim.render(),
+                dim.render_reset()
+            )?;
+        }
     }
     let exit = |incomplete: bool| {
         if incomplete {
@@ -626,6 +665,14 @@ fn clean(
         }
     }
     Ok(exit(failures > 0 || skipped > 0))
+}
+
+/// `the one cache found is kept`, `all 5 are kept`.
+fn all_kept(caches: usize) -> String {
+    match caches {
+        1 => "the one cache found is kept".into(),
+        n => format!("all {n} are kept"),
+    }
 }
 
 fn plural(simulators: usize) -> String {
@@ -791,6 +838,7 @@ mod tests {
             dry_run,
             mode,
             recommended: false,
+            scanned: false,
         };
         let mut err = Vec::new();
         let exit = clean(&context(), fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
@@ -916,6 +964,7 @@ mod tests {
             dry_run: false,
             mode: Mode::Erase,
             recommended: false,
+            scanned: false,
         };
         let error = clean(
             &context(),
@@ -989,6 +1038,7 @@ mod tests {
             dry_run: false,
             mode: Mode::Clean,
             recommended: false,
+            scanned: false,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let ids = ["plain".to_owned(), format!("simulators/{SHUT_DOWN}")];
@@ -1023,6 +1073,7 @@ mod tests {
             dry_run: false,
             mode: Mode::Erase,
             recommended: false,
+            scanned: false,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let ids = [format!("simulators/{SHUT_DOWN}")];
@@ -1248,6 +1299,7 @@ mod tests {
             dry_run: true,
             mode: Mode::Clean,
             recommended: false,
+            scanned: false,
         };
         let mut out = Vec::new();
         let exit = clean(
@@ -1266,6 +1318,121 @@ mod tests {
         assert!(!out.contains("Name a kept cache"), "{out}");
     }
 
+    /// Answers `rustup toolchain list` with the captured listing.
+    struct Rustup;
+
+    const TOOLCHAINS: &str =
+        include_str!("../../../carwash-core/tests/data/rustup-toolchain-list.txt");
+
+    impl Host for Rustup {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            (argv == toolchains::LIST).then(|| TOOLCHAINS.as_bytes().to_vec())
+        }
+    }
+
+    /// The Rust toolchains of the captured listing, in a rustup home of the test's own.
+    fn toolchain_caches(home: &Path) -> Vec<GlobalCache> {
+        for line in TOOLCHAINS.lines() {
+            let name = line.split(' ').next().unwrap();
+            fs::create_dir_all(home.join(".rustup/toolchains").join(name)).unwrap();
+        }
+        fs::write(
+            home.join(".rustup/settings.toml"),
+            "default_toolchain = \"stable-aarch64-apple-darwin\"\n",
+        )
+        .unwrap();
+        let mut specs: Vec<CacheSpec> = caches::builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "rustup-toolchains")
+            .collect();
+        // Not wherever RUSTUP_HOME points on the machine running the tests.
+        specs[0].paths = vec!["~/.rustup/toolchains".into()];
+        caches::discover_on(&specs, home, &Rustup)
+    }
+
+    fn dry_run(caches: &[GlobalCache], id: &str, scanned: bool) -> (ExitCode, String, Fake) {
+        let fake = Fake::new(&[LISTING], &[]);
+        let flags = Flags {
+            yes: true,
+            dry_run: true,
+            mode: Mode::Clean,
+            recommended: false,
+            scanned,
+        };
+        let mut out = Vec::new();
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &mut Vec::new(),
+            caches,
+            &[id.to_owned()],
+            &flags,
+        )
+        .unwrap();
+        (exit, String::from_utf8(out).unwrap(), fake)
+    }
+
+    #[test]
+    fn a_parent_with_nothing_to_clean_says_what_to_do_next() {
+        // Toolchains nobody has checked against projects: all are kept.
+        let home = tempfile::tempdir().unwrap();
+        let toolchains = toolchain_caches(home.path());
+        assert_eq!(toolchains.len(), 18);
+        let (exit, out, fake) = dry_run(&toolchains, "rustup-toolchains", false);
+        assert!(!failed(exit), "{out}");
+        assert!(fake.touched_nothing());
+        assert!(out.contains("Nothing to clean: all 18 are kept."), "{out}");
+        assert!(
+            out.contains(
+                "Name a kept cache by its own id to clean it anyway, for example: carwash caches clean rustup-toolchains/"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "for example: carwash caches clean rustup-toolchains/1.88-aarch64-apple-darwin"
+            ),
+            "the example is one nothing is known against, not the default or nightly: {out}"
+        );
+        assert!(
+            out.contains("Rust toolchains were not checked against any projects. Add `--projects DIR` to have carwash find the ones no project under DIR needs, and clean only those."),
+            "{out}"
+        );
+        assert!(out.ends_with("Dry run: nothing was changed.\n"), "{out}");
+
+        // Checked against a folder with no Rust project: the reason says so, and there
+        // is no call to pass what was already passed.
+        let mut searched = toolchains.clone();
+        let mut nothing = Needs::default();
+        nothing.roots = vec![PathBuf::from("/work/web")];
+        caches::apply_needs(&mut searched, &nothing);
+        let (exit, out, _) = dry_run(&searched, "rustup-toolchains", true);
+        assert!(!failed(exit), "{out}");
+        assert!(
+            out.contains("no Rust project found under /work/web"),
+            "{out}"
+        );
+        assert!(out.contains("Nothing to clean: all 18 are kept."), "{out}");
+        assert!(!out.contains("--projects"), "{out}");
+
+        // Device support with nothing known about the devices: the newest are kept, the
+        // rest unknown, and the example id is quoted as a shell needs it.
+        let home = tempfile::tempdir().unwrap();
+        let support = device_support_caches_on(home.path(), &NoDevicectl);
+        let (exit, out, fake) = dry_run(&support, "xcode-device-support", false);
+        assert!(!failed(exit), "{out}");
+        assert!(fake.touched_nothing());
+        assert!(out.contains("Nothing to clean: all 5 are kept."), "{out}");
+        assert!(
+            out.contains(
+                "for example: carwash caches clean 'xcode-device-support/iPad16,3 26.7 (23H24)'"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("--projects"), "{out}");
+    }
+
     #[test]
     fn cleaning_device_support_says_what_it_kept() {
         let home = tempfile::tempdir().unwrap();
@@ -1277,6 +1444,7 @@ mod tests {
             dry_run: false,
             mode: Mode::Clean,
             recommended: false,
+            scanned: false,
         };
         let exit = clean(
             &context(),
@@ -1305,9 +1473,15 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("Test iPad runs it"), "{out}");
+        // Both are kept for a device that runs them: no command to remove one is offered.
         assert!(
             out.contains("Name a kept cache by its own id to clean it anyway."),
             "{out}"
+        );
+        assert!(!out.contains("for example"), "{out}");
+        assert!(
+            !out.contains("Nothing to clean"),
+            "three were cleaned: {out}"
         );
     }
 }
