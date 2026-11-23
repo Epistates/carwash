@@ -647,6 +647,7 @@ fn toolchain_entries(spec: &CacheSpec, path: &Path, host: &dyn Host) -> Vec<Glob
         let default = rustup_default(path);
         subdirectories(path)
             .into_iter()
+            .filter(|(name, _)| toolchains::is_name(name))
             .map(|(name, _)| Installed {
                 default: default
                     .as_ref()
