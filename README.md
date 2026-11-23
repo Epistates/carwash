@@ -81,7 +81,8 @@ Run `carwash [PATH]`. Five tabs, switched with `1` to `5`:
 4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
    when it is installed, or deletes the directory when that is safe. Simulators are listed one
    by one: `d` deletes the marked devices and `e` (twice) erases them, keeping the devices;
-   booted ones are left alone. Sizes are remembered, so
+   booted ones are left alone. `a` marks what carwash recommends removing, such as device
+   support that newer folders have replaced. Sizes are remembered, so
    the tab opens instantly. A cache is measured again when the top of its tree has changed
    (entries added or removed there), after a week otherwise, or when you press `r`.
 5. **System**: [OS mode](#os-mode), the operating system's caches, logs, trash and temporary
@@ -108,7 +109,7 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
 | `carwash caches` | Global caches and their sizes |
-| `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children. `--erase` clears simulators and keeps them, `--dry-run`, `--yes` |
+| `carwash caches clean [ID...]` | Clean caches; a parent id such as `rustup-toolchains` selects its children, except the ones carwash keeps. `--recommended` takes only what carwash recommends removing, `--erase` clears simulators and keeps them, `--dry-run`, `--yes` |
 | `carwash os` | The operating system's caches, logs, trash and temp files, with what cleaning frees |
 | `carwash os clean [AREA...]` | Clean the default tier, or areas by id or number. `--escalate`, `--dry-run`, `--yes` |
 | `carwash ecosystems` | Recognised ecosystems |
@@ -180,6 +181,26 @@ booted simulator is never erased or deleted, and no simulator is touched while `
 or `xctest` is running. carwash says what is in the way, and checks again just before each
 device, so a simulator that boots after you confirmed is still left alone. Add `--dry-run` to
 see the commands first.
+
+### Device support and recommendations
+
+Xcode copies several gigabytes of symbols from a device for every OS build it connects on,
+and never removes the folders of builds the device has moved past. `carwash caches` reads
+`xcrun devicectl list devices` and gives each folder a verdict in the ADVICE column:
+
+- **keep**: a device connected in the last 90 days runs that build, or it is the newest
+  folder for its device model. The only folder of a model is always kept.
+- **remove**: a newer folder for the same model has replaced it.
+
+```bash
+carwash caches clean --recommended --dry-run    # what carwash recommends removing, anywhere
+carwash caches clean xcode-device-support       # device support, except what is kept
+carwash caches clean "xcode-device-support/iPad16,3 27.3 (24C5037i)"   # one folder, kept or not
+```
+
+A parent id such as `xcode-device-support` leaves out the children carwash keeps and lists
+them; naming a kept child by its own id cleans it anyway. In the TUI, `a` marks everything
+recommended for removal.
 
 ### OS mode
 

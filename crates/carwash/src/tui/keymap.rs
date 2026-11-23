@@ -619,6 +619,14 @@ pub const CACHES: &[Binding] = &[
     )
     .hint("mark"),
     bind(
+        &[(Char('a'), NONE)],
+        "a",
+        A::MarkAll,
+        S::Select,
+        "mark everything recommended for removal",
+    )
+    .hint("mark advised"),
+    bind(
         &[(Char('A'), NONE)],
         "A",
         A::Unmark,

@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `carwash caches --json` entries gain `erase`, `apps`, `blocked_by`, `last_used`, `advice`
   and `detail`. `carwash caches` shows a LAST USED column when a cache records it.
 - Caches in `caches.toml` can list `apps` that must not be running while they are cleaned.
+- Device support advice: `carwash caches` marks each iOS and watchOS device support folder
+  `keep` or `remove` in a new ADVICE column. The newest folder for each device model is kept,
+  and so is whatever a device connected in the last 90 days runs (read from
+  `xcrun devicectl list devices`); older folders of the same model are recommended for
+  removal. In `--json`, `advice` carries the verdict and reason, and `detail` the model, OS
+  version and build.
+- `carwash caches clean --recommended` cleans what carwash recommends removing, among the ids
+  given or among all caches. In the Caches tab, `a` marks the same set.
 
 ### Changed
 - The `simulators` cache now measures what its command removes, the devices whose runtime is
@@ -27,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own row. `carwash caches clean simulators` still runs `xcrun simctl delete unavailable`.
 - `carwash caches clean` exits with status 1 when a cache it was asked to clean is in use and
   was left alone.
+- A parent id passed to `carwash caches clean` no longer selects the children carwash keeps:
+  `carwash caches clean xcode-device-support` leaves the newest folder per device model and
+  the ones connected devices run, and says so. Naming a kept child by its own id still cleans
+  it.
 - The minimum supported Rust version is now 1.95, which `sysinfo` 0.40 requires.
 - Updated dependencies to their latest releases, including `nodejs-semver` 7, `sysinfo` 0.40,
   `trash` 5.4, `toml` 1.2, `ureq` 3.5 and `dashmap` 6.2.

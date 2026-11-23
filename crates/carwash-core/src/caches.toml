@@ -19,7 +19,9 @@
 #                       names, globs)
 #   adapter             optional built-in knowledge of the entries: `simulators` lists each
 #                       device `simctl` reports and never touches a booted one; `test-devices`
-#                       leaves Xcode's test clones alone while one is booted
+#                       leaves Xcode's test clones alone while one is booted;
+#                       `device-support` keeps the folders that paired devices still use
+#                       and the newest for each model, and recommends removing the rest
 #   note                shown next to the entry
 
 schema = 1
@@ -208,17 +210,20 @@ id = "xcode-device-support"
 name = "iOS device support"
 ecosystem = "xcode"
 paths = ["macos:~/Library/Developer/Xcode/iOS DeviceSupport"]
+adapter = "device-support"
 children = true
 delete = true
-note = "Copied again when a device running that OS version is connected."
+note = "Copied again when a device running that OS version is connected. The newest for each device model stays, and so does what a device connected in the last 90 days runs."
 
 [[cache]]
 id = "xcode-watch-device-support"
 name = "watchOS device support"
 ecosystem = "xcode"
 paths = ["macos:~/Library/Developer/Xcode/watchOS DeviceSupport"]
+adapter = "device-support"
 children = true
 delete = true
+note = "Copied again when a watch running that OS version is connected. The newest for each watch model stays, and so does what a watch connected in the last 90 days runs."
 
 [[cache]]
 id = "simulators"

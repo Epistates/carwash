@@ -7,7 +7,7 @@ use crate::table::{Align, Cell, Table};
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context as _, Result, bail};
 use carwash_core::cache::Fingerprint;
-use carwash_core::caches::{self, GlobalCache, Host, LocalHost, Mode, Refusal, Step};
+use carwash_core::caches::{self, GlobalCache, Host, LocalHost, Mode, Refusal, Step, Verdict};
 use carwash_core::clean::{CleanItem, CleanOptions, DeleteMode};
 use carwash_core::history::{self, Record};
 use carwash_core::paths::Dirs;
@@ -113,6 +113,21 @@ fn action(cache: &GlobalCache, running: &RunningApps) -> (String, Style) {
     }
 }
 
+/// What carwash would do with the cache, for the ADVICE column.
+fn advice(cache: &GlobalCache) -> Cell {
+    match (&cache.advice, cache.verdict()) {
+        (Some(advice), Some(Verdict::Remove)) => Cell::styled(
+            format!("remove: {}", advice.reason),
+            AnsiColor::Green.on_default(),
+        ),
+        (Some(advice), Some(Verdict::Keep)) => {
+            Cell::styled(format!("keep: {}", advice.reason), Style::new().dimmed())
+        }
+        // What is in use is said in CLEAN WITH.
+        _ => Cell::new(""),
+    }
+}
+
 /// `3d ago`, or `-` when nothing records it.
 fn last_used(cache: &GlobalCache, now: SystemTime) -> String {
     match cache
@@ -135,10 +150,12 @@ pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
             dry_run,
             delete,
             erase,
+            recommended,
         }) => {
             let flags = Flags {
                 yes: *yes,
                 dry_run: *dry_run,
+                recommended: *recommended,
                 mode: match (*erase, *delete) {
                     (true, _) => Mode::Erase,
                     (false, true) => Mode::Delete,
@@ -191,6 +208,13 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
         columns.push(("LAST USED", Align::Right));
     }
     columns.push(("CLEAN WITH", Align::Left));
+    // What carwash would remove or keep, where it can tell.
+    let advised = caches
+        .iter()
+        .any(|c| matches!(c.verdict(), Some(Verdict::Remove | Verdict::Keep)));
+    if advised {
+        columns.push(("ADVICE", Align::Left));
+    }
     let mut table = Table::new(&columns);
     let now = SystemTime::now();
     let mut total = 0;
@@ -207,6 +231,9 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
             cells.push(Cell::styled(last_used(cache, now), Style::new().dimmed()));
         }
         cells.push(Cell::styled(action, style));
+        if advised {
+            cells.push(advice(cache));
+        }
         table.push(cells);
     }
     table.write(&mut out)?;
@@ -219,6 +246,24 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
         bold.render_reset(),
         caches.len()
     )?;
+    let recommended: Vec<&GlobalCache> = caches
+        .iter()
+        .filter(|c| c.verdict() == Some(Verdict::Remove))
+        .collect();
+    if !recommended.is_empty() {
+        writeln!(
+            out,
+            "carwash recommends removing {} of them ({}): `carwash caches clean --recommended`.",
+            recommended.len(),
+            fmt::bytes(
+                recommended
+                    .iter()
+                    .filter_map(|c| c.size)
+                    .map(|s| s.on_disk)
+                    .sum()
+            )
+        )?;
+    }
     if caches.iter().any(|c| c.erase.is_some()) {
         writeln!(
             out,
@@ -232,6 +277,8 @@ struct Flags {
     yes: bool,
     dry_run: bool,
     mode: Mode,
+    /// Only what carwash recommends removing.
+    recommended: bool,
 }
 
 /// Carries out what a clean decided, and reports the machine's state just before each
@@ -290,30 +337,64 @@ impl Cleaner for Machine<'_> {
     }
 }
 
-/// The caches `ids` name: the cache with that id, or else every child of it.
-fn select(caches: &[GlobalCache], ids: &[String]) -> Result<Vec<GlobalCache>> {
-    let mut selected: Vec<GlobalCache> = Vec::new();
-    for id in ids {
-        let exact: Vec<&GlobalCache> = caches.iter().filter(|c| &c.id == id).collect();
-        let matching = if exact.is_empty() {
-            let prefix = format!("{id}/");
-            caches
-                .iter()
-                .filter(|c| c.id.starts_with(&prefix))
-                .collect()
-        } else {
-            exact
-        };
-        if matching.is_empty() {
-            bail!("no cache `{id}` on this machine (see `carwash caches`)");
+/// What a clean was asked for.
+#[derive(Default)]
+struct Selection {
+    clean: Vec<GlobalCache>,
+    /// Caches a parent id covers that are left out, each with the reason.
+    kept: Vec<(GlobalCache, String)>,
+}
+
+/// The caches `ids` name. An id is the cache with that id, or else every child of it;
+/// children carwash would keep (still needed, or in use) are left out unless named
+/// themselves. `recommended` narrows the result to what carwash recommends removing, among
+/// all caches when no id is given.
+fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<Selection> {
+    let mut selection = Selection::default();
+    let mut take = |cache: &GlobalCache, named: bool| {
+        let known = |list: &[GlobalCache]| list.iter().any(|c| c.id == cache.id);
+        if known(&selection.clean) || selection.kept.iter().any(|(c, _)| c.id == cache.id) {
+            return;
         }
-        for cache in matching {
-            if !selected.iter().any(|c| c.id == cache.id) {
-                selected.push(cache.clone());
+        let reason = match (&cache.advice, cache.verdict()) {
+            (_, Some(Verdict::Remove)) => None,
+            (_, None) if !recommended => None,
+            // Naming a cache is an explicit choice; what is in use is refused later, by name.
+            _ if named && !recommended => None,
+            (Some(advice), _) => Some(advice.reason.clone()),
+            (None, _) => Some("not recommended for removal".to_owned()),
+        };
+        match reason {
+            None => selection.clean.push(cache.clone()),
+            Some(reason) => selection.kept.push((cache.clone(), reason)),
+        }
+    };
+    if ids.is_empty() {
+        for cache in caches {
+            if cache.verdict() == Some(Verdict::Remove) {
+                take(cache, false);
             }
         }
+        return Ok(selection);
     }
-    Ok(selected)
+    for id in ids {
+        if let Some(exact) = caches.iter().find(|c| &c.id == id) {
+            take(exact, true);
+            continue;
+        }
+        let prefix = format!("{id}/");
+        let children: Vec<&GlobalCache> = caches
+            .iter()
+            .filter(|c| c.id.starts_with(&prefix))
+            .collect();
+        if children.is_empty() {
+            bail!("no cache `{id}` on this machine (see `carwash caches`)");
+        }
+        for child in children {
+            take(child, false);
+        }
+    }
+    Ok(selection)
 }
 
 fn clean(
@@ -324,7 +405,10 @@ fn clean(
     ids: &[String],
     flags: &Flags,
 ) -> Result<ExitCode> {
-    let mut selected = select(caches, ids)?;
+    let Selection {
+        clean: mut selected,
+        kept,
+    } = select(caches, ids, flags.recommended)?;
     measure(ctx, &mut selected, true);
 
     let running = cleaner.running();
@@ -354,6 +438,24 @@ fn clean(
             Ok(step) => plan.push((cache, step)),
             Err(_) => skipped += 1,
         }
+    }
+    for (cache, reason) in &kept {
+        writeln!(
+            out,
+            "{:>9}  {}  {}{reason}{}",
+            "kept",
+            cache.name,
+            dim.render(),
+            dim.render_reset()
+        )?;
+    }
+    if !kept.is_empty() && !flags.recommended {
+        writeln!(
+            out,
+            "{}Name a kept cache by its own id to clean it anyway.{}",
+            dim.render(),
+            dim.render_reset()
+        )?;
     }
     let exit = |incomplete: bool| {
         if incomplete {
@@ -598,6 +700,7 @@ mod tests {
             yes: true,
             dry_run,
             mode,
+            recommended: false,
         };
         let exit = clean(&context(), fake, &mut out, &caches, &ids, &flags).unwrap();
         (exit, String::from_utf8(out).unwrap())
@@ -719,6 +822,7 @@ mod tests {
             yes: true,
             dry_run: false,
             mode: Mode::Erase,
+            recommended: false,
         };
         let error = clean(
             &context(),
@@ -749,10 +853,146 @@ mod tests {
         let fake = Fake::new(&[LISTING], &[]);
         let home = tempfile::tempdir().unwrap();
         let caches = caches(home.path(), &fake);
-        let set = select(&caches, &["simulators".to_owned()]).unwrap();
-        assert_eq!(set.len(), 1);
-        assert_eq!(set[0].id, "simulators");
-        let twice = select(&caches, &["plain".to_owned(), "plain".to_owned()]).unwrap();
-        assert_eq!(twice.len(), 1);
+        let set = select(&caches, &["simulators".to_owned()], false).unwrap();
+        assert_eq!(set.clean.len(), 1);
+        assert_eq!(set.clean[0].id, "simulators");
+        let twice = select(&caches, &["plain".to_owned(), "plain".to_owned()], false).unwrap();
+        assert_eq!(twice.clean.len(), 1);
+    }
+
+    /// `devicectl list devices` as captured: an iPad on 27.3 and an iPhone on 27.2.1, both
+    /// connected the day before `device_support_caches` is built.
+    const DEVICES_LISTING: &str =
+        include_str!("../../../carwash-core/tests/data/devicectl-list-devices.json");
+    const SUPPORT: &str = "Library/Developer/Xcode/iOS DeviceSupport";
+    const FOLDERS: [&str; 5] = [
+        "iPad16,3 26.7 (23H24)",
+        "iPad16,3 27.2 (24B119)",
+        "iPad16,3 27.3 (24C5037i)",
+        "iPhone14,3 27.0.1 (24A446)",
+        "iPhone14,3 27.2.1 (24B156)",
+    ];
+
+    /// Answers `devicectl` with the captured listing.
+    struct Devicectl;
+
+    impl Host for Devicectl {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            (argv == carwash_core::device_support::LIST)
+                .then(|| DEVICES_LISTING.as_bytes().to_vec())
+        }
+
+        /// The day after the listing was captured.
+        fn now(&self) -> SystemTime {
+            std::time::UNIX_EPOCH + Duration::from_secs(1_795_394_400 + 86_400)
+        }
+    }
+
+    fn device_support_caches(home: &Path) -> Vec<GlobalCache> {
+        for folder in FOLDERS {
+            fs::create_dir_all(home.join(SUPPORT).join(folder)).unwrap();
+        }
+        let mut specs: Vec<CacheSpec> = caches::builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "xcode-device-support")
+            .collect();
+        for path in &mut specs[0].paths {
+            *path = path.trim_start_matches("macos:").to_owned();
+        }
+        caches::discover_on(&specs, home, &Devicectl)
+    }
+
+    fn ids(caches: &[GlobalCache]) -> Vec<&str> {
+        caches
+            .iter()
+            .map(|c| c.id.rsplit('/').next().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_parent_id_leaves_out_the_device_support_still_in_use() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let all = select(&caches, &["xcode-device-support".to_owned()], false).unwrap();
+        assert_eq!(
+            ids(&all.clean),
+            [
+                "iPad16,3 26.7 (23H24)",
+                "iPad16,3 27.2 (24B119)",
+                "iPhone14,3 27.0.1 (24A446)"
+            ]
+        );
+        let kept: Vec<(&str, &str)> = all
+            .kept
+            .iter()
+            .map(|(c, reason)| (c.id.rsplit('/').next().unwrap(), reason.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("iPad16,3 27.3 (24C5037i)", "Test iPad runs it"),
+                ("iPhone14,3 27.2.1 (24B156)", "Test iPhone runs it"),
+            ]
+        );
+        // --recommended with no id finds the same three.
+        let recommended = select(&caches, &[], true).unwrap();
+        assert_eq!(ids(&recommended.clean), ids(&all.clean));
+        assert!(recommended.kept.is_empty());
+    }
+
+    #[test]
+    fn naming_a_kept_folder_cleans_it_unless_only_recommendations_were_asked_for() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let in_use = "xcode-device-support/iPad16,3 27.3 (24C5037i)".to_owned();
+        let named = select(&caches, std::slice::from_ref(&in_use), false).unwrap();
+        assert_eq!(ids(&named.clean), ["iPad16,3 27.3 (24C5037i)"]);
+        let narrowed = select(&caches, &[in_use], true).unwrap();
+        assert!(narrowed.clean.is_empty());
+        assert_eq!(narrowed.kept[0].1, "Test iPad runs it");
+    }
+
+    #[test]
+    fn cleaning_device_support_says_what_it_kept() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let fake = Fake::new(&[LISTING], &[]);
+        let mut out = Vec::new();
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Clean,
+            recommended: false,
+        };
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &caches,
+            &["xcode-device-support".to_owned()],
+            &flags,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(!failed(exit), "{out}");
+        let mut deleted = fake.deleted.lock().unwrap().clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            [
+                "xcode-device-support/iPad16,3 26.7 (23H24)",
+                "xcode-device-support/iPad16,3 27.2 (24B119)",
+                "xcode-device-support/iPhone14,3 27.0.1 (24A446)",
+            ]
+        );
+        assert!(
+            out.contains("kept  iOS device support: iPad16,3 27.3 (24C5037i)"),
+            "{out}"
+        );
+        assert!(out.contains("Test iPad runs it"), "{out}");
+        assert!(
+            out.contains("Name a kept cache by its own id to clean it anyway."),
+            "{out}"
+        );
     }
 }

@@ -404,6 +404,30 @@ impl App {
                 }
             }
             Action::Unmark => state.marked.clear(),
+            Action::MarkAll => {
+                let recommended: Vec<&GlobalCache> = state
+                    .caches
+                    .iter()
+                    .flatten()
+                    .filter(|c| c.verdict() == Some(Verdict::Remove))
+                    .collect();
+                let count = recommended.len();
+                let bytes: u64 = recommended
+                    .iter()
+                    .filter_map(|c| c.size)
+                    .map(|s| s.on_disk)
+                    .sum();
+                let ids: Vec<String> = recommended.iter().map(|c| c.id.clone()).collect();
+                state.marked.extend(ids);
+                let message = match count {
+                    0 => "Nothing here is recommended for removal".to_owned(),
+                    _ => format!(
+                        "Marked {count} recommended for removal · {}",
+                        fmt::bytes(bytes)
+                    ),
+                };
+                self.toast(message, Level::Info);
+            }
             Action::Rescan => {
                 state.remeasure_all = true;
                 return self.discover_caches();
@@ -451,9 +475,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let [table_area, detail] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).areas(area);
-    // Only some caches record when they were last used.
+        Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).areas(area);
+    // Only some caches record when they were last used, or come with advice.
     let dated = caches.iter().any(|c| c.last_used.is_some());
+    let advised = caches.iter().any(|c| c.advice.is_some());
     let rows: Vec<Row> = caches
         .iter()
         .map(|cache| {
@@ -504,6 +529,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 ));
             }
             cells.push(Cell::from(action));
+            if advised {
+                cells.push(Cell::from(match cache.verdict() {
+                    Some(Verdict::Remove) => Span::styled("remove", t.fg(t.success)),
+                    Some(Verdict::Keep) => Span::styled("keep", t.muted()),
+                    Some(Verdict::Protected) => Span::styled("in use", t.fg(t.warning)),
+                    None => Span::default(),
+                }));
+            }
             Row::new(cells)
         })
         .collect();
@@ -534,6 +567,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     headers.push("CLEAN WITH");
     widths.push(Constraint::Fill(1));
+    if advised {
+        headers.push("ADVICE");
+        widths.push(Constraint::Length(6));
+    }
     let header = Row::new(
         headers
             .into_iter()
@@ -568,6 +605,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(cache.path.display().to_string(), t.subtle()),
             Span::styled(format!("  {measured}{used}"), t.muted()),
         ])];
+        if let Some(advice) = &cache.advice {
+            let (label, style) = match advice.verdict {
+                Verdict::Remove => ("Recommended for removal", t.fg(t.success)),
+                Verdict::Keep => ("Kept unless marked", t.subtle()),
+                Verdict::Protected => ("In use", t.fg(t.warning)),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{label}: {}", advice.reason),
+                style,
+            )));
+        }
         if let Some(note) = &cache.note {
             lines.push(Line::from(Span::styled(note.clone(), t.muted())));
         }
@@ -907,6 +955,35 @@ pub(crate) mod tests {
             app.caches_clean_preview().unwrap(),
             "up: left alone (booted; shut it down first)"
         );
+    }
+
+    #[test]
+    fn a_marks_what_is_recommended_for_removal() {
+        let advised = |id: &str, verdict| GlobalCache {
+            advice: Some(carwash_core::caches::Advice {
+                verdict,
+                reason: "test".into(),
+            }),
+            ..cache(id)
+        };
+        let mut app = opened(vec![
+            advised("old", Verdict::Remove),
+            advised("current", Verdict::Keep),
+            cache("plain"),
+            booted("up"),
+        ]);
+        press(&mut app, KeyCode::Char('a'));
+        let marked: Vec<&str> = app.caches.marked.iter().map(String::as_str).collect();
+        assert_eq!(marked, ["old"]);
+        // A kept cache is still cleaned when marked by hand.
+        press(&mut app, KeyCode::Char('A'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('d'));
+        let effects = press(&mut app, KeyCode::Char('d'));
+        let Some(Effect::CleanCaches { caches, .. }) = effects.first() else {
+            panic!("clean expected, got {effects:?}");
+        };
+        assert_eq!(caches[0].id, "current");
     }
 
     #[test]

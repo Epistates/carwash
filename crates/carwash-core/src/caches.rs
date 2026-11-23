@@ -3,10 +3,12 @@
 //! Entries are data (`caches.toml`), resolved against the environment and platform. Each says
 //! whether deleting the directory is safe and which command the tool offers to prune it.
 //! Where a tool can describe its own entries (`simctl` for simulators), an adapter adds what
-//! it reports: names, when an entry was last used, and whether it is in use.
+//! it reports: names, when an entry was last used, whether it is in use, and whether
+//! anything still needs it.
 
 use crate::Cancel;
 use crate::cache::Fingerprint;
+use crate::device_support::{self, Support};
 use crate::model::{Size, unix_secs_opt};
 use crate::scan::Engine;
 use crate::simulators::{self, Simulator};
@@ -45,7 +47,8 @@ pub struct CacheSpec {
     /// Programs that must not be running while the cache is cleaned (process names, globs).
     #[serde(default)]
     pub apps: Vec<String>,
-    /// Built-in knowledge about the cache's entries: `simulators` or `test-devices`.
+    /// Built-in knowledge about the cache's entries: `simulators`, `test-devices` or
+    /// `device-support`.
     #[serde(default)]
     pub adapter: Option<String>,
     #[serde(default)]
@@ -59,6 +62,9 @@ enum Adapter {
     Simulators,
     /// The clones Xcode keeps for parallel testing: left alone while one is booted.
     TestDevices,
+    /// Children are device support folders, advised on by what `devicectl` says the
+    /// paired devices run.
+    DeviceSupport,
 }
 
 impl Adapter {
@@ -66,6 +72,7 @@ impl Adapter {
         match name {
             "simulators" => Some(Self::Simulators),
             "test-devices" => Some(Self::TestDevices),
+            "device-support" => Some(Self::DeviceSupport),
             _ => None,
         }
     }
@@ -114,6 +121,10 @@ pub fn specs_with_overrides(user: &str) -> Result<Vec<CacheSpec>, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
+    /// Recommended for removal: nothing needs it any more.
+    Remove,
+    /// Still needed. Left out when its parent is cleaned; cleaned only when named itself.
+    Keep,
     /// Never cleaned, even when named: it is in use.
     Protected,
 }
@@ -126,7 +137,21 @@ pub struct Advice {
 }
 
 impl Advice {
-    fn protected(reason: impl Into<String>) -> Self {
+    pub(crate) fn remove(reason: impl Into<String>) -> Self {
+        Self {
+            verdict: Verdict::Remove,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn keep(reason: impl Into<String>) -> Self {
+        Self {
+            verdict: Verdict::Keep,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn protected(reason: impl Into<String>) -> Self {
         Self {
             verdict: Verdict::Protected,
             reason: reason.into(),
@@ -146,6 +171,13 @@ pub enum Detail {
         runtime: String,
         /// `simctl`'s state in lower case: `shutdown`, `booted`...
         state: String,
+    },
+    /// Symbols Xcode copied from a device running one OS build.
+    DeviceSupport {
+        /// The device model, e.g. `iPad16,3`; folders from old versions of Xcode have none.
+        model: Option<String>,
+        os_version: String,
+        build: String,
     },
     /// The simulator clones Xcode keeps for parallel testing.
     TestDevices {
@@ -178,7 +210,8 @@ pub struct GlobalCache {
     /// When the entry was last used, where that is known.
     #[serde(with = "unix_secs_opt")]
     pub last_used: Option<SystemTime>,
-    /// Set when carwash will not clean the entry.
+    /// What carwash makes of the entry, where it can tell: recommended for removal, still
+    /// needed, or in use.
     pub advice: Option<Advice>,
     pub detail: Option<Detail>,
     /// The directories whose sizes make up this entry's, when that is not all of `path`.
@@ -267,6 +300,11 @@ impl GlobalCache {
         self.task("erase", self.erase.as_ref())
     }
 
+    /// The verdict of the entry's [`Advice`], if it has one.
+    pub fn verdict(&self) -> Option<Verdict> {
+        self.advice.as_ref().map(|advice| advice.verdict)
+    }
+
     /// The running programs among [`GlobalCache::apps`].
     pub fn blocked_by(&self, running: &RunningApps) -> Vec<String> {
         running.matching(&self.apps)
@@ -324,7 +362,8 @@ impl GlobalCache {
             Some(Detail::TestDevices { .. }) => {
                 (cache.detail, cache.advice) = test_devices(host);
             }
-            None => {}
+            // Advice on what is still needed does not stand in the way of a clean.
+            Some(Detail::DeviceSupport { .. }) | None => {}
         }
         cache
     }
@@ -363,6 +402,11 @@ pub trait Host: Sync {
     /// The standard output of a read-only command; `None` when its program is missing, it
     /// fails, or it does not finish in time.
     fn output(&self, argv: &[&str]) -> Option<Vec<u8>>;
+
+    /// The current time, against which "connected recently" is judged.
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 /// The machine carwash runs on.
@@ -524,6 +568,9 @@ fn discover_with(
         };
         match spec.adapter.as_deref().and_then(Adapter::parse) {
             Some(Adapter::Simulators) => out.extend(simulator_entries(spec, path, host)),
+            Some(Adapter::DeviceSupport) => {
+                out.extend(device_support_entries(spec, &path, host));
+            }
             Some(Adapter::TestDevices) => {
                 let (detail, advice) = test_devices(host);
                 out.push(GlobalCache {
@@ -537,28 +584,61 @@ fn discover_with(
                     Some("rustup-default") => rustup_default(&path),
                     _ => None,
                 };
-                let Ok(entries) = std::fs::read_dir(&path) else {
-                    continue;
-                };
-                let mut children: Vec<(String, PathBuf)> = entries
-                    .filter_map(Result::ok)
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                    .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
-                    .filter(|(name, _)| !name.starts_with('.'))
-                    .filter(|(name, _)| {
-                        keep.as_ref()
-                            .is_none_or(|k| name != k && !name.starts_with(&format!("{k}-")))
-                    })
-                    .collect();
-                children.sort();
-                for (name, child_path) in children {
-                    out.push(child(spec, &name, child_path));
+                for (name, child_path) in subdirectories(&path) {
+                    if keep
+                        .as_ref()
+                        .is_none_or(|k| &name != k && !name.starts_with(&format!("{k}-")))
+                    {
+                        out.push(child(spec, &name, child_path));
+                    }
                 }
             }
             None => out.push(whole(spec, path)),
         }
     }
     out
+}
+
+/// The directories directly inside `path`, by name. Hidden ones are left out.
+fn subdirectories(path: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
+        .filter(|(name, _)| !name.starts_with('.'))
+        .collect();
+    found.sort();
+    found
+}
+
+/// One entry per device support folder, with what the paired devices make of it: kept
+/// when a device runs that build or it is the newest for its model, recommended for
+/// removal when a newer folder for the same model has replaced it.
+fn device_support_entries(spec: &CacheSpec, path: &Path, host: &dyn Host) -> Vec<GlobalCache> {
+    let folders = subdirectories(path);
+    // Without devicectl, only the newest folder of each model is known to matter.
+    let devices = host
+        .output(device_support::LIST)
+        .and_then(|json| device_support::parse(&json).ok())
+        .unwrap_or_default();
+    let names: Vec<&str> = folders.iter().map(|(name, _)| name.as_str()).collect();
+    let advice = device_support::advise(&names, &devices, host.now());
+    folders
+        .iter()
+        .zip(advice)
+        .map(|((name, folder), advice)| GlobalCache {
+            advice,
+            detail: Support::parse(name).map(|support| Detail::DeviceSupport {
+                os_version: support.version_text(),
+                model: support.model,
+                build: support.build,
+            }),
+            ..child(spec, name, folder.clone())
+        })
+        .collect()
 }
 
 /// One entry per simulator `simctl` lists in the device set at `devices`, and one for the
@@ -673,6 +753,11 @@ pub(crate) mod tests {
                 .iter()
                 .find(|(command, _)| *command == argv)
                 .map(|(_, output)| output.clone().into_bytes())
+        }
+
+        /// The day after the listings were captured.
+        fn now(&self) -> SystemTime {
+            device_support::tests::now()
         }
     }
 
@@ -1021,6 +1106,92 @@ pub(crate) mod tests {
         );
         let later = clones.refreshed(&simctl(LISTING, TESTING_LISTING));
         assert!(later.advice.is_none(), "asked again before cleaning");
+    }
+
+    const SUPPORT: &str = "Library/Developer/Xcode/iOS DeviceSupport";
+
+    fn device_support_caches(host: &Tools) -> (tempfile::TempDir, Vec<GlobalCache>) {
+        let home = tempfile::tempdir().unwrap();
+        for folder in device_support::tests::FOLDERS {
+            fs::create_dir_all(home.path().join(SUPPORT).join(folder)).unwrap();
+        }
+        // A half-removed folder from an interrupted clean is not a device support version.
+        fs::create_dir_all(home.path().join(SUPPORT).join(".carwash-trash-1-0-old")).unwrap();
+        let specs: Vec<CacheSpec> = builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "xcode-device-support")
+            .map(|mut spec| {
+                for path in &mut spec.paths {
+                    *path = path.trim_start_matches("macos:").to_owned();
+                }
+                spec
+            })
+            .collect();
+        let caches = discover_with(&specs, home.path(), &env(&[]), host);
+        (home, caches)
+    }
+
+    fn verdicts(caches: &[GlobalCache]) -> Vec<(&str, Option<Verdict>)> {
+        caches
+            .iter()
+            .map(|c| (c.id.rsplit('/').next().unwrap(), c.verdict()))
+            .collect()
+    }
+
+    #[test]
+    fn device_support_is_kept_for_connected_devices_and_recommended_when_superseded() {
+        let devicectl = Tools(vec![(
+            device_support::LIST,
+            device_support::tests::LISTING.to_owned(),
+        )]);
+        let (_home, caches) = device_support_caches(&devicectl);
+        assert_eq!(
+            verdicts(&caches),
+            [
+                ("iPad16,3 26.7 (23H24)", Some(Verdict::Remove)),
+                ("iPad16,3 27.2 (24B119)", Some(Verdict::Remove)),
+                ("iPad16,3 27.3 (24C5037i)", Some(Verdict::Keep)),
+                ("iPhone14,3 27.0.1 (24A446)", Some(Verdict::Remove)),
+                ("iPhone14,3 27.2.1 (24B156)", Some(Verdict::Keep)),
+            ]
+        );
+        let newest = find(&caches, "xcode-device-support/iPad16,3 27.3 (24C5037i)");
+        assert_eq!(newest.advice.as_ref().unwrap().reason, "Test iPad runs it");
+        assert_eq!(
+            newest.detail,
+            Some(Detail::DeviceSupport {
+                model: Some("iPad16,3".into()),
+                os_version: "27.3".into(),
+                build: "24C5037i".into(),
+            })
+        );
+        assert!(newest.deletable);
+        // Advice never stands in the way of an explicit clean; only use does.
+        for cache in &caches {
+            assert_eq!(cache.plan(Mode::Clean, &idle()), Ok(Step::DeleteDirectory));
+        }
+    }
+
+    #[test]
+    fn without_devicectl_the_newest_device_support_per_model_is_still_kept() {
+        let (_home, caches) = device_support_caches(&Tools::none());
+        let kept: Vec<&str> = verdicts(&caches)
+            .into_iter()
+            .filter(|(_, verdict)| *verdict == Some(Verdict::Keep))
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            kept,
+            ["iPad16,3 27.3 (24C5037i)", "iPhone14,3 27.2.1 (24B156)"]
+        );
+        assert_eq!(
+            find(&caches, "xcode-device-support/iPad16,3 27.3 (24C5037i)")
+                .advice
+                .as_ref()
+                .unwrap()
+                .reason,
+            "newest for iPad16,3"
+        );
     }
 
     fn cache(extra: &str) -> GlobalCache {

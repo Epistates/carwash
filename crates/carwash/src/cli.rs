@@ -365,7 +365,7 @@ pub enum CachesAction {
     Clean {
         /// Cache ids, e.g. `npm`, `rustup-toolchains/nightly-aarch64-apple-darwin` or
         /// `simulators/<UDID>`.
-        #[arg(required = true, value_name = "ID")]
+        #[arg(required_unless_present = "recommended", value_name = "ID")]
         ids: Vec<String>,
 
         /// Do not ask for confirmation.
@@ -384,6 +384,11 @@ pub enum CachesAction {
         /// deleting them.
         #[arg(long, conflicts_with = "delete")]
         erase: bool,
+
+        /// Clean only what carwash recommends removing (marked `remove` in the ADVICE column
+        /// of `carwash caches`): among the ids given, or among all caches without any.
+        #[arg(long, conflicts_with = "erase")]
+        recommended: bool,
     },
 }
 
@@ -395,6 +400,12 @@ Examples:
   carwash caches clean simulators/<UDID>          Delete one simulator
   carwash caches clean simulators                 Delete simulators whose runtime is gone
   carwash caches clean xctest-devices             Delete Xcode's parallel-testing clones
+  carwash caches clean --recommended --dry-run    Show what carwash recommends removing
+  carwash caches clean xcode-device-support       Delete device support no device needs
+
+A parent id such as `xcode-device-support` selects its children except the ones carwash
+keeps: for device support, the newest folder of each device model and whatever a device
+connected in the last 90 days runs. Name a kept child by its own id to clean it anyway.
 
 Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
 touched, and none is while xcodebuild or xctest is running; carwash names what is in the

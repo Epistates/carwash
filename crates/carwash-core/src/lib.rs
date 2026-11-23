@@ -17,6 +17,7 @@ pub mod cache;
 pub mod caches;
 pub mod clean;
 pub mod deps;
+pub mod device_support;
 pub mod discover;
 pub mod ecosystem;
 pub mod fmt;

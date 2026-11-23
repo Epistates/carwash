@@ -1519,6 +1519,11 @@ mod tests {
         ];
         app.update(crate::tui::app::Msg::CachesDiscovered(caches));
         let screen = draw(&mut app, 160, 16);
+        assert!(screen.contains("ADVICE"), "{screen}");
+        assert!(
+            screen.contains("In use: booted; shut it down first"),
+            "{screen}"
+        );
         assert!(screen.contains("USED"), "{screen}");
         assert!(screen.contains("3d"), "{screen}");
         assert!(screen.contains("3mo"), "{screen}");
