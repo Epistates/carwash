@@ -407,11 +407,20 @@ impl GlobalCache {
                     cache.detail = detail;
                 }
             }
+            Some(Detail::Toolchain { .. }) => {
+                // The default may have been changed since the toolchains were listed.
+                if let Some(protected) = default_toolchain_advice(self, host) {
+                    cache.advice = Some(protected);
+                    if let Some(Detail::Toolchain {
+                        default, standing, ..
+                    }) = &mut cache.detail
+                    {
+                        (*default, *standing) = (true, true);
+                    }
+                }
+            }
             // Advice on what is still needed does not stand in the way of a clean.
-            Some(
-                Detail::DeviceSupport { .. } | Detail::Toolchain { .. } | Detail::Leftover { .. },
-            )
-            | None => {}
+            Some(Detail::DeviceSupport { .. } | Detail::Leftover { .. }) | None => {}
         }
         cache
     }
@@ -913,6 +922,35 @@ fn toolchain_entries(
             }
         })
         .collect()
+}
+
+/// Protection for the toolchain `cache` when it is rustup's default now, or when that
+/// cannot be found out: neither `rustup toolchain list` nor rustup's settings could be
+/// read. `None` when it is known not to be the default.
+fn default_toolchain_advice(cache: &GlobalCache, host: &dyn Host) -> Option<Advice> {
+    let name = cache.id.rsplit('/').next().unwrap_or_default();
+    let listed = host
+        .output(toolchains::LIST)
+        .and_then(|output| String::from_utf8(output).ok())
+        .map(|output| toolchains::parse_list(&output))
+        .filter(|listed| !listed.is_empty());
+    let is_default = match listed {
+        Some(listed) => Some(listed.iter().any(|t| t.default && t.name == name)),
+        None => cache.path.parent().and_then(|toolchains| {
+            let settings = toolchains.parent()?.join("settings.toml");
+            settings.is_file().then(|| {
+                rustup_default(toolchains)
+                    .is_some_and(|d| name == d || name.starts_with(&format!("{d}-")))
+            })
+        }),
+    };
+    match is_default {
+        Some(false) => None,
+        Some(true) => Some(Advice::protected("the default toolchain")),
+        None => Some(Advice::protected(
+            "rustup could not be asked whether it is the default toolchain",
+        )),
+    }
 }
 
 /// Applies what projects need to the Rust toolchains among `caches`: a toolchain a project
@@ -2019,6 +2057,57 @@ pub(crate) mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_toolchain_made_the_default_since_it_was_listed_is_not_uninstalled() {
+        let home = rustup_home(SETTINGS);
+        let caches = toolchain_caches(home.path(), &rustup(toolchains::tests::LISTING));
+        let release = find(&caches, "rustup-toolchains/1.91-aarch64-apple-darwin");
+        // Still not the default: free to go (when named).
+        let same = release.refreshed(&rustup(toolchains::tests::LISTING));
+        assert_eq!(same.verdict(), Some(Verdict::Unknown));
+        // `rustup default 1.91` was run in the meantime.
+        let moved = toolchains::tests::LISTING
+            .replace(" (active, default)", "")
+            .replace(
+                "1.91-aarch64-apple-darwin\n",
+                "1.91-aarch64-apple-darwin (active, default)\n",
+            );
+        let now_default = release.refreshed(&rustup(&moved));
+        for mode in MODES {
+            assert_eq!(
+                now_default.plan(mode, &idle()),
+                Err(Refusal::Protected("the default toolchain".into())),
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            now_default.detail,
+            Some(Detail::Toolchain {
+                default: true,
+                standing: true,
+                needed_by: None
+            })
+        );
+        // Without rustup's list, its settings say which one is the default...
+        fs::write(
+            home.path().join(".rustup/settings.toml"),
+            "default_toolchain = \"1.91-aarch64-apple-darwin\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            release.refreshed(&Tools::none()).verdict(),
+            Some(Verdict::Protected)
+        );
+        // ...and without either, nobody knows, so it stays.
+        fs::remove_file(home.path().join(".rustup/settings.toml")).unwrap();
+        assert_eq!(
+            release.refreshed(&Tools::none()).plan(Mode::Clean, &idle()),
+            Err(Refusal::Protected(
+                "rustup could not be asked whether it is the default toolchain".into()
+            ))
+        );
     }
 
     #[test]
