@@ -4,6 +4,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
 
@@ -18,6 +19,23 @@ fn write(root: &Path, rel: &str, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+/// Sets the modification time of a file or directory.
+fn set_modified(path: &Path, time: SystemTime) {
+    let mut options = fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be opened.
+        options.write(true).custom_flags(0x0200_0000);
+    }
+    #[cfg(not(windows))]
+    options.read(true);
+    options
+        .open(path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(time)))
+        .unwrap();
+}
+
 /// Two old artifacts, one recent one, and one with a generic name.
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -30,7 +48,7 @@ fn fixture() -> tempfile::TempDir {
     write(root, "web/dist/bundle.js", "z");
     write(root, "fresh/package.json", "{}");
     write(root, "fresh/node_modules/pkg/index.js", "new");
-    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    let old = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
     for rel in [
         "app/target/CACHEDIR.TAG",
         "app/target/debug/bin",
@@ -42,7 +60,7 @@ fn fixture() -> tempfile::TempDir {
         "web/dist/bundle.js",
         "web/dist",
     ] {
-        filetime::set_file_mtime(root.join(rel), old).unwrap();
+        set_modified(&root.join(rel), old);
     }
     dir
 }
@@ -132,7 +150,14 @@ fn clean_removes_only_selected_and_records_history() {
         .arg(tree.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Freed"));
+        .stdout(predicate::str::contains("Freed"))
+        // The measured change is spelled out; a clean this small never draws the note
+        // about free space that is still settling.
+        .stdout(
+            predicate::str::is_match(r"Free space: .+ → .+ \((.+ (more|less)|unchanged)\)")
+                .unwrap(),
+        )
+        .stdout(predicate::str::contains("keep rising").not());
     let root = tree.path();
     assert!(!root.join("app/target").exists());
     assert!(!root.join("web/node_modules").exists());
@@ -222,7 +247,7 @@ fn ecosystems_lists_builtins() {
 #[test]
 fn clean_survives_a_low_open_file_limit() {
     let tree = tempfile::tempdir().unwrap();
-    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    let old = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
     for project in 0..24 {
         let root = format!("p{project}");
         write(tree.path(), &format!("{root}/package.json"), "{}");
@@ -230,7 +255,7 @@ fn clean_survives_a_low_open_file_limit() {
             let deep = format!("{root}/node_modules/m{module}/a/b/c/d/e/f/g/h/node_modules/x/y");
             write(tree.path(), &format!("{deep}/index.js"), "x");
         }
-        filetime::set_file_mtime(tree.path().join(format!("{root}/node_modules")), old).unwrap();
+        set_modified(&tree.path().join(format!("{root}/node_modules")), old);
     }
     let home = tempfile::tempdir().unwrap();
     let bin = assert_cmd::cargo::cargo_bin("carwash");
@@ -265,13 +290,13 @@ fn aged_fixture() -> tempfile::TempDir {
             &format!("{name}/node_modules/pkg/index.js"),
             &"x".repeat(20_000),
         );
-        let time = filetime::FileTime::from_unix_time(secs, 0);
+        let time = UNIX_EPOCH + Duration::from_secs(secs);
         for rel in [
             "node_modules/pkg/index.js",
             "node_modules/pkg",
             "node_modules",
         ] {
-            filetime::set_file_mtime(dir.path().join(name).join(rel), time).unwrap();
+            set_modified(&dir.path().join(name).join(rel), time);
         }
     }
     dir
@@ -290,6 +315,7 @@ fn free_goal_takes_the_least_recently_used_first() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["goal"]["met"], true);
     assert_eq!(report["removed"], 1);
+    assert_eq!(report["free_space_may_rise"], false);
     assert!(!tree.path().join("oldest/node_modules").exists());
     assert!(tree.path().join("older/node_modules").exists());
 }
@@ -587,4 +613,295 @@ fn os_clean_refuses_report_areas_and_respects_running_apps() {
         .args(["os", "clean", "no-such-area", "--yes"])
         .assert()
         .code(2);
+}
+
+/// `carwash caches` against a home directory and tools of the test's own making: nothing
+/// outside the temporary directories is read, run or removed.
+#[cfg(unix)]
+mod caches {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// A home with npm's cache and three Rust toolchains, and a folder for stand-in tools.
+    struct Machine {
+        home: tempfile::TempDir,
+        tools: tempfile::TempDir,
+    }
+
+    const RUSTUP_LIST: &str = "stable-aarch64-apple-darwin (active, default)\n1.90-aarch64-apple-darwin\n1.91-aarch64-apple-darwin\n";
+
+    impl Machine {
+        fn new() -> Self {
+            let home = tempfile::tempdir().unwrap();
+            write(
+                home.path(),
+                ".npm/_cacache/index/entry",
+                &"x".repeat(20_000),
+            );
+            for toolchain in RUSTUP_LIST.lines() {
+                let name = toolchain.split(' ').next().unwrap();
+                write(
+                    home.path(),
+                    &format!(".rustup/toolchains/{name}/bin/rustc"),
+                    "",
+                );
+            }
+            write(
+                home.path(),
+                ".rustup/settings.toml",
+                "default_toolchain = \"stable-aarch64-apple-darwin\"\n",
+            );
+            Self {
+                home,
+                tools: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        fn path(&self, rel: &str) -> PathBuf {
+            self.home.path().join(rel)
+        }
+
+        /// Installs a stand-in for `name` that notes it was run, then runs `body`.
+        fn tool(&self, name: &str, body: &str) {
+            let path = self.tools.path().join(name);
+            let marker = self.tools.path().join(format!("{name}.ran"));
+            fs::write(
+                &path,
+                format!("#!/bin/sh\n: > '{}'\n{body}\n", marker.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn ran(&self, name: &str) -> bool {
+            self.tools.path().join(format!("{name}.ran")).exists()
+        }
+
+        /// carwash with this home and nothing else from the environment: on PATH only the
+        /// stand-ins and the system's shell utilities, and no variable that points a cache
+        /// somewhere real.
+        fn carwash(&self) -> Command {
+            let mut cmd = Command::cargo_bin("carwash").unwrap();
+            cmd.env_clear()
+                .env("HOME", self.home.path())
+                .env("CARWASH_HOME", self.home.path().join(".carwash-home"))
+                .env(
+                    "PATH",
+                    format!("{}:/usr/bin:/bin", self.tools.path().display()),
+                )
+                .env("NO_COLOR", "1");
+            cmd
+        }
+
+        fn list(&self, extra: &[&str]) -> Vec<serde_json::Value> {
+            let output = self
+                .carwash()
+                .args(["caches", "--json"])
+                .args(extra)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            serde_json::from_slice(&output.stdout).unwrap()
+        }
+    }
+
+    fn row<'a>(rows: &'a [serde_json::Value], id: &str) -> &'a serde_json::Value {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} among {rows:#?}"))
+    }
+
+    #[test]
+    fn toolchains_are_listed_from_rustup_and_advised_by_the_projects_given() {
+        let machine = Machine::new();
+        machine.tool("rustup", &format!("printf '%s' '{RUSTUP_LIST}'"));
+        let work = tempfile::tempdir().unwrap();
+        write(work.path(), "app/Cargo.toml", "[package]\nname = \"app\"\n");
+        write(work.path(), "app/rust-toolchain", "1.90\n");
+
+        // Without projects nothing is known, and nothing is recommended.
+        let rows = machine.list(&[]);
+        assert!(machine.ran("rustup"));
+        let pinned = row(&rows, "rustup-toolchains/1.90-aarch64-apple-darwin");
+        assert_eq!(pinned["advice"]["verdict"], "unknown");
+        assert_eq!(
+            row(&rows, "rustup-toolchains/stable-aarch64-apple-darwin")["advice"]["verdict"],
+            "protected"
+        );
+
+        let rows = machine.list(&["--projects", work.path().to_str().unwrap()]);
+        let pinned = row(&rows, "rustup-toolchains/1.90-aarch64-apple-darwin");
+        assert_eq!(pinned["advice"]["verdict"], "keep");
+        assert_eq!(pinned["advice"]["reason"], "app needs it");
+        let unused = row(&rows, "rustup-toolchains/1.91-aarch64-apple-darwin");
+        assert_eq!(unused["advice"]["verdict"], "remove");
+        let reason = unused["advice"]["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("no project under ") && reason.ends_with(" needs it"),
+            "{reason}"
+        );
+
+        // A folder with no Rust project in it is nothing to go by.
+        let empty = tempfile::tempdir().unwrap();
+        write(empty.path(), "web/package.json", "{}");
+        let rows = machine.list(&["--projects", empty.path().to_str().unwrap()]);
+        let unused = row(&rows, "rustup-toolchains/1.91-aarch64-apple-darwin");
+        assert_eq!(unused["advice"]["verdict"], "unknown");
+        machine
+            .carwash()
+            .args([
+                "caches",
+                "clean",
+                "--recommended",
+                "--dry-run",
+                "--projects",
+            ])
+            .arg(empty.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("rustup toolchain uninstall").not());
+    }
+
+    #[test]
+    fn a_tool_that_fails_is_not_believed() {
+        let machine = Machine::new();
+        // Prints a list naming a toolchain that is not the default, then fails.
+        machine.tool(
+            "rustup",
+            "printf '1.90-aarch64-apple-darwin (active, default)\\n'; exit 3",
+        );
+        let rows = machine.list(&[]);
+        assert!(machine.ran("rustup"));
+        // The folders and rustup's settings are read instead.
+        assert_eq!(
+            row(&rows, "rustup-toolchains/stable-aarch64-apple-darwin")["advice"]["verdict"],
+            "protected"
+        );
+        assert_eq!(
+            row(&rows, "rustup-toolchains/1.90-aarch64-apple-darwin")["advice"]["verdict"],
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn cleaning_one_cache_deletes_it_and_asks_no_other_tool() {
+        let machine = Machine::new();
+        machine.tool("rustup", &format!("printf '%s' '{RUSTUP_LIST}'"));
+        machine.tool("xcrun", "exit 1");
+        machine
+            .carwash()
+            .args(["caches", "clean", "npm", "--yes"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("freed"))
+            .stdout(predicate::str::contains("Free space: "));
+        assert!(!machine.path(".npm/_cacache").exists());
+        assert!(machine.path(".npm").is_dir());
+        assert!(!machine.ran("rustup"), "rustup was asked about npm's cache");
+        assert!(!machine.ran("xcrun"));
+        assert!(
+            machine
+                .path(".rustup/toolchains/1.90-aarch64-apple-darwin")
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn a_deletion_that_fails_is_explained_on_stderr_and_its_remainder_is_listed() {
+        let machine = Machine::new();
+        // An entry that cannot be unlinked.
+        let locked = machine.path(".npm/_cacache/index");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let output = machine
+            .carwash()
+            .args(["caches", "clean", "npm", "--yes"])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        );
+        let rows = machine.list(&[]);
+        let leftover = rows
+            .iter()
+            .find(|row| row["detail"]["kind"] == "leftover")
+            .cloned();
+        // Let the temporary directory be removed, whatever the assertions below say.
+        if let Some(path) = leftover.as_ref().and_then(|row| row["path"].as_str()) {
+            let _ = fs::set_permissions(
+                Path::new(path).join("index"),
+                fs::Permissions::from_mode(0o755),
+            );
+        }
+        let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o755));
+        if output.status.success() {
+            // Root unlinks it regardless; there is no failure to observe.
+            return;
+        }
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("failed to clean npm cache: "), "{stderr}");
+        assert!(stderr.contains("what is left of it is in"), "{stderr}");
+        assert!(!stdout.contains("failed to clean"), "{stdout}");
+        let leftover = leftover.expect("the remainder is listed");
+        assert_eq!(leftover["name"], "npm cache: leftover of _cacache");
+        assert_eq!(leftover["advice"]["verdict"], "remove");
+        assert!(
+            leftover["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("npm/.carwash-trash-")
+        );
+        // The next clean of the cache takes the remainder with it.
+        machine
+            .carwash()
+            .args(["caches", "clean", "npm", "--yes"])
+            .assert()
+            .success();
+        assert!(
+            !machine
+                .list(&[])
+                .iter()
+                .any(|row| row["detail"]["kind"] == "leftover")
+        );
+    }
+
+    /// `xcrun` is a stub that offers to install the developer tools when none are
+    /// selected, so it must not be run then.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn xcrun_is_only_run_when_a_developer_directory_is_selected() {
+        let udid = "00000001-0000-4000-8000-000000000001";
+        let devices = format!("Library/Developer/CoreSimulator/Devices/{udid}/data/file");
+        let simulators = |machine: &Machine| {
+            write(machine.home.path(), &devices, "x");
+            let rows = machine.list(&[]);
+            row(&rows, "simulators").clone()
+        };
+
+        let machine = Machine::new();
+        machine.tool(
+            "xcode-select",
+            "echo 'xcode-select: error: unable to get active developer directory' >&2; exit 2",
+        );
+        machine.tool("xcrun", "exit 1");
+        let set = simulators(&machine);
+        assert!(machine.ran("xcode-select"));
+        assert!(
+            !machine.ran("xcrun"),
+            "xcrun was run with no developer directory"
+        );
+        assert_eq!(set["name"], "Simulators", "listed as one entry, unexamined");
+
+        // With a directory selected it is asked, and its failure is taken as no answer.
+        let machine = Machine::new();
+        machine.tool(
+            "xcode-select",
+            &format!("echo '{}'", machine.home.path().display()),
+        );
+        machine.tool("xcrun", "exit 1");
+        let set = simulators(&machine);
+        assert!(machine.ran("xcrun"));
+        assert_eq!(set["name"], "Simulators");
+    }
 }

@@ -10,7 +10,7 @@ use super::tasks::{After, JobStatus, RunTarget, TasksState};
 use super::theme::{Glyphs, Theme};
 use super::updates::UpdatesState;
 use carwash_core::cache::{Fingerprint, SizeCache};
-use carwash_core::caches::GlobalCache;
+use carwash_core::caches::{GlobalCache, Mode as CleanMode, Step};
 use carwash_core::clean::{CleanEvent, CleanItem, CleanReport, DeleteMode};
 use carwash_core::deps::{CheckProgress, Dependency, ProjectDeps, ProjectSpec};
 use carwash_core::history::Record;
@@ -18,6 +18,7 @@ use carwash_core::select::{Hold, Policy};
 use carwash_core::sweep::SweepReport;
 use carwash_core::system::Area;
 use carwash_core::tasks::Task;
+use carwash_core::toolchains::Needs;
 use carwash_core::{ArtifactId, Counters, EcoId, Registry, ScanEvent, Size, fmt};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
@@ -74,6 +75,21 @@ pub enum Msg {
         /// Taken just before measuring.
         fingerprint: Option<Fingerprint>,
     },
+    /// Deleting a cache's directory failed; `error` says what happened and where the
+    /// remainder is.
+    CacheCleanFailed {
+        id: String,
+        name: String,
+        error: String,
+    },
+    /// What the Rust projects in the scanned folder need of the installed toolchains.
+    ToolchainNeeds(Needs),
+    /// A cache checked just before cleaning: what cleaning it takes, or why it is left
+    /// alone.
+    CacheChecked {
+        cache: Box<GlobalCache>,
+        step: Result<Step, String>,
+    },
     SystemDiscovered(Vec<Area>),
     /// A dry-run sweep of an area, with the running programs that block it.
     SystemMeasured {
@@ -125,13 +141,24 @@ pub enum Effect {
         size: (u16, u16),
     },
     DiscoverCaches,
-    /// Prunes (as jobs) or deletes each cache, then measures it again.
+    /// Checks each cache against what is booted and running now, and reports it with
+    /// [`Msg::CacheChecked`].
     CleanCaches {
         caches: Vec<GlobalCache>,
+        mode: CleanMode,
+    },
+    /// Carries out one checked step, a command (as a job) or a deletion, then measures the
+    /// cache again.
+    CleanCache {
+        cache: Box<GlobalCache>,
+        step: Step,
         size: (u16, u16),
     },
-    /// Measures each `(id, path)` and reports it with [`Msg::CacheMeasured`].
-    MeasureCaches(Vec<(String, PathBuf)>),
+    /// Measures each cache and reports it with [`Msg::CacheMeasured`].
+    MeasureCaches(Vec<GlobalCache>),
+    /// Looks for the Rust projects in the scanned folder and what toolchains they need, and
+    /// reports it with [`Msg::ToolchainNeeds`].
+    FindToolchainNeeds,
     DiscoverSystem,
     /// Dry-runs each area and reports it with [`Msg::SystemMeasured`].
     MeasureSystem(Vec<Area>),
@@ -437,6 +464,7 @@ impl App {
                 fmt::bytes(self.marked_bytes())
             )),
             (Tab::Caches, Action::Clean) => self.caches_clean_preview(),
+            (Tab::Caches, Action::Erase) => self.caches_erase_preview(),
             (Tab::System, Action::Clean) => self.system_clean_preview(),
             _ => None,
         }
@@ -535,6 +563,14 @@ impl App {
                 size,
                 fingerprint,
             } => self.on_cache_measured(&id, size, fingerprint),
+            Msg::CacheChecked { cache, step } => self.on_cache_checked(cache, step),
+            Msg::CacheCleanFailed { id, name, error } => {
+                self.on_cache_clean_failed(&id, &name, &error)
+            }
+            Msg::ToolchainNeeds(needs) => {
+                self.caches.set_needs(needs);
+                Vec::new()
+            }
             Msg::SystemDiscovered(areas) => self.on_system_discovered(areas),
             Msg::SystemMeasured {
                 id,
@@ -598,9 +634,7 @@ impl App {
                     .any(|j| j.status == JobStatus::Running && j.after == after);
                 match after {
                     After::Recheck(path) if !pending => self.recheck(&path),
-                    After::Remeasure { id, path } if !pending => {
-                        vec![Effect::MeasureCaches(vec![(id, path)])]
-                    }
+                    After::Remeasure(id) if !pending => self.remeasure_cache(&id),
                     After::RemeasureArea(id) if !pending => self.measure_area(&id),
                     _ => Vec::new(),
                 }
@@ -621,7 +655,11 @@ impl App {
                 self.scan.running = false;
                 self.scan.elapsed = Some(*elapsed);
                 self.store.apply(event, &self.cache);
-                return vec![Effect::SaveSizes(self.cache.clone())];
+                return vec![
+                    Effect::SaveSizes(self.cache.clone()),
+                    // The Caches tab advises on Rust toolchains by what these projects need.
+                    Effect::FindToolchainNeeds,
+                ];
             }
             _ => {}
         }
@@ -1436,11 +1474,10 @@ pub(crate) mod tests {
             id: ArtifactId(0),
             bytes: 500,
         }));
-        let effects = app.update(Msg::CleanFinished(CleanReport {
-            removed: 1,
-            bytes: 500,
-            ..CleanReport::default()
-        }));
+        let mut report = CleanReport::default();
+        report.removed = 1;
+        report.bytes = 500;
+        let effects = app.update(Msg::CleanFinished(report));
         assert!(matches!(&effects[0], Effect::RecordHistory(r) if r.len() == 1));
         assert!(app.marked.is_empty());
         app.ensure_rows();

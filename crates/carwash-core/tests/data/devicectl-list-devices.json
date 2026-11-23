@@ -1,0 +1,990 @@
+{
+  "info": {
+    "arguments": [
+      "devicectl",
+      "list",
+      "devices",
+      "--json-output",
+      "-"
+    ],
+    "commandType": "devicectl.list.devices",
+    "environment": {},
+    "jsonVersion": 5,
+    "outcome": "success",
+    "version": "651.32"
+  },
+  "result": {
+    "devices": [
+      {
+        "_deprecationNotice": {
+          "deprecatedFields": [
+            "hardwareProperties",
+            "deviceProperties",
+            "connectionProperties"
+          ],
+          "message": "The 'hardwareProperties', 'deviceProperties', 'connectionProperties' fields are deprecated and will be removed in a future release. Use the 'properties' dictionary instead.",
+          "replacement": "properties"
+        },
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturesysdiagnose",
+            "name": "Capture Sysdiagnose"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.configurationprofiles",
+            "name": "Configuration Profile Management"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.serviceconnection.create",
+            "name": "Create Service Connection"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.servicesocket.create",
+            "name": "Create Service Socket"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.customizeappearancesettings",
+            "name": "Customize Appearance Settings"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.customizeliquidglass",
+            "name": "Customize Liquid Glass"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.customizeuistyle",
+            "name": "Customize User Interface Style"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.devicecontrol.orientation",
+            "name": "Device Orientation"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.disableddiservices",
+            "name": "Disable Developer Disk Image Services"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.disconnectdevice",
+            "name": "Disconnect from Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.fetchappicons",
+            "name": "Fetch Application Icons"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getauthlistingidentifiers",
+            "name": "Fetch AuthListing Identifiers"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.fetchddimetadata",
+            "name": "Fetch Developer Disk Image Services Metadata"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getdeviceinfo",
+            "name": "Fetch Extended Device Info"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.fetchdyldsharecache",
+            "name": "Fetch dyld Shared Cache Files"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.filesystemoperation",
+            "name": "File Handle Operation"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getdisplayinfo",
+            "name": "Get Display Information"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getlockstate",
+            "name": "Get Lock State"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getmediastreamserverstatus",
+            "name": "Get Media Stream Server Status"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.getmediasupportinfo",
+            "name": "Get Support Info for Media Streams"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.hid.button",
+            "name": "HID Button"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.hid.digitizer",
+            "name": "HID Digitizer"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.hid.keyboard",
+            "name": "HID Keyboard"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.hid.scroll",
+            "name": "HID Scroll"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.hid.vendordefined",
+            "name": "HID Vendor Defined"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.installapp",
+            "name": "Install Application"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.installroot",
+            "name": "Install Root"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.launchapplication",
+            "name": "Launch Application"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.listFiles",
+            "name": "List Files"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.listroots",
+            "name": "List Roots"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.monitorfilechanges",
+            "name": "Monitor File Changes"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.monitormotion",
+            "name": "Monitor Motion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.monitorprocesstermination",
+            "name": "Monitor Process for Termination"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.pasteboard",
+            "name": "Pasteboard"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.customer.postdarwinnotification",
+            "name": "Post Darwin Notification"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.processcontrol",
+            "name": "Process Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.provisioningprofiles",
+            "name": "Provisioning Profile Management"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.querymobilegestalt",
+            "name": "Query MobileGestalt"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.rebootdevice",
+            "name": "Reboot Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.renamedevice",
+            "name": "Rename Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.sendmemorywarningtoprocess",
+            "name": "Send Memory Warning to Process"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.sendsignaltoprocess",
+            "name": "Send Signal to Process"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.profile",
+            "name": "Service Hub Profile"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.servicexpcpeerconnection",
+            "name": "Service XPC Peer Connection"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.simulatelocation",
+            "name": "Simulate Device Location"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.spawnexecutable",
+            "name": "Spawn Executable"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.startaudiooutput",
+            "name": "Start Audio Output"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.startmediastream",
+            "name": "Start Media Stream"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.startvideooutput",
+            "name": "Start Video Output"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.stopmediastream",
+            "name": "Stop Media Stream"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.streamapplist",
+            "name": "Stream Application List"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.streamprocesslist",
+            "name": "Stream Process List"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.transferFiles",
+            "name": "Transfer Files"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.uninstallapp",
+            "name": "Uninstall Application"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.uninstallroot",
+            "name": "Uninstall Root"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.universalhid",
+            "name": "Universal HID Service Pool"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.remote.universalhidservice",
+            "name": "UniversalHIDService"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.unpairdevice",
+            "name": "Unpair Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.viewdevicescreen",
+            "name": "View Device Screen"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.voiceover",
+            "name": "VoiceOver"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-11-23T00:40:00.000Z",
+          "localHostnames": [
+            "Test-iPad.coredevice.local",
+            "00000A01-0000-4000-8000-000000000A01.coredevice.local",
+            "00008101-000000000001001E.coredevice.local"
+          ],
+          "pairingState": "paired",
+          "potentialHostnames": [
+            "Test-iPad.coredevice.local",
+            "00000A01-0000-4000-8000-000000000A01.coredevice.local",
+            "00008101-000000000001001E.coredevice.local"
+          ],
+          "transportType": "localNetwork",
+          "tunnelIPAddress": "fd00::1",
+          "tunnelState": "connected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootState": "booted",
+          "bootedFromSnapshot": true,
+          "bootedSnapshotName": "com.apple.os.update-0000000000000000000000000000000000000000000000000000000000000000",
+          "ddiServicesAvailable": true,
+          "developerModeStatus": "enabled",
+          "hasInternalOSBuild": false,
+          "name": "Test iPad",
+          "osBuildUpdate": "24C5037i",
+          "osVersionNumber": "27.3",
+          "releaseType": "Beta",
+          "rootFileSystemIsWritable": false,
+          "screenViewingURL": "devices://device/open?id=00000A01-0000-4000-8000-000000000A01",
+          "supportsCheckedAllocations": false
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64e",
+            "subType": -2147483646,
+            "type": 16777228
+          },
+          "deviceType": "iPad",
+          "ecid": 1000000000000001,
+          "hardwareModel": "J717AP",
+          "internalStorageCapacity": 1000555581440,
+          "isProductionFused": true,
+          "marketingName": "iPad Pro 11-inch (M4)",
+          "platform": "iOS",
+          "productType": "iPad16,3",
+          "reality": "physical",
+          "serialNumber": "TESTSERIAL1",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64e",
+              "subType": -2147483646,
+              "type": 16777228
+            },
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "supportedDeviceFamilies": [
+            1,
+            2
+          ],
+          "thinningProductType": "iPad16,3-B",
+          "udid": "00008101-000000000001001E"
+        },
+        "identifier": "00000A01-0000-4000-8000-000000000A01",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 817087200,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=00000A01-0000-4000-8000-000000000A01"
+            },
+            "state": "connected",
+            "transportType": "localNetwork",
+            "tunnelIPAddressString": "fd00::1",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 10,
+              "packages": 1,
+              "physicalCores": 10
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPad",
+            "ecid": 1000000000000001,
+            "hasActionButton": false,
+            "internalStorageCapacity": 1000555581440,
+            "marketingName": "iPad Pro 11-inch (M4)",
+            "platform": "iOS",
+            "productType": "iPad16,3",
+            "reality": "physical",
+            "serialNumber": "TESTSERIAL1",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              1,
+              2
+            ],
+            "supportsSiri": true,
+            "thinningProductType": "iPad16,3-B",
+            "udid": "00008101-000000000001001E"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "C",
+                "majorNumberComponent": 24,
+                "name": "24C5037i",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    3,
+                    37,
+                    5,
+                    9
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.3.37.5.9"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "i",
+                "updateNumberComponent": 5037
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "C",
+                "majorNumberComponent": 24,
+                "name": "24C5037i",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    3,
+                    37,
+                    5,
+                    9
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.3.37.5.9"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "i",
+                "updateNumberComponent": 5037
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                3,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.3"
+            },
+            "supportsCheckedAllocations": false
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test iPad",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "_deprecationNotice": {
+          "deprecatedFields": [
+            "hardwareProperties",
+            "deviceProperties",
+            "connectionProperties"
+          ],
+          "message": "The 'hardwareProperties', 'deviceProperties', 'connectionProperties' fields are deprecated and will be removed in a future release. Use the 'properties' dictionary instead.",
+          "replacement": "properties"
+        },
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.connectdevice",
+            "name": "Connect to Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.unpairdevice",
+            "name": "Unpair Device"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-11-23T00:28:00.000Z",
+          "pairingState": "paired",
+          "potentialHostnames": [
+            "Test-iPhone.coredevice.local",
+            "00000A02-0000-4000-8000-000000000A02.coredevice.local",
+            "00008102-000000000002001E.coredevice.local"
+          ],
+          "transportType": "localNetwork",
+          "tunnelState": "disconnected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootState": "booted",
+          "bootedFromSnapshot": true,
+          "bootedSnapshotName": "com.apple.os.update-0000000000000000000000000000000000000000000000000000000000000000",
+          "ddiServicesAvailable": false,
+          "developerModeStatus": "enabled",
+          "hasInternalOSBuild": false,
+          "name": "Test iPhone",
+          "osBuildUpdate": "24B156",
+          "osVersionNumber": "27.2.1",
+          "rootFileSystemIsWritable": false,
+          "supportsCheckedAllocations": false
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64e",
+            "subType": -2147483646,
+            "type": 16777228
+          },
+          "deviceType": "iPhone",
+          "ecid": 1000000000000002,
+          "hardwareModel": "D64AP",
+          "internalStorageCapacity": 256000000000,
+          "isProductionFused": true,
+          "marketingName": "iPhone 13 Pro Max",
+          "platform": "iOS",
+          "productType": "iPhone14,3",
+          "reality": "physical",
+          "serialNumber": "TESTSERIAL2",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64e",
+              "subType": -2147483646,
+              "type": 16777228
+            },
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "supportedDeviceFamilies": [
+            1
+          ],
+          "thinningProductType": "iPhone14,3",
+          "udid": "00008102-000000000002001E"
+        },
+        "identifier": "00000A02-0000-4000-8000-000000000A02",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 817086480,
+            "pairingState": "paired",
+            "state": "disconnected",
+            "transportType": "localNetwork",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1000000000000002,
+            "hasActionButton": false,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "iPhone 13 Pro Max",
+            "platform": "iOS",
+            "productType": "iPhone14,3",
+            "reality": "physical",
+            "serialNumber": "TESTSERIAL2",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              1
+            ],
+            "supportsSiri": true,
+            "thinningProductType": "iPhone14,3",
+            "udid": "00008102-000000000002001E"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B156",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    156,
+                    0,
+                    0
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.156.0.0"
+                },
+                "trainProgram": "iOS",
+                "updateNumberComponent": 156
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B156",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    156,
+                    0,
+                    0
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.156.0.0"
+                },
+                "trainProgram": "iOS",
+                "updateNumberComponent": 156
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                2,
+                1,
+                0,
+                0
+              ],
+              "originalComponentsCount": 3,
+              "stringValue": "27.2.1"
+            },
+            "supportsCheckedAllocations": false
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test iPhone"
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "_deprecationNotice": {
+          "deprecatedFields": [
+            "hardwareProperties",
+            "deviceProperties",
+            "connectionProperties"
+          ],
+          "message": "The 'hardwareProperties', 'deviceProperties', 'connectionProperties' fields are deprecated and will be removed in a future release. Use the 'properties' dictionary instead.",
+          "replacement": "properties"
+        },
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.dt.coredevice.device.boot",
+            "name": "Boot Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.companiondevicepairing",
+            "name": "Companion Device Pairing"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.coredevice.plugin.removedevice",
+            "name": "Remove Provisioned Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.renamedevice",
+            "name": "Rename Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.resetContentAndSettings",
+            "name": "Reset Settings and Content"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "implicit",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-07-18T11:50:24.000Z",
+          "pairingState": "paired",
+          "potentialHostnames": [],
+          "transportType": "sameMachine",
+          "tunnelState": "disconnected"
+        },
+        "deviceProperties": {
+          "bootState": "shutdown",
+          "ddiServicesAvailable": false,
+          "hasInternalOSBuild": false,
+          "name": "Apple Watch Series 11 (46mm)",
+          "osBuildUpdate": "23T570",
+          "osVersionNumber": "26.5",
+          "provider": "com.apple.CoreSimulator.SimulatorCoreDevicePlugin"
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64",
+            "subType": 0,
+            "type": 16777228
+          },
+          "deviceType": "appleWatch",
+          "hardwareModel": "N227b",
+          "marketingName": "Apple Watch Series 11 (46mm)",
+          "platform": "watchOS",
+          "productType": "Watch7,18",
+          "reality": "simulated",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "udid": "00000003-0000-4000-8000-000000000003"
+        },
+        "identifier": "00000003-0000-4000-8000-000000000003",
+        "properties": {
+          "connection": {
+            "authenticationType": "implicit",
+            "lastConnectionDate": 806068224,
+            "pairingState": "paired",
+            "state": "disconnected",
+            "transportType": "sameMachine"
+          },
+          "hardware": {
+            "cpuType": {
+              "subtype": 0,
+              "type": 16777228
+            },
+            "deviceType": "appleWatch",
+            "hasActionButton": false,
+            "marketingName": "Apple Watch Series 11 (46mm)",
+            "platform": "watchOS",
+            "productType": "Watch7,18",
+            "reality": "simulated",
+            "supportedCPUTypes": [
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportsSiri": true,
+            "udid": "00000003-0000-4000-8000-000000000003"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "T",
+                "majorNumberComponent": 23,
+                "name": "23T570",
+                "revisionVersion": {
+                  "components": [
+                    23,
+                    20,
+                    570,
+                    0,
+                    0
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "23.20.570.0.0"
+                },
+                "updateNumberComponent": 570
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                26,
+                5,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "26.5"
+            }
+          },
+          "state": {
+            "bootState": "shutdown",
+            "name": "Apple Watch Series 11 (46mm)",
+            "preparednessState": 0,
+            "visibilityClass": "simulators"
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "simulators"
+      },
+      {
+        "_deprecationNotice": {
+          "deprecatedFields": [
+            "hardwareProperties",
+            "deviceProperties",
+            "connectionProperties"
+          ],
+          "message": "The 'hardwareProperties', 'deviceProperties', 'connectionProperties' fields are deprecated and will be removed in a future release. Use the 'properties' dictionary instead.",
+          "replacement": "properties"
+        },
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.dt.coredevice.device.boot",
+            "name": "Boot Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.dt.coredevice.plugin.removedevice",
+            "name": "Remove Provisioned Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.renamedevice",
+            "name": "Rename Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.resetContentAndSettings",
+            "name": "Reset Settings and Content"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "implicit",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-11-16T13:15:39.000Z",
+          "pairingState": "paired",
+          "potentialHostnames": [],
+          "transportType": "sameMachine",
+          "tunnelState": "disconnected"
+        },
+        "deviceProperties": {
+          "bootState": "shutdown",
+          "ddiServicesAvailable": false,
+          "hasInternalOSBuild": false,
+          "name": "iPad Pro 13-inch (M5)",
+          "osBuildUpdate": "24A434",
+          "osVersionNumber": "27.0",
+          "provider": "com.apple.CoreSimulator.SimulatorCoreDevicePlugin"
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64",
+            "subType": 0,
+            "type": 16777228
+          },
+          "deviceType": "iPad",
+          "hardwareModel": "J821",
+          "marketingName": "iPad Pro 13-inch (M5)",
+          "platform": "iOS",
+          "productType": "iPad17,4",
+          "reality": "simulated",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "udid": "00000004-0000-4000-8000-000000000004"
+        },
+        "identifier": "00000004-0000-4000-8000-000000000004",
+        "properties": {
+          "connection": {
+            "authenticationType": "implicit",
+            "lastConnectionDate": 816527739,
+            "pairingState": "paired",
+            "state": "disconnected",
+            "transportType": "sameMachine"
+          },
+          "hardware": {
+            "cpuType": {
+              "subtype": 0,
+              "type": 16777228
+            },
+            "deviceType": "iPad",
+            "hasActionButton": false,
+            "marketingName": "iPad Pro 13-inch (M5)",
+            "platform": "iOS",
+            "productType": "iPad17,4",
+            "reality": "simulated",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportsSiri": true,
+            "udid": "00000004-0000-4000-8000-000000000004"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "A",
+                "majorNumberComponent": 24,
+                "name": "24A434",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    1,
+                    434,
+                    0,
+                    0
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.1.434.0.0"
+                },
+                "updateNumberComponent": 434
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            }
+          },
+          "state": {
+            "bootState": "shutdown",
+            "name": "iPad Pro 13-inch (M5)",
+            "preparednessState": 0,
+            "visibilityClass": "simulators"
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "simulators"
+      }
+    ]
+  }
+}

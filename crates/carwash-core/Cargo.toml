@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 readme = "README.md"
 keywords = ["cleanup", "disk-usage", "monorepo", "node-modules", "cargo"]
@@ -25,6 +24,7 @@ toml.workspace = true
 yaml_serde.workspace = true
 toml_edit.workspace = true
 semver.workspace = true
+jiff.workspace = true
 nodejs-semver.workspace = true
 pep440_rs.workspace = true
 ureq.workspace = true
@@ -36,7 +36,6 @@ rustix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-filetime.workspace = true
 
 [lints]
 workspace = true

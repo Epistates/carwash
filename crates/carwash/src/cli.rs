@@ -62,7 +62,8 @@ pub enum Command {
     Run(RunArgs),
     /// Show outdated and vulnerable dependencies (Rust, JavaScript, Python, Go).
     Outdated(OutdatedArgs),
-    /// List and clean per-user caches (package stores, toolchains, SDK and IDE caches).
+    /// List and clean per-user caches (package stores, toolchains, simulators, SDK and IDE caches).
+    #[command(after_long_help = CACHES_EXAMPLES)]
     Caches(CachesArgs),
     /// List and clean the operating system's caches, logs, trash and temporary files.
     #[command(after_long_help = OS_EXAMPLES)]
@@ -252,6 +253,10 @@ but never protected ones; the root is scanned again first and anything that is n
 artifact is skipped. Prefer paths over numbers when several scans may run at once: numbers
 refer to the most recent `carwash scan` by anyone.
 
+Free space is read again right after deleting and shown next to what was freed. On APFS it
+can keep rising for a while after a large clean; carwash says so when the reading is well
+below the total (`free_space_may_rise` in --json).
+
 Exit status: 0 on success (including nothing to do), 1 when a deletion failed, a picked
 artifact was skipped, or the --free/--until-free goal could not be met, 2 on invalid usage
 or errors.";
@@ -353,6 +358,11 @@ pub struct CachesArgs {
     #[command(subcommand)]
     pub action: Option<CachesAction>,
 
+    /// Directory of projects to check Rust toolchains against (repeatable): toolchains
+    /// they need are kept, the rest recommended for removal.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub projects: Vec<PathBuf>,
+
     /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
@@ -360,10 +370,12 @@ pub struct CachesArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum CachesAction {
-    /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children.
+    /// Clean caches by id (as listed by `carwash caches`); a parent id selects its children,
+    /// except the ones carwash keeps.
     Clean {
-        /// Cache ids, e.g. `npm` or `rustup-toolchains/nightly-aarch64-apple-darwin`.
-        #[arg(required = true, value_name = "ID")]
+        /// Cache ids, e.g. `npm`, `rustup-toolchains/nightly-aarch64-apple-darwin` or
+        /// `simulators/<UDID>`.
+        #[arg(required_unless_present = "recommended", value_name = "ID")]
         ids: Vec<String>,
 
         /// Do not ask for confirmation.
@@ -377,8 +389,53 @@ pub enum CachesAction {
         /// Delete the directory even when the tool's own prune command is available.
         #[arg(long)]
         delete: bool,
+
+        /// Erase simulators (their contents and settings) and keep the devices, instead of
+        /// deleting them.
+        #[arg(long, conflicts_with = "delete")]
+        erase: bool,
+
+        /// Clean only what carwash recommends removing (marked `remove` in the ADVICE column
+        /// of `carwash caches`): among the ids given, or among all caches without any.
+        #[arg(long, conflicts_with = "erase")]
+        recommended: bool,
     },
 }
+
+const CACHES_EXAMPLES: &str = "\
+Examples:
+  carwash caches                                  List caches, largest first
+  carwash caches clean npm uv --dry-run           Show what cleaning them would run
+  carwash caches clean simulators/<UDID> --erase  Clear one simulator and keep the device
+  carwash caches clean simulators/<UDID>          Delete one simulator
+  carwash caches clean simulators                 Delete simulators whose runtime is gone
+  carwash caches clean xctest-devices             Delete Xcode's parallel-testing clones
+  carwash caches clean --recommended --dry-run    Show what carwash recommends removing
+  carwash caches clean xcode-device-support       Delete device support that newer folders replaced
+  carwash caches --projects ~/work                Also say which Rust toolchains projects need
+  carwash caches clean rustup-toolchains --projects ~/work
+                                                  Uninstall the toolchains no project needs
+
+A parent id such as `xcode-device-support` selects its children except the ones carwash
+keeps: for device support, the newest folder of each device model, whatever a device still
+runs, and every folder it cannot judge (the connected devices could not be read, or the
+folder names no device model). Name a kept child by its own id to clean it anyway.
+
+Rust toolchains are uninstalled through rustup. The default toolchain is never removed, and
+stable, nightly and the one RUSTUP_TOOLCHAIN names are kept. With --projects, toolchains
+that a project under DIR needs are kept too: the one rustup would use there (a directory
+override, rust-toolchain or rust-toolchain.toml, looked for up to the root of the disk) and
+its `rust-version`. The others are recommended for removal. Without --projects, or when DIR
+holds no Rust project, nothing is recommended. A toolchain only named on a command line
+(`cargo +1.88` in a script or CI file) cannot be seen.
+
+Simulators are erased and deleted through `xcrun simctl`. A booted simulator is never
+touched. None is while a process named xcodebuild or xctest is running, or when simctl
+cannot be asked what is booted. carwash names what is in the way, and checks again just
+before each device.
+
+Exit status: 0 on success, 1 when a cache failed to clean or was left alone because it is
+in use, 2 on invalid usage or errors.";
 
 #[derive(Debug, Args)]
 pub struct OsArgs {

@@ -4,6 +4,12 @@
 //! was scanned). Permanent deletion first renames the directory to a staging name next to
 //! it, which is atomic and instant, then removes the staged tree; an interrupted clean leaves
 //! a `.carwash-trash-*` directory that the next scan reports as a leftover artifact.
+//!
+//! A program still writing into a directory can refill it while it is being emptied, and
+//! the final `rmdir` then fails with "directory not empty". Once the directory has been
+//! renamed aside, nothing new can find it by its old path, so the removal is tried again a
+//! few times; if the writer outlasts that, the failure says so, says where the remainder is,
+//! and the other targets are cleaned regardless.
 
 use crate::Cancel;
 use crate::discover::STAGING_PREFIX;
@@ -15,6 +21,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +58,7 @@ pub enum CleanEvent {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[non_exhaustive]
 pub struct CleanReport {
     pub removed: usize,
     pub failed: usize,
@@ -58,6 +66,33 @@ pub struct CleanReport {
     /// Free space on the filesystem of the first target, before and after.
     pub free_before: Option<u64>,
     pub free_after: Option<u64>,
+    /// That filesystem is one where free space can keep rising for a while after a large
+    /// deletion (see [`settles_late`]), so `free_after` may not be the final figure.
+    pub settles_late: bool,
+}
+
+/// Whether free space on the filesystem holding `path` can keep rising for a while after
+/// a large deletion, so that a reading taken straight away understates the result. That is
+/// the case on APFS.
+pub fn settles_late(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        rustix::fs::statfs(path).is_ok_and(|fs| names_apfs(&fs.f_fstypename))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Whether a NUL-padded filesystem type name, as `statfs` reports it, is `apfs`.
+#[cfg(target_os = "macos")]
+fn names_apfs(name: &[std::ffi::c_char]) -> bool {
+    name.iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .eq(*b"apfs")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -122,19 +157,94 @@ fn staging_path(path: &Path) -> Option<PathBuf> {
     Some(parent.join(format!("{STAGING_PREFIX}{}-{n}-{name}", std::process::id())))
 }
 
-/// Removes `path`; on failure, returns the path that is left to remove with the error.
-fn remove_permanently(path: &Path) -> Result<(), (PathBuf, io::Error)> {
+/// How long to wait before each further attempt at a directory that was refilled while it
+/// was being removed. A build tool flushing its last files is done well within this.
+const REFILL_WAITS: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(250),
+    Duration::from_millis(1000),
+];
+
+/// A removal that did not finish.
+#[derive(Debug)]
+struct Unfinished {
+    /// What is left to remove: the staging directory, or the artifact itself when it could
+    /// not be renamed.
+    left: PathBuf,
+    staged: bool,
+    error: io::Error,
+}
+
+impl Unfinished {
+    /// What happened, for the person reading the result: the cause in plain words where
+    /// it is known, and where the remainder is.
+    fn describe(&self) -> String {
+        let refilled = self.error.kind() == io::ErrorKind::DirectoryNotEmpty;
+        match (refilled, self.staged) {
+            (true, true) => format!(
+                "another program was still writing into it, so part of it is left in {}; the next scan offers to finish removing it. Nothing else was affected",
+                self.left.display()
+            ),
+            (true, false) => "another program is still writing into it, so it was left where it is; clean it again once that program has finished. Nothing else was affected".to_owned(),
+            (false, true) => format!(
+                "{} (what is left of it is in {})",
+                self.error,
+                self.left.display()
+            ),
+            (false, false) => self.error.to_string(),
+        }
+    }
+}
+
+/// Removes the tree at `target` with `remove`. When the tree was renamed aside (`staged`)
+/// and it was refilled while being emptied, waits (`pause`) and tries again, up to
+/// [`REFILL_WAITS`]: what arrives now comes from a program that already had the directory
+/// open, and it stops when that program does. A tree still at its own path is not retried,
+/// since that would only race a program that is using it.
+fn remove_tree(
+    target: &Path,
+    staged: bool,
+    remove: &dyn Fn(&Path) -> io::Result<()>,
+    pause: &dyn Fn(Duration),
+) -> io::Result<()> {
+    let mut result = remove(target);
+    if staged {
+        for wait in REFILL_WAITS {
+            match &result {
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                    pause(wait);
+                    result = remove(target);
+                }
+                _ => break,
+            }
+        }
+    }
+    result
+}
+
+/// Removes `path`; on failure, says what is left to remove and why.
+fn remove_permanently(path: &Path) -> Result<(), Unfinished> {
     // Rename first so the artifact disappears atomically; fall back to deleting in place
     // when renaming is not possible (for example on some network filesystems).
-    let target = match staging_path(path) {
-        Some(staged) if fs::rename(path, &staged).is_ok() => staged,
-        _ => path.to_path_buf(),
+    let (target, staged) = match staging_path(path) {
+        Some(staged) if fs::rename(path, &staged).is_ok() => (staged, true),
+        _ => (path.to_path_buf(), false),
     };
     // std removes a symlink found at `target` without following it, should the artifact
     // have been swapped for one after validation, and unlinks files without opening them
     // (named pipes, sockets and unreadable files included). It walks relative to directory
     // handles, so nothing swapped in deeper is followed either (CVE-2022-21658).
-    fs::remove_dir_all(&target).map_err(|error| (target, error))
+    remove_tree(
+        &target,
+        staged,
+        &|tree| fs::remove_dir_all(tree),
+        &std::thread::sleep,
+    )
+    .map_err(|error| Unfinished {
+        left: target,
+        staged,
+        error,
+    })
 }
 
 /// The process (EMFILE) or system (ENFILE) ran out of file handles. Each removal holds one
@@ -197,22 +307,37 @@ pub fn clean(
         let result = match options.mode {
             DeleteMode::Permanent => match remove_permanently(&item.path) {
                 Ok(()) => Ok(()),
-                Err((left, error)) if out_of_file_handles(&error) => {
-                    retry.lock().expect("retry list").push((item, left));
+                Err(unfinished) if out_of_file_handles(&unfinished.error) => {
+                    retry.lock().expect("retry list").push((item, unfinished));
                     return;
                 }
-                Err((_, error)) => Err(error.to_string()),
+                Err(unfinished) => Err(unfinished.describe()),
             },
             DeleteMode::Trash => trash::delete(&item.path).map_err(|e| e.to_string()),
         };
         finish(item, result);
     });
 
-    for (item, left) in retry.into_inner().expect("retry list") {
+    for (item, unfinished) in retry.into_inner().expect("retry list") {
         if cancel.is_cancelled() {
             break;
         }
-        finish(item, fs::remove_dir_all(&left).map_err(|e| e.to_string()));
+        let Unfinished { left, staged, .. } = unfinished;
+        let result = remove_tree(
+            &left,
+            staged,
+            &|tree| fs::remove_dir_all(tree),
+            &std::thread::sleep,
+        )
+        .map_err(|error| {
+            Unfinished {
+                left,
+                staged,
+                error,
+            }
+            .describe()
+        });
+        finish(item, result);
     }
 
     CleanReport {
@@ -221,6 +346,7 @@ pub fn clean(
         bytes: bytes.into_inner(),
         free_before,
         free_after: probe.as_deref().and_then(|p| fs4::available_space(p).ok()),
+        settles_late: probe.as_deref().is_some_and(settles_late),
     }
 }
 
@@ -235,6 +361,202 @@ mod tests {
         assert!(out_of_file_handles(&io::Error::from_raw_os_error(23)));
         assert!(!out_of_file_handles(&io::Error::from_raw_os_error(13)));
         assert!(!out_of_file_handles(&io::Error::other("custom")));
+    }
+
+    #[test]
+    fn only_apfs_is_known_to_settle_late() {
+        assert!(!settles_late(Path::new("/definitely/not/here")));
+        #[cfg(target_os = "macos")]
+        {
+            let name = |text: &str| {
+                let mut padded = [0 as std::ffi::c_char; 16];
+                for (slot, byte) in padded.iter_mut().zip(text.bytes()) {
+                    *slot = byte as std::ffi::c_char;
+                }
+                padded
+            };
+            assert!(names_apfs(&name("apfs")));
+            assert!(!names_apfs(&name("hfs")));
+            assert!(!names_apfs(&name("apfsx")));
+            assert!(!names_apfs(&name("")));
+        }
+    }
+
+    fn refilled() -> io::Error {
+        io::Error::from(io::ErrorKind::DirectoryNotEmpty)
+    }
+
+    /// Runs `remove_tree` against a removal that fails with `failures` in turn and then
+    /// succeeds; returns the result, the attempts made and the waits between them.
+    fn attempt(staged: bool, failures: Vec<io::Error>) -> (io::Result<()>, usize, Vec<Duration>) {
+        let failures = Mutex::new(failures.into_iter());
+        let attempts = AtomicU64::new(0);
+        let waits = Mutex::new(Vec::new());
+        let result = remove_tree(
+            Path::new("staged"),
+            staged,
+            &|_| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                failures.lock().unwrap().next().map_or(Ok(()), Err)
+            },
+            &|wait| waits.lock().unwrap().push(wait),
+        );
+        (
+            result,
+            attempts.into_inner() as usize,
+            waits.into_inner().unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_staged_tree_refilled_by_a_writer_is_tried_again() {
+        let (result, attempts, waits) = attempt(true, vec![refilled(), refilled()]);
+        assert!(result.is_ok());
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, REFILL_WAITS[..2]);
+    }
+
+    #[test]
+    fn retrying_is_bounded() {
+        let endless = std::iter::repeat_with(refilled).take(10).collect();
+        let (result, attempts, waits) = attempt(true, endless);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::DirectoryNotEmpty);
+        assert_eq!(attempts, 1 + REFILL_WAITS.len());
+        assert_eq!(waits, REFILL_WAITS);
+    }
+
+    #[test]
+    fn only_refills_of_a_staged_tree_are_retried() {
+        // In place, a retry would race the program still using the directory.
+        let (result, attempts, waits) = attempt(false, vec![refilled()]);
+        assert!(result.is_err());
+        assert_eq!((attempts, waits.len()), (1, 0));
+        // Other failures do not get better by waiting.
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let (result, attempts, _) = attempt(true, vec![denied]);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn a_refill_is_explained_with_where_the_remainder_is() {
+        let unfinished = |staged, error| Unfinished {
+            left: PathBuf::from("/p/.carwash-trash-1-0-node_modules"),
+            staged,
+            error,
+        };
+        let staged = unfinished(true, refilled()).describe();
+        assert!(
+            staged.starts_with("another program was still writing into it"),
+            "{staged}"
+        );
+        assert!(
+            staged.contains("/p/.carwash-trash-1-0-node_modules"),
+            "{staged}"
+        );
+        assert!(staged.ends_with("Nothing else was affected"), "{staged}");
+        assert!(!staged.contains("os error"), "{staged}");
+        let in_place = unfinished(false, refilled()).describe();
+        assert!(in_place.contains("left where it is"), "{in_place}");
+        let denied = unfinished(true, io::Error::from(io::ErrorKind::PermissionDenied)).describe();
+        assert!(
+            denied.contains("what is left of it is in /p/.carwash-trash"),
+            "{denied}"
+        );
+    }
+
+    /// The failure this guards against: a program that holds the directory open (a build
+    /// tool finishing its writes) keeps adding files while the directory is being emptied.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_refilled_through_an_open_handle_is_still_removed() {
+        use rustix::fs::{Mode, OFlags, open, openat};
+        use std::time::Instant;
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("project/node_modules");
+        fs::create_dir_all(target.join("pkg")).unwrap();
+        for n in 0..200 {
+            fs::write(target.join(format!("pkg/file-{n}")), "x").unwrap();
+        }
+        let handle = open(&target, OFlags::DIRECTORY | OFlags::RDONLY, Mode::empty()).unwrap();
+        let until = Instant::now() + Duration::from_millis(300);
+        let writer = std::thread::spawn(move || {
+            let mut written = 0u32;
+            // Creating a file fails once the directory is gone.
+            while Instant::now() < until
+                && openat(
+                    &handle,
+                    format!("late-{written}"),
+                    OFlags::CREATE | OFlags::WRONLY,
+                    Mode::from_raw_mode(0o644),
+                )
+                .is_ok()
+            {
+                written += 1;
+            }
+            written
+        });
+        let (report, events) = run(
+            &[item(0, target.clone())],
+            &[root.path().to_path_buf()],
+            false,
+        );
+        let written = writer.join().unwrap();
+        assert_eq!(
+            (report.removed, report.failed),
+            (1, 0),
+            "{events:?} with {written} files written meanwhile"
+        );
+        let left: Vec<_> = fs::read_dir(root.path().join("project")).unwrap().collect();
+        assert!(left.is_empty(), "nothing staged is left: {left:?}");
+    }
+
+    /// One target that cannot be removed does not stop the others.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_removal_does_not_stop_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let stuck = root.path().join("a/node_modules");
+        let fine = root.path().join("b/node_modules");
+        for dir in [&stuck, &fine] {
+            fs::create_dir_all(dir.join("pkg")).unwrap();
+            fs::write(dir.join("pkg/index.js"), "x").unwrap();
+        }
+        // A directory whose entries cannot be unlinked.
+        let locked = stuck.join("pkg");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let (report, events) = run(
+            &[item(0, stuck.clone()), item(1, fine.clone())],
+            &[root.path().to_path_buf()],
+            false,
+        );
+        let leftover = fs::read_dir(root.path().join("a"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .next();
+        if let Some(leftover) = &leftover {
+            let _ = fs::set_permissions(leftover.join("pkg"), fs::Permissions::from_mode(0o755));
+        }
+        if rustix::process::geteuid().is_root() {
+            // Root removes it regardless; there is nothing to observe.
+            return;
+        }
+        assert_eq!((report.removed, report.failed), (1, 1));
+        assert!(!fine.exists(), "the other target was cleaned");
+        let failure = events
+            .iter()
+            .find_map(|e| match e {
+                CleanEvent::Failed { error, .. } => Some(error.clone()),
+                _ => None,
+            })
+            .expect("a failure event");
+        let leftover = leftover.expect("the staged remainder");
+        assert!(
+            failure.contains(&leftover.display().to_string()),
+            "says where the remainder is: {failure}"
+        );
     }
 
     /// A directory swapped for a symlink after validation must cost only the link: the

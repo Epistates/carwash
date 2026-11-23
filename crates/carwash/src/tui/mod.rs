@@ -20,6 +20,7 @@ mod widgets;
 use crate::context::Context;
 use anyhow::Result;
 use app::{App, Effect, Msg};
+use carwash_core::caches::{GlobalCache, Step};
 use carwash_core::clean::CleanOptions;
 use carwash_core::deps::Checker;
 use carwash_core::tasks::Task;
@@ -375,8 +376,8 @@ impl Runtime<'_> {
                 // Fingerprinting reads the top of each cache: keep it off the event loop.
                 let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    let caches =
-                        crate::commands::caches::present(dirs.as_ref()).unwrap_or_else(|error| {
+                    let caches = crate::commands::caches::present(dirs.as_ref(), None)
+                        .unwrap_or_else(|error| {
                             tracing::warn!(%error, "cannot list caches");
                             Vec::new()
                         });
@@ -386,9 +387,26 @@ impl Runtime<'_> {
             Effect::MeasureCaches(targets) => {
                 let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                 std::thread::spawn(move || {
-                    for (id, path) in targets {
-                        let _ = tx.send(measure_cache(&engine, id, &path));
+                    for cache in targets {
+                        let _ = tx.send(measure_cache(&engine, &cache));
                     }
+                });
+            }
+            Effect::FindToolchainNeeds => {
+                // A search of its own: unlike the scan on screen it enters hidden folders
+                // and follows symlinked project folders, since a toolchain nothing was
+                // seen to need gets recommended for removal. Off the event loop.
+                let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
+                let (root, options) = (self.root.clone(), self.options.discover.clone());
+                std::thread::spawn(move || {
+                    let needs = carwash_core::toolchains::needs(
+                        &engine,
+                        &[root],
+                        &options,
+                        &carwash_core::toolchains::local_overrides(),
+                        &Cancel::new(),
+                    );
+                    let _ = tx.send(Msg::ToolchainNeeds(needs));
                 });
             }
             Effect::SaveSizes(sizes) => {
@@ -399,54 +417,65 @@ impl Runtime<'_> {
                     }
                 }
             }
-            Effect::CleanCaches { caches, size } => {
-                for cache in caches {
-                    if let Some(task) = cache.prune_task() {
-                        let after = tasks::After::Remeasure {
-                            id: cache.id.clone(),
-                            path: cache.path.clone(),
-                        };
-                        self.start_job(cache.name.clone(), task, size, after);
-                        continue;
+            Effect::CleanCaches { caches, mode } => {
+                // Asking simctl what is booted and listing processes takes a moment: keep
+                // it off the event loop.
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    for cache in caches {
+                        // Each cache is checked at its own turn, as the CLI does: a build
+                        // may start while the ones before it are looked at.
+                        let (cache, step) = cache.checked(
+                            mode,
+                            &carwash_core::caches::LocalHost,
+                            &carwash_core::system::RunningApps::snapshot,
+                        );
+                        let step =
+                            step.map_err(|refusal| crate::commands::caches::left_alone(&refusal));
+                        let _ = tx.send(Msg::CacheChecked {
+                            cache: Box::new(cache),
+                            step,
+                        });
                     }
+                });
+            }
+            Effect::CleanCache { cache, step, size } => match step {
+                Step::Run(task) => {
+                    let after = tasks::After::Remeasure(cache.id.clone());
+                    self.start_job(cache.name.clone(), task, size, after);
+                }
+                Step::DeleteDirectory => {
                     let (engine, tx) = (self.ctx.engine.clone(), self.tx.clone());
                     let history = self.ctx.dirs.as_ref().map(|d| d.history_file());
                     std::thread::spawn(move || {
                         let before = cache.size.map_or(0, |s| s.on_disk);
-                        if cache.deletable
-                            && let Some(parent) = cache.path.parent()
-                        {
-                            let report = engine.clean(
-                                &[carwash_core::clean::CleanItem {
-                                    id: carwash_core::ArtifactId(0),
-                                    path: cache.path.clone(),
-                                    expected_bytes: before,
-                                }],
-                                &CleanOptions {
-                                    mode: carwash_core::clean::DeleteMode::Permanent,
-                                    allowed_roots: vec![parent.to_path_buf()],
-                                    dry_run: false,
-                                },
-                                &Cancel::new(),
-                                &|_| {},
-                            );
-                            if report.removed == 1
-                                && let Some(file) = history
-                            {
-                                let record = carwash_core::history::Record::now(
-                                    cache.path.clone(),
-                                    before,
-                                    carwash_core::ArtifactKind::Cache,
-                                    cache.ecosystem.clone(),
-                                    carwash_core::clean::DeleteMode::Permanent,
-                                );
-                                let _ = history::append(&file, &[record]);
+                        match cache.delete_directory(&engine, &Cancel::new()) {
+                            Ok(()) => {
+                                if let Some(file) = history {
+                                    let record = carwash_core::history::Record::now(
+                                        cache.path.clone(),
+                                        before,
+                                        carwash_core::ArtifactKind::Cache,
+                                        cache.ecosystem.clone(),
+                                        carwash_core::clean::DeleteMode::Permanent,
+                                    );
+                                    let _ = history::append(&file, &[record]);
+                                }
+                                let _ = tx.send(measure_cache(&engine, &cache));
+                            }
+                            // Not measured again: the directory is gone or half gone, and
+                            // the message says where the remainder is.
+                            Err(error) => {
+                                let _ = tx.send(Msg::CacheCleanFailed {
+                                    id: cache.id.clone(),
+                                    name: cache.name.clone(),
+                                    error,
+                                });
                             }
                         }
-                        let _ = tx.send(measure_cache(&engine, cache.id, &cache.path));
                     });
                 }
-            }
+            },
             Effect::DiscoverSystem => {
                 // Expanding patterns reads directories: keep it off the event loop.
                 let (dirs, tx) = (self.ctx.dirs.clone(), self.tx.clone());
@@ -542,16 +571,11 @@ impl Runtime<'_> {
 
 /// Shows `path` in the platform file manager, detached from the terminal.
 /// Fingerprints then measures one global cache (a missing directory measures as empty).
-fn measure_cache(engine: &carwash_core::Engine, id: String, path: &Path) -> Msg {
-    let fingerprint = carwash_core::cache::Fingerprint::of(path);
-    let size = if path.exists() {
-        engine.measure_path(path, &Cancel::new())
-    } else {
-        carwash_core::Size::default()
-    };
+fn measure_cache(engine: &carwash_core::Engine, cache: &GlobalCache) -> Msg {
+    let fingerprint = carwash_core::cache::Fingerprint::of(&cache.path);
     Msg::CacheMeasured {
-        id,
-        size,
+        id: cache.id.clone(),
+        size: cache.measure(engine, &Cancel::new()),
         fingerprint,
     }
 }

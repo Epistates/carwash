@@ -56,13 +56,26 @@ Sizes are allocated blocks, not apparent sizes, with hard links counted once. "R
 counts data whose every link is inside the artifact, so a pnpm `node_modules` hard-linked into
 the global store shows how much deleting it would actually free.
 
+After a clean, carwash reads the disk's free space again and shows the change next to what it
+freed. On APFS the free space can keep rising for a while after a large clean, so a reading
+taken right away may be well below the total; carwash says so when that happens, and the
+figure is worth checking again a few minutes later.
+
+If another program is still writing into a directory while it is deleted (a build that has
+not quite finished, say), carwash retries for a moment. If that is not enough, it reports
+that directory as failed, says where the remainder is, and cleans everything else as
+planned. The remainder is a `.carwash-trash-*` folder beside where the directory was. The
+next `carwash scan` lists it as a leftover to finish removing, and `carwash caches` and the
+Caches tab list what an unfinished clean left of a cache as a row of its own, recommended
+for removal and cleaned together with that cache.
+
 ## Install
 
 ```bash
 cargo install --locked carwash
 ```
 
-Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rust 1.88 or newer.
+Or from a checkout: `cargo install --locked --path crates/carwash`. Requires Rust 1.95 or newer.
 
 ## The TUI
 
@@ -79,7 +92,10 @@ Run `carwash [PATH]`. Five tabs, switched with `1` to `5`:
    updates within your requirements, `U` upgrades to latest (and edits manifests). Projects are
    re-checked after the update finishes.
 4. **Caches**: global caches outside any project. `d` (twice) runs the tool's own prune command
-   when it is installed, or deletes the directory when that is safe. Sizes are remembered, so
+   when it is installed, or deletes the directory when that is safe. Simulators are listed one
+   by one: `d` deletes the marked devices and `e` (twice) erases them, keeping the devices;
+   booted ones are left alone. `a` marks what carwash recommends removing, such as device
+   support that newer folders have replaced. Sizes are remembered, so
    the tab opens instantly. A cache is measured again when the top of its tree has changed
    (entries added or removed there), after a week otherwise, or when you press `r`.
 5. **System**: [OS mode](#os-mode), the operating system's caches, logs, trash and temporary
@@ -105,8 +121,8 @@ every tab; in Reclaim, clicking selects a row and clicking it again expands it.
 | `carwash tasks [PATH]` | Tasks per project. `--all` for every project's list |
 | `carwash run TASK [PATH]` | Run a task in every project that has it. `-j N`, `--filter GLOB`, `--fail-fast`, `--dry-run` |
 | `carwash outdated [PATH]` | Outdated and vulnerable dependencies. `--exit-code` for CI, `--no-vulns`, `--refresh` |
-| `carwash caches` | Global caches and their sizes |
-| `carwash caches clean ID...` | Clean caches; a parent id such as `rustup-toolchains` selects all its children |
+| `carwash caches` | Global caches and their sizes. `--projects DIR` also says which Rust toolchains your projects need |
+| `carwash caches clean [ID...]` | Clean caches; a parent id such as `rustup-toolchains` selects its children, except the ones carwash keeps. `--recommended` takes only what carwash recommends removing, `--erase` clears simulators and keeps them, `--dry-run`, `--yes` |
 | `carwash os` | The operating system's caches, logs, trash and temp files, with what cleaning frees |
 | `carwash os clean [AREA...]` | Clean the default tier, or areas by id or number. `--escalate`, `--dry-run`, `--yes` |
 | `carwash ecosystems` | Recognised ecosystems |
@@ -155,10 +171,98 @@ most recent scan on the machine.
 
 Without a terminal, `clean` refuses to delete unless given `--yes`. With `--json`, stdout is one
 JSON document: `selected`, `held` (counts by reason), `skipped` (picks it refused, with the
-reason), `removed`, `failed`, `bytes`, `free_before`, `free_after` and, with a goal,
-`goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
+reason), `removed`, `failed`, `bytes`, `free_before`, `free_after`, `free_space_may_rise`
+(true when `free_after` was read right after a large clean on APFS and may not have settled)
+and, with a goal, `goal: { bytes, until_free, met }`. Exit status is 0 on success or when there is nothing to
 do, 1 when a deletion failed, a pick was skipped or the goal could not be met, and 2 on
 invalid usage or errors.
+
+### Simulators
+
+`carwash caches` lists every simulator on its own row, with its runtime, size, when it was
+last used and whether it is booted, so you can see which devices hold the space:
+
+```bash
+carwash caches                                    # simulators are the rows simulators/<UDID>
+carwash caches clean simulators/<UDID> --erase    # clear its contents and settings, keep the device
+carwash caches clean simulators/<UDID>            # delete the device
+carwash caches clean simulators                   # delete devices whose runtime is no longer installed
+carwash caches clean xctest-devices               # delete the clones Xcode makes for parallel testing
+```
+
+Everything goes through `xcrun simctl`; carwash never removes a device's folder itself. A
+booted simulator is never erased or deleted. No simulator is touched while a process named
+`xcodebuild` or `xctest` is running, or when `simctl` cannot be asked what is booted.
+carwash says what is in the way, and checks again just before each device, so a simulator
+that boots after you confirmed is still left alone. Add `--dry-run` to see the commands
+first.
+
+Those two process names are all that carwash looks for; it does not look for the Xcode app.
+To hold simulators back while other programs run, copy the `simulators` entry from the
+built-in [`caches.toml`](crates/carwash-core/src/caches.toml) into
+`~/.config/carwash/caches.toml` and add their process names to `apps`. An entry with the
+same `id` replaces the built-in one.
+
+`xctest-devices` is sized by the clones `simctl` lists, which is what its command removes.
+Device folders in that set that `simctl` has no device for are shown on a row of their own
+with their size; `simctl` cannot remove them, and carwash does not delete them either.
+
+`xcrun` is only run when a developer directory is selected (`xcode-select -p`), so listing
+caches never brings up the prompt to install the developer tools.
+
+### Device support and recommendations
+
+Xcode copies several gigabytes of symbols from a device for every OS build it connects on,
+and never removes the folders of builds the device has moved past. `carwash caches` reads
+`xcrun devicectl list devices` and gives each folder a verdict in the ADVICE column:
+
+- **keep**: a device runs that build (unless it last connected more than 90 days ago), or it
+  is the newest folder for its device model. The only folder of a model is always kept.
+- **remove**: a newer folder for the same model has replaced it, and no device runs it.
+- **unknown, kept**: carwash could not tell. The connected devices could not be read
+  (`devicectl` is missing, failed or took too long), or the folder's name does not say which
+  device model it is for. What carwash cannot know, it keeps.
+
+Builds are ordered the way Apple numbers them: for one OS version a release such as `24C101`
+is later than a beta such as `24C5037i`. Two builds that cannot be ordered are both kept.
+
+```bash
+carwash caches clean --recommended --dry-run    # what carwash recommends removing, anywhere
+carwash caches clean xcode-device-support       # device support, except what is kept
+carwash caches clean "xcode-device-support/iPad16,3 27.3 (24C5037i)"   # one folder, kept or not
+```
+
+A parent id such as `xcode-device-support` leaves out the children carwash keeps, including
+the unknown ones, and lists them; naming a kept child by its own id cleans it anyway.
+`devicectl` is only asked when device support is listed or cleaned. In the TUI, `a` marks everything
+recommended for removal.
+
+Rust toolchains get the same treatment once carwash knows your projects:
+
+```bash
+carwash caches --projects ~/work                              # which toolchains do projects need?
+carwash caches clean rustup-toolchains --projects ~/work      # uninstall the ones none needs
+```
+
+A toolchain is kept when a project under the directory needs it. That is the toolchain
+rustup would use in the project's folder: a `rustup override`, a `rust-toolchain` file or a
+`rust-toolchain.toml`, looked for from that folder up to the root of the disk, in rustup's
+own order. It is also the project's `rust-version`. A pin of `1.90` keeps both `1.90` and
+`1.90.0`. `stable`, `nightly`, the toolchain `RUSTUP_TOOLCHAIN` names and toolchains with a
+`rustup override` are always kept, and the default toolchain is never removed. The rest are
+recommended for removal, with the directory named in the reason ("no project under
+/Users/you/work needs it"), and uninstalled with `rustup toolchain uninstall`. The TUI does
+this for the folder it scanned.
+
+The search for projects enters hidden folders, and follows a symlink to another folder when
+the link is within three levels of the directory (each target once). It does not look inside
+build output, dependency folders, or the crates cargo and rustup downloaded. Without
+`--projects`, or when the directory holds no Rust project, carwash has nothing to go by: the
+verdict is unknown and no toolchain is recommended for removal.
+
+The advice cannot see a toolchain that is only named on a command line, such as
+`cargo +1.88 test` in a script, a justfile or a CI workflow. Check those before you remove
+what carwash recommends; rustup installs a toolchain again when something asks for it.
 
 ### OS mode
 

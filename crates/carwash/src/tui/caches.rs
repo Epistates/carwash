@@ -4,7 +4,8 @@ use super::app::{App, Effect, Level};
 use super::keymap::Action;
 use super::widgets::{pane, spinner};
 use carwash_core::cache::{CachedSize, Fingerprint, SizeCache};
-use carwash_core::caches::GlobalCache;
+use carwash_core::caches::{GlobalCache, Mode, Step, Verdict};
+use carwash_core::toolchains::Needs;
 use carwash_core::{Size, fmt};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -19,6 +20,15 @@ const SIZES_FRESH_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// ...or younger than this when the cache's fingerprint shows no change.
 const UNCHANGED_FRESH_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// What the first press of `d` or `e` named, for the second press to confirm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Armed {
+    mode: Mode,
+    /// The caches the first press named. The second press cleans these and nothing else,
+    /// wherever the cursor is by then.
+    ids: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct CachesState {
     /// `None` until discovery finished.
@@ -27,7 +37,8 @@ pub struct CachesState {
     pub marked: HashSet<String>,
     /// Being cleaned or measured.
     pub busy: HashSet<String>,
-    clean_armed: bool,
+    /// The clean or erase that the next press of the same key confirms.
+    armed: Option<Armed>,
     requested: bool,
     /// The tab has been shown; stale sizes are measured from then on.
     opened: bool,
@@ -35,6 +46,8 @@ pub struct CachesState {
     remeasure_all: bool,
     /// The user has moved the cursor.
     moved: bool,
+    /// What the Rust projects in the scanned folder need, once they have been looked for.
+    needs: Option<Needs>,
 }
 
 impl CachesState {
@@ -43,8 +56,19 @@ impl CachesState {
         for cache in &mut caches {
             cache.size = sizes.get(&cache.path).map(|c| c.size);
         }
+        if let Some(needs) = &self.needs {
+            carwash_core::caches::apply_needs(&mut caches, needs);
+        }
         self.caches = Some(caches);
         self.sort();
+    }
+
+    /// Takes what the scanned projects need, and advises on the toolchains listed.
+    pub fn set_needs(&mut self, needs: Needs) {
+        if let Some(caches) = &mut self.caches {
+            carwash_core::caches::apply_needs(caches, &needs);
+        }
+        self.needs = Some(needs);
     }
 
     /// Records a measurement; returns the cache's path.
@@ -168,18 +192,18 @@ impl App {
             return Vec::new();
         }
         let all = std::mem::take(&mut state.remeasure_all);
-        let targets: Vec<(String, PathBuf)> = state
+        let targets: Vec<GlobalCache> = state
             .caches
             .iter()
             .flatten()
             .filter(|c| !state.busy.contains(&c.id))
             .filter(|c| all || is_stale(c, self.cache.get(&c.path), self.now))
-            .map(|c| (c.id.clone(), c.path.clone()))
+            .cloned()
             .collect();
         if targets.is_empty() {
             return Vec::new();
         }
-        state.busy.extend(targets.iter().map(|(id, _)| id.clone()));
+        state.busy.extend(targets.iter().map(|c| c.id.clone()));
         vec![Effect::MeasureCaches(targets)]
     }
 
@@ -208,11 +232,18 @@ impl App {
         let selected = self.selected_caches();
         match selected.as_slice() {
             [] => None,
-            [cache] => Some(match (cache.prune_task(), cache.deletable) {
-                (Some(task), _) => format!("{}: runs `{}`", cache.name, task.command_line()),
-                (None, true) => format!("{}: deletes {}", cache.name, cache.path.display()),
-                (None, false) => format!("{}: its tool is not installed", cache.name),
-            }),
+            [cache] => Some(
+                match (protection(cache), cache.prune_task(), cache.deletable) {
+                    (Some(reason), _, _) => format!("{}: left alone ({reason})", cache.name),
+                    (None, Some(task), _) => {
+                        format!("{}: runs `{}`", cache.name, task.command_line())
+                    }
+                    (None, None, true) => {
+                        format!("{}: deletes {}", cache.name, cache.path.display())
+                    }
+                    (None, None, false) => format!("{}: its tool is not installed", cache.name),
+                },
+            ),
             many => Some(format!(
                 "{} marked caches · {}",
                 many.len(),
@@ -221,9 +252,187 @@ impl App {
         }
     }
 
+    /// What erasing would do to the marked (or selected) caches.
+    pub fn caches_erase_preview(&self) -> Option<String> {
+        let selected = self.selected_caches();
+        let erasable: Vec<&GlobalCache> = selected.iter().filter(|c| c.erase.is_some()).collect();
+        Some(match erasable.as_slice() {
+            [] => {
+                "Only simulators can be erased: their contents and settings go, the device stays."
+                    .into()
+            }
+            [cache] => match (protection(cache), cache.erase_task()) {
+                (Some(reason), _) => format!("{}: left alone ({reason})", cache.name),
+                (None, Some(task)) => format!(
+                    "{}: runs `{}`, keeping the device",
+                    cache.name,
+                    task.command_line()
+                ),
+                (None, None) => format!("{}: its tool is not installed", cache.name),
+            },
+            many => format!(
+                "{} simulators · {} · the devices stay",
+                many.len(),
+                fmt::bytes(many.iter().filter_map(|c| c.size).map(|s| s.on_disk).sum())
+            ),
+        })
+    }
+
+    /// The first press says what will happen; the second press of the same key does it.
+    fn clean_selected(&mut self, mode: Mode) -> Vec<Effect> {
+        let (verb, key) = match mode {
+            Mode::Erase => ("erase", "e"),
+            Mode::Clean | Mode::Delete => ("clean", "d"),
+        };
+        let cleanable = |cache: &GlobalCache| {
+            protection(cache).is_none() && (mode != Mode::Erase || cache.erase.is_some())
+        };
+        // The second press confirms exactly what the first one named. The list may have
+        // been sorted or listed again in between, so the cursor is not asked again: the
+        // named caches are looked up by id, and if any is gone or has come into use the
+        // confirmation is void.
+        if let Some(armed) = self.caches.armed.take()
+            && armed.mode == mode
+        {
+            let listed = self.caches.caches.as_deref().unwrap_or_default();
+            let confirmed: Option<Vec<GlobalCache>> = armed
+                .ids
+                .iter()
+                .map(|id| {
+                    listed
+                        .iter()
+                        .find(|c| &c.id == id)
+                        .filter(|c| cleanable(c))
+                        .cloned()
+                })
+                .collect();
+            let Some(selected) = confirmed else {
+                self.toast(
+                    format!(
+                        "The caches changed since the first press; press {key} to choose again"
+                    ),
+                    Level::Warn,
+                );
+                return Vec::new();
+            };
+            let bytes: u64 = selected
+                .iter()
+                .filter_map(|c| c.size)
+                .map(|s| s.on_disk)
+                .sum();
+            for cache in &selected {
+                self.caches.marked.remove(&cache.id);
+                self.caches.busy.insert(cache.id.clone());
+            }
+            self.toast(
+                format!(
+                    "{} {}; commands run in the Tasks tab (2)",
+                    if mode == Mode::Erase {
+                        "Erasing"
+                    } else {
+                        "Cleaning"
+                    },
+                    fmt::bytes(bytes)
+                ),
+                Level::Info,
+            );
+            return vec![Effect::CleanCaches {
+                caches: selected,
+                mode,
+            }];
+        }
+
+        let mut selected = self.selected_caches();
+        if mode == Mode::Erase {
+            selected.retain(|c| c.erase.is_some());
+            if selected.is_empty() {
+                self.toast("Only simulators can be erased", Level::Warn);
+                return Vec::new();
+            }
+        }
+        // What is in use is never cleaned, whatever was marked.
+        let in_use: Vec<String> = selected
+            .iter()
+            .filter_map(|c| protection(c).map(|why| format!("{} left alone: {why}", c.name)))
+            .collect();
+        selected.retain(|c| protection(c).is_none());
+        if selected.is_empty() {
+            if let Some(message) = in_use.into_iter().next() {
+                self.toast(message, Level::Warn);
+            }
+            return Vec::new();
+        }
+        let left = match in_use.len() {
+            0 => String::new(),
+            n => format!("; {n} in use left alone"),
+        };
+        let bytes: u64 = selected
+            .iter()
+            .filter_map(|c| c.size)
+            .map(|s| s.on_disk)
+            .sum();
+        self.toast(
+            format!(
+                "Press {key} again to {verb} {} ({}){left}",
+                if selected.len() == 1 {
+                    selected[0].name.clone()
+                } else {
+                    format!("{} caches", selected.len())
+                },
+                fmt::bytes(bytes)
+            ),
+            Level::Warn,
+        );
+        self.caches.armed = Some(Armed {
+            mode,
+            ids: selected.into_iter().map(|c| c.id).collect(),
+        });
+        Vec::new()
+    }
+
+    /// A cache was checked just before cleaning: what it takes, or why it is left alone
+    /// (it came into use since it was listed).
+    pub fn on_cache_checked(
+        &mut self,
+        cache: Box<GlobalCache>,
+        step: Result<Step, String>,
+    ) -> Vec<Effect> {
+        match step {
+            Ok(step) => vec![Effect::CleanCache {
+                cache,
+                step,
+                size: self.tasks.pty_size,
+            }],
+            Err(reason) => {
+                self.caches.busy.remove(&cache.id);
+                self.toast(format!("{} left alone: {reason}", cache.name), Level::Warn);
+                Vec::new()
+            }
+        }
+    }
+
+    /// A cache's directory could not be removed. Says why, and lists the caches again so
+    /// that what is left of it shows up as a leftover instead of an empty row.
+    pub fn on_cache_clean_failed(&mut self, id: &str, name: &str, error: &str) -> Vec<Effect> {
+        self.caches.busy.remove(id);
+        self.toast(format!("{name} was not cleaned: {error}"), Level::Warn);
+        self.discover_caches()
+    }
+
+    /// Measures one cache again, after a command that cleaned it.
+    pub fn remeasure_cache(&mut self, id: &str) -> Vec<Effect> {
+        match self.caches.caches.iter().flatten().find(|c| c.id == id) {
+            Some(cache) => vec![Effect::MeasureCaches(vec![cache.clone()])],
+            None => {
+                self.caches.busy.remove(id);
+                Vec::new()
+            }
+        }
+    }
+
     pub fn on_caches_action(&mut self, action: Action) -> Vec<Effect> {
-        if action != Action::Clean {
-            self.caches.clean_armed = false;
+        if !matches!(action, Action::Clean | Action::Erase) {
+            self.caches.armed = None;
         }
         let len = self.caches.caches.as_ref().map_or(0, Vec::len);
         let last = len.saturating_sub(1);
@@ -262,6 +471,30 @@ impl App {
                 }
             }
             Action::Unmark => state.marked.clear(),
+            Action::MarkAll => {
+                let recommended: Vec<&GlobalCache> = state
+                    .caches
+                    .iter()
+                    .flatten()
+                    .filter(|c| c.verdict() == Some(Verdict::Remove))
+                    .collect();
+                let count = recommended.len();
+                let bytes: u64 = recommended
+                    .iter()
+                    .filter_map(|c| c.size)
+                    .map(|s| s.on_disk)
+                    .sum();
+                let ids: Vec<String> = recommended.iter().map(|c| c.id.clone()).collect();
+                state.marked.extend(ids);
+                let message = match count {
+                    0 => "Nothing here is recommended for removal".to_owned(),
+                    _ => format!(
+                        "Marked {count} recommended for removal · {}",
+                        fmt::bytes(bytes)
+                    ),
+                };
+                self.toast(message, Level::Info);
+            }
             Action::Rescan => {
                 state.remeasure_all = true;
                 return self.discover_caches();
@@ -271,53 +504,28 @@ impl App {
                     return vec![Effect::Reveal(path)];
                 }
             }
-            Action::Clean => {
-                let selected = self.selected_caches();
-                if selected.is_empty() {
-                    return Vec::new();
-                }
-                let bytes: u64 = selected
-                    .iter()
-                    .filter_map(|c| c.size)
-                    .map(|s| s.on_disk)
-                    .sum();
-                if !self.caches.clean_armed {
-                    self.caches.clean_armed = true;
-                    self.toast(
-                        format!(
-                            "Press d again to clean {} ({})",
-                            if selected.len() == 1 {
-                                selected[0].name.clone()
-                            } else {
-                                format!("{} caches", selected.len())
-                            },
-                            fmt::bytes(bytes)
-                        ),
-                        Level::Warn,
-                    );
-                    return Vec::new();
-                }
-                self.caches.clean_armed = false;
-                for cache in &selected {
-                    self.caches.marked.remove(&cache.id);
-                    self.caches.busy.insert(cache.id.clone());
-                }
-                self.toast(
-                    format!(
-                        "Cleaning {}; prune commands run in the Tasks tab (2)",
-                        fmt::bytes(bytes)
-                    ),
-                    Level::Info,
-                );
-                return vec![Effect::CleanCaches {
-                    caches: selected,
-                    size: self.tasks.pty_size,
-                }];
-            }
+            Action::Clean => return self.clean_selected(Mode::Clean),
+            Action::Erase => return self.clean_selected(Mode::Erase),
             _ => {}
         }
         Vec::new()
     }
+}
+
+/// Why carwash never cleans `cache`, when it does not.
+fn protection(cache: &GlobalCache) -> Option<&str> {
+    cache
+        .advice
+        .as_ref()
+        .filter(|advice| advice.verdict == Verdict::Protected)
+        .map(|advice| advice.reason.as_str())
+}
+
+/// How long ago `cache` was last used, where that is recorded.
+fn last_used(cache: &GlobalCache, now: SystemTime) -> Option<Duration> {
+    cache
+        .last_used
+        .map(|at| now.duration_since(at).unwrap_or_default())
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -334,14 +542,19 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let [table_area, detail] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).areas(area);
+        Layout::vertical([Constraint::Min(3), Constraint::Length(5)]).areas(area);
+    // Only some caches record when they were last used, or come with advice.
+    let dated = caches.iter().any(|c| c.last_used.is_some());
+    let advised = caches.iter().any(|c| c.advice.is_some());
     let rows: Vec<Row> = caches
         .iter()
         .map(|cache| {
-            let mark = if app.caches.busy.contains(&cache.id) {
-                Span::styled(spinner(app), t.fg(t.accent))
-            } else if app.caches.marked.contains(&cache.id) {
+            // A mark is the user's own, and what a pending "clean N caches" counts: it shows
+            // even while the row is being measured.
+            let mark = if app.caches.marked.contains(&cache.id) {
                 Span::styled(app.glyphs.marked, t.bold(t.accent2))
+            } else if app.caches.busy.contains(&cache.id) {
+                Span::styled(spinner(app), t.fg(t.accent))
             } else {
                 Span::styled(app.glyphs.unmarked, t.muted())
             };
@@ -349,10 +562,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 Some(size) => Span::styled(fmt::bytes(size.on_disk), t.size(size.on_disk)),
                 None => Span::styled("…", t.muted()),
             };
-            let action = match (cache.prune_task(), cache.deletable) {
-                (Some(task), _) => Span::styled(task.command_line(), t.text()),
-                (None, true) => Span::styled("delete", t.subtle()),
-                (None, false) => Span::styled(
+            let action = match (protection(cache), cache.prune_task(), cache.deletable) {
+                (Some(reason), _, _) => {
+                    Span::styled(format!("left alone: {reason}"), t.fg(t.warning))
+                }
+                (None, Some(task), _) => Span::styled(task.command_line(), t.text()),
+                (None, None, true) => Span::styled("delete", t.subtle()),
+                (None, None, false) => Span::styled(
                     format!(
                         "needs `{}`",
                         cache.prune.as_ref().map_or("?", |p| p[0].as_str())
@@ -360,6 +576,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     t.fg(t.warning),
                 ),
             };
+            let used = last_used(cache, app.now).map(fmt::age).unwrap_or_default();
             let badge = cache
                 .ecosystem
                 .as_deref()
@@ -369,13 +586,28 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     Span::styled(e.badge.clone(), t.fg(t.ecosystem(&e.key)))
                 })
                 .unwrap_or_default();
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(mark),
                 Cell::from(Line::from(size).alignment(Alignment::Right)),
                 Cell::from(badge),
                 Cell::from(Span::styled(cache.name.clone(), t.text())),
-                Cell::from(action),
-            ])
+            ];
+            if dated {
+                cells.push(Cell::from(
+                    Line::from(Span::styled(used, t.subtle())).alignment(Alignment::Right),
+                ));
+            }
+            cells.push(Cell::from(action));
+            if advised {
+                cells.push(Cell::from(match cache.verdict() {
+                    Some(Verdict::Remove) => Span::styled("remove", t.fg(t.success)),
+                    Some(Verdict::Keep) => Span::styled("keep", t.muted()),
+                    Some(Verdict::Unknown) => Span::styled("kept?", t.fg(t.warning)),
+                    Some(Verdict::Protected) => Span::styled("in use", t.fg(t.warning)),
+                    Some(_) | None => Span::default(),
+                }));
+            }
+            Row::new(cells)
         })
         .collect();
     let mut title = format!(
@@ -392,27 +624,35 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             fmt::age(age)
         ));
     }
+    let mut headers = vec!["", "SIZE", "", "CACHE"];
+    let mut widths = vec![
+        Constraint::Length(1),
+        Constraint::Length(9),
+        Constraint::Length(2),
+        Constraint::Fill(2),
+    ];
+    if dated {
+        headers.push("USED");
+        widths.push(Constraint::Length(5));
+    }
+    headers.push("CLEAN WITH");
+    widths.push(Constraint::Fill(1));
+    if advised {
+        headers.push("ADVICE");
+        widths.push(Constraint::Length(6));
+    }
     let header = Row::new(
-        ["", "SIZE", "", "CACHE", "CLEAN WITH"]
+        headers
             .into_iter()
             .map(|h| Cell::from(Span::styled(h, t.bold(t.muted)))),
     );
     let mut state = TableState::default().with_selected(Some(app.caches.cursor));
     frame.render_stateful_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(1),
-                Constraint::Length(9),
-                Constraint::Length(2),
-                Constraint::Fill(2),
-                Constraint::Fill(1),
-            ],
-        )
-        .header(header)
-        .column_spacing(1)
-        .row_highlight_style(t.selected_row())
-        .block(pane(&t, title, true)),
+        Table::new(rows, widths)
+            .header(header)
+            .column_spacing(1)
+            .row_highlight_style(t.selected_row())
+            .block(pane(&t, title, true)),
         table_area,
         &mut state,
     );
@@ -426,10 +666,28 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 None => String::new(),
             }
         };
+        let used = match last_used(cache, app.now) {
+            Some(age) if age < Duration::from_secs(60) => "  last used just now".to_owned(),
+            Some(age) => format!("  last used {} ago", fmt::age(age)),
+            None => String::new(),
+        };
         let mut lines = vec![Line::from(vec![
             Span::styled(cache.path.display().to_string(), t.subtle()),
-            Span::styled(format!("  {measured}"), t.muted()),
+            Span::styled(format!("  {measured}{used}"), t.muted()),
         ])];
+        if let Some(advice) = &cache.advice {
+            let (label, style) = match advice.verdict {
+                Verdict::Remove => ("Recommended for removal", t.fg(t.success)),
+                Verdict::Keep => ("Kept unless marked", t.subtle()),
+                Verdict::Unknown => ("Not known, so kept unless marked", t.fg(t.warning)),
+                Verdict::Protected => ("In use", t.fg(t.warning)),
+                _ => ("Advice", t.subtle()),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{label}: {}", advice.reason),
+                style,
+            )));
+        }
         if let Some(note) = &cache.note {
             lines.push(Line::from(Span::styled(note.clone(), t.muted())));
         }
@@ -445,7 +703,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::tui::app::Msg;
     use crate::tui::app::tests::app;
@@ -457,17 +715,31 @@ mod tests {
     }
 
     fn cache(id: &str) -> GlobalCache {
-        GlobalCache {
-            id: id.into(),
-            name: id.into(),
-            path: PathBuf::from(format!("/home/{id}")),
-            ecosystem: None,
-            deletable: true,
-            prune: None,
-            note: None,
-            size: None,
-            fingerprint: None,
-        }
+        let mut cache = GlobalCache::new(id, id, format!("/home/{id}"));
+        cache.deletable = true;
+        cache
+    }
+
+    pub(crate) fn simulator(id: &str) -> GlobalCache {
+        let mut cache = cache(id);
+        cache.deletable = false;
+        cache.prune = Some(vec!["cargo".into(), "delete".into(), id.into()]);
+        cache.erase = Some(vec!["cargo".into(), "erase".into(), id.into()]);
+        cache.apps = vec!["xcodebuild".into()];
+        cache
+    }
+
+    fn advised(mut cache: GlobalCache, verdict: Verdict, reason: &str) -> GlobalCache {
+        cache.advice = Some(carwash_core::caches::Advice::new(verdict, reason));
+        cache
+    }
+
+    pub(crate) fn booted(id: &str) -> GlobalCache {
+        advised(
+            simulator(id),
+            Verdict::Protected,
+            "booted; shut it down first",
+        )
     }
 
     fn measured(id: &str, size: Size) -> Msg {
@@ -490,9 +762,10 @@ mod tests {
         let remembered = sizes.get(Path::new("/home/a"));
         let two_days = now + Duration::from_secs(2 * 24 * 60 * 60);
         let two_weeks = now + Duration::from_secs(14 * 24 * 60 * 60);
-        let with = |fp| GlobalCache {
-            fingerprint: fp,
-            ..cache("a")
+        let with = |fp| {
+            let mut cache = cache("a");
+            cache.fingerprint = fp;
+            cache
         };
         // Unchanged: trusted for a week.
         assert!(!is_stale(&with(fingerprint(1)), remembered, two_days));
@@ -564,9 +837,7 @@ mod tests {
         effects
             .iter()
             .flat_map(|e| match e {
-                Effect::MeasureCaches(targets) => {
-                    targets.iter().map(|(id, _)| id.as_str()).collect()
-                }
+                Effect::MeasureCaches(targets) => targets.iter().map(|c| c.id.as_str()).collect(),
                 _ => Vec::new(),
             })
             .collect()
@@ -668,10 +939,332 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         assert!(press(&mut app, KeyCode::Char('d')).is_empty());
         let effects = press(&mut app, KeyCode::Char('d'));
-        let Some(Effect::CleanCaches { caches, .. }) = effects.first() else {
+        let Some(Effect::CleanCaches { caches, mode }) = effects.first() else {
             panic!("clean expected, got {effects:?}");
         };
         assert_eq!(caches.len(), 1);
+        assert_eq!(*mode, Mode::Clean);
         assert!(app.caches.busy.contains(&caches[0].id));
+    }
+
+    fn opened(caches: Vec<GlobalCache>) -> App {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(Msg::CachesDiscovered(caches));
+        app.caches.busy.clear();
+        app
+    }
+
+    #[test]
+    fn erasing_needs_a_second_press_of_the_same_key() {
+        let mut app = opened(vec![simulator("sim"), cache("plain")]);
+        assert!(press(&mut app, KeyCode::Char('e')).is_empty());
+        // Another key in between starts over, and `d` does not confirm an erase.
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(press(&mut app, KeyCode::Char('e')).is_empty());
+        let effects = press(&mut app, KeyCode::Char('e'));
+        let Some(Effect::CleanCaches { caches, mode }) = effects.first() else {
+            panic!("erase expected, got {effects:?}");
+        };
+        assert_eq!(*mode, Mode::Erase);
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].id, "sim");
+    }
+
+    #[test]
+    fn only_simulators_are_erased() {
+        let mut app = opened(vec![cache("plain"), simulator("sim")]);
+        assert!(press(&mut app, KeyCode::Char('e')).is_empty());
+        assert!(
+            press(&mut app, KeyCode::Char('e')).is_empty(),
+            "nothing to erase"
+        );
+        // Marking both erases only the simulator.
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('e'));
+        let effects = press(&mut app, KeyCode::Char('e'));
+        let Some(Effect::CleanCaches { caches, .. }) = effects.first() else {
+            panic!("erase expected, got {effects:?}");
+        };
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].id, "sim");
+    }
+
+    #[test]
+    fn a_booted_simulator_is_never_sent_for_cleaning() {
+        for key in ['d', 'e'] {
+            let mut app = opened(vec![booted("up")]);
+            assert!(press(&mut app, KeyCode::Char(key)).is_empty());
+            assert!(press(&mut app, KeyCode::Char(key)).is_empty());
+            assert!(app.caches.busy.is_empty());
+
+            // Marked together with one that is shut down, only that one goes.
+            let mut app = opened(vec![booted("up"), simulator("down")]);
+            press(&mut app, KeyCode::Char(' '));
+            press(&mut app, KeyCode::Char(' '));
+            press(&mut app, KeyCode::Char(key));
+            let effects = press(&mut app, KeyCode::Char(key));
+            let Some(Effect::CleanCaches { caches, .. }) = effects.first() else {
+                panic!("clean expected, got {effects:?}");
+            };
+            assert_eq!(caches.len(), 1);
+            assert_eq!(caches[0].id, "down");
+        }
+        let app = opened(vec![booted("up")]);
+        assert_eq!(
+            app.caches_clean_preview().unwrap(),
+            "up: left alone (booted; shut it down first)"
+        );
+    }
+
+    fn toolchain(name: &str) -> GlobalCache {
+        let mut cache = advised(
+            cache(&format!("rustup-toolchains/{name}-aarch64-apple-darwin")),
+            Verdict::Unknown,
+            "not checked against any projects",
+        );
+        cache.detail = Some(carwash_core::caches::Detail::Toolchain {
+            default: false,
+            standing: false,
+            needed_by: None,
+        });
+        cache
+    }
+
+    fn toolchain_verdicts(app: &App) -> Vec<Option<Verdict>> {
+        let caches = app.caches.caches.as_ref().unwrap();
+        ["1.90", "1.91"]
+            .iter()
+            .map(|name| {
+                caches
+                    .iter()
+                    .find(|c| c.id.contains(&format!("/{name}-")))
+                    .unwrap()
+                    .verdict()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn toolchains_are_advised_on_once_the_scanned_projects_are_known() {
+        use carwash_core::toolchains::{Channel, Pin};
+        let mut needs = Needs::default();
+        needs.roots = vec![PathBuf::from("/work")];
+        needs.projects = 1;
+        needs.pins = vec![Pin::new(Channel::Version(vec![1, 90]), "/work/app")];
+        let unknown = [Some(Verdict::Unknown), Some(Verdict::Unknown)];
+        let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
+        assert_eq!(
+            toolchain_verdicts(&app),
+            unknown,
+            "projects not scanned yet"
+        );
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.caches.marked.is_empty(), "nothing to recommend yet");
+
+        app.update(Msg::ToolchainNeeds(needs));
+        let advised = [Some(Verdict::Keep), Some(Verdict::Remove)];
+        assert_eq!(toolchain_verdicts(&app), advised);
+        // Listing the caches again keeps the advice.
+        app.update(Msg::CachesDiscovered(vec![
+            toolchain("1.90"),
+            toolchain("1.91"),
+        ]));
+        assert_eq!(toolchain_verdicts(&app), advised);
+        let reason = |app: &App| {
+            app.caches.caches.as_ref().unwrap()[1]
+                .advice
+                .as_ref()
+                .unwrap()
+                .reason
+                .clone()
+        };
+        assert_eq!(reason(&app), "no project under /work needs it");
+    }
+
+    #[test]
+    fn a_scan_that_finds_no_rust_project_recommends_no_toolchain() {
+        let mut app = opened(vec![toolchain("1.90"), toolchain("1.91")]);
+        // The folder the TUI was opened on holds no Rust project at all.
+        let mut nothing = Needs::default();
+        nothing.roots = vec![PathBuf::from("/work/web")];
+        app.update(Msg::ToolchainNeeds(nothing));
+        assert_eq!(
+            toolchain_verdicts(&app),
+            [Some(Verdict::Unknown), Some(Verdict::Unknown)]
+        );
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.caches.marked.is_empty(), "{:?}", app.caches.marked);
+        assert!(
+            toast_text(&app).contains("Nothing here is recommended"),
+            "{}",
+            toast_text(&app)
+        );
+    }
+
+    fn toast_text(app: &App) -> String {
+        format!("{:?}", app.toast)
+    }
+
+    fn cleaned(effects: &[Effect]) -> Vec<&str> {
+        match effects.first() {
+            Some(Effect::CleanCaches { caches, .. }) => {
+                caches.iter().map(|c| c.id.as_str()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_second_press_cleans_what_the_first_named_after_a_resort() {
+        // The tab was just opened: the cursor has not moved and sits on the first row.
+        let mut app = opened(vec![cache("a"), cache("b")]);
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean a"), "{}", toast_text(&app));
+        // A measurement arrives and the list is sorted again: `b` is now the first row.
+        let size = Size {
+            on_disk: 1_000,
+            ..Size::default()
+        };
+        app.update(measured("b", size));
+        assert_eq!(
+            app.caches.caches.as_ref().unwrap()[app.caches.cursor].id,
+            "b"
+        );
+        let effects = press(&mut app, KeyCode::Char('d'));
+        assert_eq!(cleaned(&effects), ["a"], "the cache the toast named");
+    }
+
+    #[test]
+    fn the_second_press_cleans_what_the_first_named_after_a_relisting() {
+        let mut app = opened(vec![cache("a"), cache("b"), cache("c")]);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('r'));
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean b"), "{}", toast_text(&app));
+        // The list is discovered again with a new entry ahead of the others.
+        app.update(Msg::CachesDiscovered(vec![
+            cache("new"),
+            cache("a"),
+            cache("b"),
+            cache("c"),
+        ]));
+        let effects = press(&mut app, KeyCode::Char('d'));
+        assert_eq!(cleaned(&effects), ["b"], "the cache the toast named");
+    }
+
+    #[test]
+    fn a_confirmation_is_void_when_what_it_named_is_gone_or_in_use() {
+        // Gone.
+        let mut app = opened(vec![cache("a"), cache("b")]);
+        press(&mut app, KeyCode::Char('d'));
+        app.update(Msg::CachesDiscovered(vec![cache("b")]));
+        app.caches.busy.clear();
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(app.caches.busy.is_empty());
+        assert!(toast_text(&app).contains("changed"), "{}", toast_text(&app));
+        // The press after that starts over, naming what is selected now.
+        assert!(press(&mut app, KeyCode::Char('d')).is_empty());
+        assert!(toast_text(&app).contains("clean b"), "{}", toast_text(&app));
+        assert_eq!(cleaned(&press(&mut app, KeyCode::Char('d'))), ["b"]);
+
+        // Booted since the first press.
+        for key in ['d', 'e'] {
+            let mut app = opened(vec![simulator("sim"), cache("other")]);
+            press(&mut app, KeyCode::Char(key));
+            app.update(Msg::CachesDiscovered(vec![booted("sim"), cache("other")]));
+            app.caches.busy.clear();
+            assert!(press(&mut app, KeyCode::Char(key)).is_empty(), "{key}");
+            assert!(app.caches.busy.is_empty());
+        }
+    }
+
+    #[test]
+    fn marked_caches_are_confirmed_as_a_set() {
+        let mut app = opened(vec![cache("a"), cache("b"), cache("c")]);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('d'));
+        // Marking another one between the presses does not add it to what was confirmed:
+        // marking is an action of its own, and voids the confirmation.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            press(&mut app, KeyCode::Char('d')).is_empty(),
+            "armed again"
+        );
+        let mut ids = cleaned(&press(&mut app, KeyCode::Char('d')))
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_marks_what_is_recommended_for_removal() {
+        let advised = |id: &str, verdict| advised(cache(id), verdict, "test");
+        let mut app = opened(vec![
+            advised("old", Verdict::Remove),
+            advised("current", Verdict::Keep),
+            advised("unchecked", Verdict::Unknown),
+            cache("plain"),
+            booted("up"),
+        ]);
+        press(&mut app, KeyCode::Char('a'));
+        let marked: Vec<&str> = app.caches.marked.iter().map(String::as_str).collect();
+        assert_eq!(marked, ["old"]);
+        // A kept cache is still cleaned when marked by hand.
+        press(&mut app, KeyCode::Char('A'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('d'));
+        let effects = press(&mut app, KeyCode::Char('d'));
+        let Some(Effect::CleanCaches { caches, .. }) = effects.first() else {
+            panic!("clean expected, got {effects:?}");
+        };
+        assert_eq!(caches[0].id, "current");
+    }
+
+    #[test]
+    fn a_failed_deletion_is_reported_and_the_caches_are_listed_again() {
+        let mut app = opened(vec![cache("plain")]);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.caches.busy.contains("plain"));
+        let effects = app.update(Msg::CacheCleanFailed {
+            id: "plain".into(),
+            name: "Plain".into(),
+            error: "another program was still writing into it, so part of it is left in /h/.carwash-trash-1-0-plain".into(),
+        });
+        assert!(app.caches.busy.is_empty());
+        assert!(
+            toast_text(&app).contains("Plain was not cleaned: another program was still writing"),
+            "{}",
+            toast_text(&app)
+        );
+        assert!(
+            matches!(effects.first(), Some(Effect::DiscoverCaches)),
+            "the leftover is found by listing again, not by measuring a missing folder: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn a_cache_that_came_into_use_is_released_and_reported() {
+        let mut app = opened(vec![simulator("sim")]);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.caches.busy.contains("sim"));
+        let effects = app.update(Msg::CacheChecked {
+            cache: Box::new(simulator("sim")),
+            step: Err("xcodebuild is running; try again when it has finished".into()),
+        });
+        assert!(effects.is_empty(), "nothing is run");
+        assert!(app.caches.busy.is_empty());
+
+        let effects = app.update(Msg::CacheChecked {
+            cache: Box::new(simulator("sim")),
+            step: Ok(Step::DeleteDirectory),
+        });
+        assert!(matches!(effects.first(), Some(Effect::CleanCache { .. })));
     }
 }

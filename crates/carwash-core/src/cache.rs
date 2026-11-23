@@ -199,13 +199,13 @@ mod tests {
 
     #[test]
     fn fingerprints_notice_changes_near_the_top_only() {
-        use filetime::{FileTime, set_file_mtime};
+        use crate::testing::set_modified;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("a/b/c/d")).unwrap();
-        let old = FileTime::from_unix_time(1_000_000, 0);
+        let old = UNIX_EPOCH + Duration::from_secs(1_000_000);
         for sub in ["", "a", "a/b", "a/b/c", "a/b/c/d"] {
-            set_file_mtime(root.join(sub), old).unwrap();
+            set_modified(&root.join(sub), old);
         }
         let before = Fingerprint::of(root).unwrap();
         assert_eq!(Fingerprint::of(root), Some(before), "stable");

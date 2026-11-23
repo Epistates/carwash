@@ -17,6 +17,7 @@ pub mod cache;
 pub mod caches;
 pub mod clean;
 pub mod deps;
+pub mod device_support;
 pub mod discover;
 pub mod ecosystem;
 pub mod fmt;
@@ -28,9 +29,11 @@ pub mod paths;
 pub mod safety;
 pub mod scan;
 pub mod select;
+pub mod simulators;
 pub mod sweep;
 pub mod system;
 pub mod tasks;
+pub mod toolchains;
 
 pub use discover::{Counters, DiscoverOptions};
 pub use ecosystem::{EcoId, Registry, RuleId};
@@ -55,5 +58,29 @@ impl Cancel {
 
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::fs::{FileTimes, OpenOptions};
+    use std::path::Path;
+    use std::time::SystemTime;
+
+    /// Sets the modification time of a file or directory.
+    pub(crate) fn set_modified(path: &Path, time: SystemTime) {
+        let mut options = OpenOptions::new();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be opened.
+            options.write(true).custom_flags(0x0200_0000);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options
+            .open(path)
+            .and_then(|file| file.set_times(FileTimes::new().set_modified(time)))
+            .unwrap();
     }
 }

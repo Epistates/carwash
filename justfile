@@ -36,7 +36,7 @@ deny:
 
 # Compile with the minimum supported Rust version
 msrv:
-    cargo +1.88 check --workspace --all-targets
+    cargo +1.95 check --workspace --all-targets
 
 # Everything CI runs
 check:

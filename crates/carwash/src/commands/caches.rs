@@ -7,20 +7,30 @@ use crate::table::{Align, Cell, Table};
 use anstyle::{AnsiColor, Style};
 use anyhow::{Context as _, Result, bail};
 use carwash_core::cache::Fingerprint;
-use carwash_core::caches::{self, GlobalCache};
-use carwash_core::clean::{CleanItem, CleanOptions, DeleteMode};
+use carwash_core::caches::{
+    self, Detail, GlobalCache, Host, LocalHost, Mode, Refusal, Step, Verdict,
+};
+use carwash_core::clean::DeleteMode;
 use carwash_core::history::{self, Record};
 use carwash_core::paths::Dirs;
-use carwash_core::{ArtifactId, ArtifactKind, Cancel, fmt};
+use carwash_core::system::RunningApps;
+use carwash_core::tasks::Task;
+use carwash_core::toolchains::{self, Needs};
+use carwash_core::{ArtifactKind, Cancel, fmt};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 use std::io::{BufRead, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Caches present on this machine, with user overrides from `caches.toml`.
-pub fn present(dirs: Option<&Dirs>) -> Result<Vec<GlobalCache>> {
+///
+/// With `ids`, only the caches they name are looked at, so cleaning one cache does not wait
+/// on the tools that describe the others.
+pub fn present(dirs: Option<&Dirs>, ids: Option<&[String]>) -> Result<Vec<GlobalCache>> {
     let specs = match dirs.map(Dirs::caches_file) {
         Some(path) if path.exists() => {
             let text = std::fs::read_to_string(&path)
@@ -32,7 +42,7 @@ pub fn present(dirs: Option<&Dirs>) -> Result<Vec<GlobalCache>> {
         _ => caches::builtin_specs(),
     };
     let home = carwash_core::paths::home().context("cannot find the home directory")?;
-    Ok(caches::discover(&specs, &home))
+    Ok(caches::discover_for(&specs, &home, &LocalHost, ids))
 }
 
 /// Measures every cache, a few at a time, reporting progress on stderr.
@@ -57,7 +67,7 @@ pub fn measure(ctx: &Context, caches: &mut [GlobalCache], show_progress: bool) {
                 while let Some(slot) = slots.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let mut cache = slot.lock().expect("cache slot");
                     cache.fingerprint = Fingerprint::of(&cache.path);
-                    cache.size = Some(ctx.engine.measure_path(&cache.path, &Cancel::new()));
+                    cache.size = Some(cache.measure(&ctx.engine, &Cancel::new()));
                     done.fetch_add(1, Ordering::Relaxed);
                 }
             });
@@ -85,39 +95,153 @@ fn remember(ctx: &Context, caches: &[GlobalCache]) {
     });
 }
 
-fn action(cache: &GlobalCache) -> (String, Style) {
+/// Why a cache is left for now, as the user reads it.
+pub(crate) fn left_alone(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Busy(_) => format!("{refusal}; try again when it has finished"),
+        _ => refusal.to_string(),
+    }
+}
+
+fn action(cache: &GlobalCache, running: &RunningApps) -> (String, Style) {
     let dim = Style::new().dimmed();
+    let yellow = AnsiColor::Yellow.on_default();
+    if let Err(refusal) = cache.plan(Mode::Clean, running)
+        && refusal.is_temporary()
+    {
+        return (format!("left alone: {refusal}"), yellow);
+    }
     match (&cache.prune, cache.prune_task(), cache.deletable) {
         (Some(_), Some(task), _) => (task.command_line(), Style::new()),
         (Some(argv), None, true) => (format!("delete ({} not installed)", argv[0]), dim),
-        (Some(argv), None, false) => (
-            format!("needs `{}`", argv[0]),
-            AnsiColor::Yellow.on_default(),
-        ),
+        (Some(argv), None, false) => (format!("needs `{}`", argv[0]), yellow),
         (None, _, true) => ("delete".into(), Style::new()),
         (None, _, false) => ("none".into(), dim),
     }
 }
 
+/// What carwash would do with the cache, for the ADVICE column.
+fn advice(cache: &GlobalCache) -> Cell {
+    match (&cache.advice, cache.verdict()) {
+        (Some(advice), Some(Verdict::Remove)) => Cell::styled(
+            format!("remove: {}", advice.reason),
+            AnsiColor::Green.on_default(),
+        ),
+        (Some(advice), Some(Verdict::Keep)) => {
+            Cell::styled(format!("keep: {}", advice.reason), Style::new().dimmed())
+        }
+        (Some(advice), Some(Verdict::Unknown)) => Cell::styled(
+            format!("unknown, kept: {}", advice.reason),
+            AnsiColor::Yellow.on_default(),
+        ),
+        // What is in use is said in CLEAN WITH.
+        _ => Cell::new(""),
+    }
+}
+
+/// `3d ago`, or `-` when nothing records it.
+fn last_used(cache: &GlobalCache, now: SystemTime) -> String {
+    match cache
+        .last_used
+        .map(|at| now.duration_since(at).unwrap_or_default())
+    {
+        Some(age) if age < Duration::from_secs(60) => "just now".into(),
+        Some(age) => format!("{} ago", fmt::age(age)),
+        None => "-".into(),
+    }
+}
+
+/// Says which of the Rust toolchains among `caches` the projects under `roots` need.
+fn apply_projects(ctx: &Context, caches: &mut [GlobalCache], roots: &[PathBuf]) -> Result<()> {
+    if !caches
+        .iter()
+        .any(|c| matches!(c.detail, Some(Detail::Toolchain { .. })))
+    {
+        return Ok(());
+    }
+    let overrides = toolchains::local_overrides();
+    let mut needs = Needs::default();
+    for dir in roots {
+        // Projects are found by their manifests alone: nothing is measured or asked of git.
+        let walk = crate::cli::WalkArgs::for_path(dir.clone());
+        let (root, options) = ctx.scan_options(&walk, false, false)?;
+        let found = toolchains::needs(
+            &ctx.engine,
+            &[root],
+            &options.discover,
+            &overrides,
+            &Cancel::new(),
+        );
+        needs.roots.extend(found.roots);
+        needs.projects += found.projects;
+        needs.pins.extend(found.pins);
+    }
+    caches::apply_needs(caches, &needs);
+    Ok(())
+}
+
 pub fn run(ctx: &Context, args: &CachesArgs) -> Result<ExitCode> {
-    let mut caches = present(ctx.dirs.as_ref())?;
+    // A clean of named caches looks at those only; a listing, and a clean of everything
+    // recommended, looks at all of them.
+    let wanted = match &args.action {
+        Some(CachesAction::Clean { ids, .. }) if !ids.is_empty() => Some(ids.as_slice()),
+        _ => None,
+    };
+    let mut caches = present(ctx.dirs.as_ref(), wanted)?;
+    let scanned = !args.projects.is_empty();
+    if scanned {
+        apply_projects(ctx, &mut caches, &args.projects)?;
+    }
     match &args.action {
-        None => list(ctx, &mut caches, args.json),
+        None => list(ctx, &mut caches, args.json, scanned),
         Some(CachesAction::Clean {
             ids,
             yes,
             dry_run,
             delete,
-        }) => clean(ctx, &mut caches, ids, *yes, *dry_run, *delete),
+            erase,
+            recommended,
+        }) => {
+            let flags = Flags {
+                yes: *yes,
+                dry_run: *dry_run,
+                recommended: *recommended,
+                scanned,
+                mode: match (*erase, *delete) {
+                    (true, _) => Mode::Erase,
+                    (false, true) => Mode::Delete,
+                    (false, false) => Mode::Clean,
+                },
+            };
+            let mut out = anstream::stdout().lock();
+            let mut err = anstream::stderr().lock();
+            clean(ctx, &Machine(ctx), &mut out, &mut err, &caches, ids, &flags)
+        }
     }
 }
 
-fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCode> {
+#[derive(Serialize)]
+struct CacheOut<'a> {
+    #[serde(flatten)]
+    cache: &'a GlobalCache,
+    /// Running programs that must finish before it can be cleaned.
+    blocked_by: Vec<String>,
+}
+
+fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool, scanned: bool) -> Result<ExitCode> {
     measure(ctx, caches, !json);
     caches.sort_by_key(|c| std::cmp::Reverse(c.size.map_or(0, |s| s.on_disk)));
+    let running = RunningApps::snapshot();
     let mut out = anstream::stdout().lock();
     if json {
-        serde_json::to_writer_pretty(&mut out, &caches)?;
+        let rows: Vec<CacheOut> = caches
+            .iter()
+            .map(|cache| CacheOut {
+                cache,
+                blocked_by: cache.blocked_by(&running),
+            })
+            .collect();
+        serde_json::to_writer_pretty(&mut out, &rows)?;
         writeln!(out)?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -125,23 +249,47 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
         writeln!(out, "No known caches found.")?;
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = Table::new(&[
+    // Only some caches record when they were last used; without any, the column is noise.
+    let dated = caches.iter().any(|c| c.last_used.is_some());
+    let mut columns = vec![
         ("SIZE", Align::Right),
         ("ID", Align::Left),
         ("CACHE", Align::Left),
-        ("CLEAN WITH", Align::Left),
-    ]);
+    ];
+    if dated {
+        columns.push(("LAST USED", Align::Right));
+    }
+    columns.push(("CLEAN WITH", Align::Left));
+    // What carwash would remove or keep, where it can tell.
+    let advised = caches.iter().any(|c| {
+        matches!(
+            c.verdict(),
+            Some(Verdict::Remove | Verdict::Keep | Verdict::Unknown)
+        )
+    });
+    if advised {
+        columns.push(("ADVICE", Align::Left));
+    }
+    let mut table = Table::new(&columns);
+    let now = SystemTime::now();
     let mut total = 0;
     for cache in caches.iter() {
         let bytes = cache.size.map_or(0, |s| s.on_disk);
         total += bytes;
-        let (action, style) = action(cache);
-        table.push(vec![
+        let (action, style) = action(cache, &running);
+        let mut cells = vec![
             Cell::styled(fmt::bytes(bytes), size_style(bytes)),
             Cell::styled(cache.id.clone(), Style::new().dimmed()),
             Cell::new(cache.name.clone()),
-            Cell::styled(action, style),
-        ]);
+        ];
+        if dated {
+            cells.push(Cell::styled(last_used(cache, now), Style::new().dimmed()));
+        }
+        cells.push(Cell::styled(action, style));
+        if advised {
+            cells.push(advice(cache));
+        }
+        table.push(cells);
     }
     table.write(&mut out)?;
     let bold = Style::new().bold();
@@ -153,69 +301,285 @@ fn list(ctx: &Context, caches: &mut [GlobalCache], json: bool) -> Result<ExitCod
         bold.render_reset(),
         caches.len()
     )?;
+    let recommended: Vec<&GlobalCache> = caches
+        .iter()
+        .filter(|c| c.verdict() == Some(Verdict::Remove))
+        .collect();
+    if !recommended.is_empty() {
+        writeln!(
+            out,
+            "carwash recommends removing {} of them ({}): `carwash caches clean --recommended`.",
+            recommended.len(),
+            fmt::bytes(
+                recommended
+                    .iter()
+                    .filter_map(|c| c.size)
+                    .map(|s| s.on_disk)
+                    .sum()
+            )
+        )?;
+    }
+    if !scanned
+        && caches
+            .iter()
+            .any(|c| matches!(c.detail, Some(Detail::Toolchain { .. })))
+    {
+        writeln!(
+            out,
+            "Rust toolchains: add `--projects <DIR>` to see which ones your projects still need."
+        )?;
+    }
+    if caches.iter().any(|c| c.erase.is_some()) {
+        writeln!(
+            out,
+            "Simulators: cleaning one deletes the device; add --erase to clear its contents and settings and keep it."
+        )?;
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+struct Flags {
+    yes: bool,
+    dry_run: bool,
+    mode: Mode,
+    /// Only what carwash recommends removing.
+    recommended: bool,
+    /// Folders of projects were given to check Rust toolchains against.
+    scanned: bool,
+}
+
+/// Carries out what a clean decided, and reports the machine's state just before each
+/// step. Tests replace it, so none of them runs a tool or removes a directory.
+pub(crate) trait Cleaner {
+    /// What the machine's tools report now.
+    fn host(&self) -> &dyn Host;
+    /// The programs running now.
+    fn running(&self) -> RunningApps;
+    /// Runs a tool's command with the terminal attached; true when it succeeded.
+    fn run(&self, task: &Task) -> bool;
+    /// Deletes a cache's directory. On failure, says what happened and where the
+    /// remainder is.
+    fn delete(&self, cache: &GlobalCache) -> Result<(), String>;
+}
+
+/// The machine carwash runs on.
+struct Machine<'a>(&'a Context);
+
+impl Cleaner for Machine<'_> {
+    fn host(&self) -> &dyn Host {
+        &LocalHost
+    }
+
+    fn running(&self) -> RunningApps {
+        RunningApps::snapshot()
+    }
+
+    fn run(&self, task: &Task) -> bool {
+        let status = Command::new(&task.program)
+            .args(&task.args)
+            .current_dir(&task.cwd)
+            .stdin(Stdio::inherit())
+            .status();
+        matches!(status, Ok(s) if s.success())
+    }
+
+    fn delete(&self, cache: &GlobalCache) -> Result<(), String> {
+        cache.delete_directory(&self.0.engine, &Cancel::new())
+    }
+}
+
+/// What a clean was asked for.
+#[derive(Default)]
+struct Selection {
+    clean: Vec<GlobalCache>,
+    /// Caches a parent id covers that are left out, each with the reason.
+    kept: Vec<(GlobalCache, String)>,
+}
+
+/// The caches `ids` name. An id is the cache with that id, or else every child of it;
+/// children carwash would keep (still needed, not known, or in use) are left out unless
+/// named themselves. A cache named by its own id is always taken as named, wherever its
+/// parent stands among the arguments. `recommended` narrows the result to what carwash
+/// recommends removing, among all caches when no id is given.
+fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<Selection> {
+    let mut selection = Selection::default();
+    let named = |cache: &GlobalCache| ids.contains(&cache.id);
+    let mut take = |cache: &GlobalCache| {
+        let known = |list: &[GlobalCache]| list.iter().any(|c| c.id == cache.id);
+        if known(&selection.clean) || selection.kept.iter().any(|(c, _)| c.id == cache.id) {
+            return;
+        }
+        let reason = match (&cache.advice, cache.verdict()) {
+            (_, Some(Verdict::Remove)) => None,
+            (_, None) if !recommended => None,
+            // Naming a cache is an explicit choice; what is in use is refused later, by name.
+            _ if named(cache) && !recommended => None,
+            (Some(advice), _) => Some(advice.reason.clone()),
+            (None, _) => Some("not recommended for removal".to_owned()),
+        };
+        match reason {
+            None => selection.clean.push(cache.clone()),
+            Some(reason) => selection.kept.push((cache.clone(), reason)),
+        }
+    };
+    if ids.is_empty() {
+        for cache in caches {
+            if cache.verdict() == Some(Verdict::Remove) {
+                take(cache);
+            }
+        }
+        return Ok(selection);
+    }
+    for id in ids {
+        if let Some(exact) = caches.iter().find(|c| &c.id == id) {
+            take(exact);
+            // What an unfinished clean of this cache left beside it goes with it.
+            let staged = format!("{id}/{}", carwash_core::discover::STAGING_PREFIX);
+            for leftover in caches.iter().filter(|c| {
+                c.id.starts_with(&staged) && matches!(c.detail, Some(Detail::Leftover { .. }))
+            }) {
+                take(leftover);
+            }
+            continue;
+        }
+        let prefix = format!("{id}/");
+        let children: Vec<&GlobalCache> = caches
+            .iter()
+            .filter(|c| c.id.starts_with(&prefix))
+            .collect();
+        if children.is_empty() {
+            bail!("no cache `{id}` on this machine (see `carwash caches`)");
+        }
+        for child in children {
+            take(child);
+        }
+    }
+    Ok(selection)
 }
 
 fn clean(
     ctx: &Context,
-    caches: &mut [GlobalCache],
+    cleaner: &dyn Cleaner,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    caches: &[GlobalCache],
     ids: &[String],
-    yes: bool,
-    dry_run: bool,
-    force_delete: bool,
+    flags: &Flags,
 ) -> Result<ExitCode> {
-    let mut selected: Vec<GlobalCache> = Vec::new();
-    for id in ids {
-        let matching: Vec<&GlobalCache> = caches
-            .iter()
-            .filter(|c| &c.id == id || c.id.starts_with(&format!("{id}/")))
-            .collect();
-        if matching.is_empty() {
-            bail!("no cache `{id}` on this machine (see `carwash caches`)");
-        }
-        selected.extend(matching.into_iter().cloned());
-    }
+    let Selection {
+        clean: mut selected,
+        kept,
+    } = select(caches, ids, flags.recommended)?;
     measure(ctx, &mut selected, true);
 
-    let mut out = anstream::stdout().lock();
-    let mut plan: Vec<(GlobalCache, Option<carwash_core::tasks::Task>)> = Vec::new();
+    let running = cleaner.running();
+    let dim = Style::new().dimmed();
+    let mut plan: Vec<(GlobalCache, Step)> = Vec::new();
+    // Named caches that are in use, and so left alone.
+    let mut skipped = 0;
     for cache in selected {
-        let task = if force_delete {
-            None
-        } else {
-            cache.prune_task()
+        let step = match cache.plan(flags.mode, &running) {
+            Err(refusal) if !refusal.is_temporary() => bail!("{} {refusal}", cache.name),
+            step => step,
         };
-        if task.is_none() && !cache.deletable {
-            let program = cache.prune.as_ref().map_or("its tool", |p| p[0].as_str());
-            bail!(
-                "{} can only be cleaned with `{program}`, which is not installed",
-                cache.name
-            );
-        }
-        let how = task
-            .as_ref()
-            .map_or_else(|| "delete".to_owned(), |t| t.command_line());
+        let how = match &step {
+            Ok(Step::Run(task)) => task.command_line(),
+            Ok(Step::DeleteDirectory) => "delete".to_owned(),
+            Err(refusal) => format!("skipped: {}", left_alone(refusal)),
+        };
         writeln!(
             out,
             "{:>9}  {}  {}{how}{}",
             fmt::bytes(cache.size.map_or(0, |s| s.on_disk)),
             cache.name,
-            Style::new().dimmed().render(),
-            Style::new().dimmed().render_reset()
+            dim.render(),
+            dim.render_reset()
         )?;
-        plan.push((cache, task));
+        match step {
+            Ok(step) => plan.push((cache, step)),
+            Err(_) => skipped += 1,
+        }
     }
-    if dry_run {
-        writeln!(out, "Dry run: nothing was changed.")?;
-        return Ok(ExitCode::SUCCESS);
+    for (cache, reason) in &kept {
+        writeln!(
+            out,
+            "{:>9}  {}  {}{reason}{}",
+            "kept",
+            cache.name,
+            dim.render(),
+            dim.render_reset()
+        )?;
     }
-    if !yes {
+    if plan.is_empty() && skipped == 0 && !kept.is_empty() {
+        writeln!(out, "Nothing to clean: {}.", all_kept(kept.len()))?;
+    }
+    if !kept.is_empty() && !flags.recommended {
+        // What to do next. An id of one's own cleans a kept cache, unless it is in use.
+        // The example is one carwash knows nothing against, never one it found a need
+        // for.
+        let named = "Name a kept cache by its own id to clean it anyway";
+        let example = kept
+            .iter()
+            .map(|(cache, _)| cache)
+            .find(|cache| cache.verdict() == Some(Verdict::Unknown));
+        let hint = match example {
+            Some(cache) => Some(format!(
+                "{named}, for example: {}",
+                carwash_core::tasks::command_line(["carwash", "caches", "clean", &cache.id])
+            )),
+            None => kept
+                .iter()
+                .any(|(cache, _)| cache.verdict() != Some(Verdict::Protected))
+                .then(|| format!("{named}.")),
+        };
+        if let Some(hint) = hint {
+            writeln!(out, "{}{hint}{}", dim.render(), dim.render_reset())?;
+        }
+        let unchecked = kept.iter().any(|(cache, _)| {
+            cache.verdict() == Some(Verdict::Unknown)
+                && matches!(
+                    cache.detail,
+                    Some(Detail::Toolchain {
+                        standing: false,
+                        ..
+                    })
+                )
+        });
+        if unchecked && !flags.scanned {
+            writeln!(
+                out,
+                "{}Rust toolchains were not checked against any projects. Add `--projects DIR` to have carwash find the ones no project under DIR needs, and clean only those.{}",
+                dim.render(),
+                dim.render_reset()
+            )?;
+        }
+    }
+    let exit = |incomplete: bool| {
+        if incomplete {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
+    };
+    if flags.dry_run || plan.is_empty() {
+        if flags.dry_run {
+            writeln!(out, "Dry run: nothing was changed.")?;
+        } else {
+            writeln!(out, "Nothing changed.")?;
+        }
+        return Ok(exit(skipped > 0));
+    }
+    if !flags.yes {
         if !std::io::stdin().is_terminal() {
             bail!(
                 "refusing to clean without confirmation in a non-interactive session; pass --yes"
             );
         }
-        write!(out, "Clean {} caches? [y/N] ", plan.len())?;
+        let question = match flags.mode {
+            Mode::Erase => format!("Erase the contents and settings of {}?", plural(plan.len())),
+            Mode::Clean | Mode::Delete => format!("Clean {} caches?", plan.len()),
+        };
+        write!(out, "{question} [y/N] ")?;
         out.flush()?;
         let mut answer = String::new();
         std::io::stdin().lock().read_line(&mut answer)?;
@@ -224,53 +588,49 @@ fn clean(
             return Ok(ExitCode::SUCCESS);
         }
     }
-    drop(out);
 
+    let home = carwash_core::paths::home();
+    let free = || home.as_deref().and_then(|h| fs4::available_space(h).ok());
+    let free_before = free();
     let mut failures = 0;
     let mut records = Vec::new();
     let mut cleaned = Vec::new();
-    for (mut cache, task) in plan {
-        let before = cache.size.map_or(0, |s| s.on_disk);
-        let ok = match task {
-            Some(task) => {
-                anstream::println!("▶ {}", task.command_line());
-                let status = Command::new(&task.program)
-                    .args(&task.args)
-                    .current_dir(&task.cwd)
-                    .stdin(Stdio::inherit())
-                    .status();
-                matches!(status, Ok(s) if s.success())
-            }
-            None => {
-                let Some(parent) = cache.path.parent() else {
-                    continue;
-                };
-                let report = ctx.engine.clean(
-                    &[CleanItem {
-                        id: ArtifactId(0),
-                        path: cache.path.clone(),
-                        expected_bytes: before,
-                    }],
-                    &CleanOptions {
-                        mode: DeleteMode::Permanent,
-                        allowed_roots: vec![parent.to_path_buf()],
-                        dry_run: false,
-                    },
-                    &Cancel::new(),
-                    &|_| {},
-                );
-                report.removed == 1
+    for (cache, _) in plan {
+        // The plan was made before the question was answered, and cleaning the caches
+        // before this one took time: ask again what is booted and what is running, so
+        // nothing that came into use since is touched.
+        let (mut cache, step) = cache.checked(flags.mode, cleaner.host(), &|| cleaner.running());
+        let step = match step {
+            Ok(step) => step,
+            Err(refusal) => {
+                skipped += 1;
+                writeln!(err, "  skipped {}: {}", cache.name, left_alone(&refusal))?;
+                continue;
             }
         };
-        if ok {
+        let before = cache.size.map_or(0, |s| s.on_disk);
+        let result = match step {
+            Step::Run(task) => {
+                writeln!(out, "▶ {}", task.command_line())?;
+                out.flush()?;
+                cleaner
+                    .run(&task)
+                    .then_some(())
+                    .ok_or_else(|| format!("`{}` did not succeed", task.command_line()))
+            }
+            Step::DeleteDirectory => cleaner.delete(&cache),
+        };
+        if let Err(error) = &result {
+            failures += 1;
+            // Problems go to stderr, where scripts that read the summary do not see them
+            // as output.
+            writeln!(err, "  failed to clean {}: {error}", cache.name)?;
+        }
+        if result.is_ok() {
             cache.fingerprint = Fingerprint::of(&cache.path);
-            let after = if cache.path.exists() {
-                ctx.engine.measure_path(&cache.path, &Cancel::new())
-            } else {
-                carwash_core::Size::default()
-            };
+            let after = cache.measure(&ctx.engine, &Cancel::new());
             let freed = before.saturating_sub(after.on_disk);
-            anstream::println!("  freed {} from {}", fmt::bytes(freed), cache.name);
+            writeln!(out, "  freed {} from {}", fmt::bytes(freed), cache.name)?;
             records.push(Record::now(
                 cache.path.clone(),
                 freed,
@@ -280,9 +640,6 @@ fn clean(
             ));
             cache.size = Some(after);
             cleaned.push(cache);
-        } else {
-            failures += 1;
-            anstream::eprintln!("  failed to clean {}", cache.name);
         }
     }
     remember(ctx, &cleaned);
@@ -292,10 +649,839 @@ fn clean(
         tracing::warn!(%error, "cannot write history");
     }
     let total: u64 = records.iter().map(|r| r.bytes).sum();
-    anstream::println!("Freed {} in total.", fmt::bytes(total));
-    Ok(if failures == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    writeln!(out, "Freed {} in total.", fmt::bytes(total))?;
+    if let Some((before, after)) = free_before.zip(free()).filter(|_| total > 0) {
+        let change = super::FreeChange {
+            before,
+            after,
+            freed: total,
+            settles_late: home
+                .as_deref()
+                .is_some_and(carwash_core::clean::settles_late),
+        };
+        writeln!(out, "{}", change.line())?;
+        if change.may_rise() {
+            writeln!(out, "{}", super::FreeChange::NOTE)?;
+        }
+    }
+    Ok(exit(failures > 0 || skipped > 0))
+}
+
+/// `the one cache found is kept`, `all 5 are kept`.
+fn all_kept(caches: usize) -> String {
+    match caches {
+        1 => "the one cache found is kept".into(),
+        n => format!("all {n} are kept"),
+    }
+}
+
+fn plural(simulators: usize) -> String {
+    match simulators {
+        1 => "1 simulator".into(),
+        n => format!("{n} simulators"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use carwash_core::caches::CacheSpec;
+    use carwash_core::{Engine, Registry, simulators};
+    use std::fs;
+    use std::path::Path;
+
+    /// `xcrun simctl list --json devices` as captured, with one unavailable device added.
+    const LISTING: &str = include_str!("../../../carwash-core/tests/data/simctl-list-devices.json");
+    const NO_CLONES: &str =
+        include_str!("../../../carwash-core/tests/data/simctl-testing-list-devices.json");
+    const DEVICES: &str = "Library/Developer/CoreSimulator/Devices";
+    const SHUT_DOWN: &str = "00000001-0000-4000-8000-000000000001";
+    const BOOTED: &str = "0000000A-0000-4000-8000-00000000000A";
+
+    /// Stands in for the machine: answers `simctl` with listings, reports the programs it
+    /// is told are running, and records what it is asked to run or delete instead of
+    /// doing it.
+    struct Fake {
+        /// Default-set listings, one per call; the last repeats.
+        listings: Mutex<Vec<String>>,
+        /// The running programs, one answer per time they are read; the last repeats.
+        running: Mutex<Vec<Vec<&'static str>>>,
+        ran: Mutex<Vec<String>>,
+        deleted: Mutex<Vec<String>>,
+        /// What every deletion fails with, if they are to fail.
+        delete_fails: Option<String>,
+    }
+
+    impl Fake {
+        fn new(listings: &[&str], running: &[&'static str]) -> Self {
+            Self {
+                listings: Mutex::new(listings.iter().map(|l| (*l).to_owned()).collect()),
+                running: Mutex::new(vec![running.to_vec()]),
+                ran: Mutex::default(),
+                deleted: Mutex::default(),
+                delete_fails: None,
+            }
+        }
+
+        fn ran(&self) -> Vec<String> {
+            self.ran.lock().unwrap().clone()
+        }
+
+        fn touched_nothing(&self) -> bool {
+            self.ran().is_empty() && self.deleted.lock().unwrap().is_empty()
+        }
+    }
+
+    impl Host for Fake {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            if argv == simulators::LIST {
+                let mut listings = self.listings.lock().unwrap();
+                let listing = if listings.len() > 1 {
+                    listings.remove(0)
+                } else {
+                    listings[0].clone()
+                };
+                Some(listing.into_bytes())
+            } else if argv == simulators::LIST_TESTING {
+                Some(NO_CLONES.as_bytes().to_vec())
+            } else {
+                None
+            }
+        }
+    }
+
+    impl Cleaner for Fake {
+        fn host(&self) -> &dyn Host {
+            self
+        }
+
+        fn running(&self) -> RunningApps {
+            let mut running = self.running.lock().unwrap();
+            let now = if running.len() > 1 {
+                running.remove(0)
+            } else {
+                running[0].clone()
+            };
+            RunningApps::from_names(&now)
+        }
+
+        fn run(&self, task: &Task) -> bool {
+            self.ran.lock().unwrap().push(task.command_line());
+            true
+        }
+
+        fn delete(&self, cache: &GlobalCache) -> Result<(), String> {
+            self.deleted.lock().unwrap().push(cache.id.clone());
+            match &self.delete_fails {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    fn context() -> Context {
+        Context {
+            config: Config::default(),
+            dirs: None,
+            engine: Engine::new(Registry::builtin()),
+        }
+    }
+
+    /// The built-in simulator caches found in a home that holds a folder for every device
+    /// in the listing, plus one plain cache. The simulator commands are spelled with a
+    /// program every test machine has, since only macOS has `xcrun`.
+    fn caches(home: &Path, fake: &Fake) -> Vec<GlobalCache> {
+        for simulator in simulators::parse(LISTING.as_bytes()).unwrap() {
+            fs::create_dir_all(home.join(DEVICES).join(simulator.udid).join("data")).unwrap();
+        }
+        fs::create_dir_all(home.join("Library/Developer/XCTestDevices")).unwrap();
+        fs::create_dir_all(home.join(".plain")).unwrap();
+        let mut specs: Vec<CacheSpec> = caches::builtin_specs()
+            .into_iter()
+            .filter(|s| matches!(s.id.as_str(), "simulators" | "xctest-devices"))
+            .collect();
+        for spec in &mut specs {
+            for path in &mut spec.paths {
+                *path = path.trim_start_matches("macos:").to_owned();
+            }
+            for argv in [
+                &mut spec.prune,
+                &mut spec.child_prune,
+                &mut spec.child_erase,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert_eq!(argv[0], "xcrun");
+                argv[0] = "cargo".into();
+            }
+        }
+        specs.extend(
+            caches::specs_with_overrides(
+                "schema = 1\n[[cache]]\nid = \"plain\"\nname = \"Plain\"\npaths = [\"~/.plain\"]\ndelete = true\n",
+            )
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.id == "plain"),
+        );
+        caches::discover_on(&specs, home, fake)
+    }
+
+    fn run_clean(fake: &Fake, ids: &[&str], mode: Mode, dry_run: bool) -> (ExitCode, String) {
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), fake);
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        let mut out = Vec::new();
+        let flags = Flags {
+            yes: true,
+            dry_run,
+            mode,
+            recommended: false,
+            scanned: false,
+        };
+        let mut err = Vec::new();
+        let exit = clean(&context(), fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        // Most tests read the two streams as a terminal shows them.
+        out.extend(err);
+        (exit, String::from_utf8(out).unwrap())
+    }
+
+    fn failed(exit: ExitCode) -> bool {
+        // `ExitCode` cannot be compared.
+        format!("{exit:?}") != format!("{:?}", ExitCode::SUCCESS)
+    }
+
+    #[test]
+    fn erasing_and_deleting_go_through_simctl_for_the_named_device_only() {
+        let fake = Fake::new(&[LISTING], &[]);
+        let id = format!("simulators/{SHUT_DOWN}");
+        let (exit, out) = run_clean(&fake, &[&id], Mode::Erase, false);
+        assert!(!failed(exit), "{out}");
+        assert_eq!(fake.ran(), [format!("cargo simctl erase {SHUT_DOWN}")]);
+
+        let fake = Fake::new(&[LISTING], &[]);
+        let (exit, out) = run_clean(&fake, &[&id], Mode::Clean, false);
+        assert!(!failed(exit), "{out}");
+        assert_eq!(fake.ran(), [format!("cargo simctl delete {SHUT_DOWN}")]);
+        assert!(
+            fake.deleted.lock().unwrap().is_empty(),
+            "never by removing its folder"
+        );
+    }
+
+    #[test]
+    fn the_set_id_still_deletes_only_unavailable_devices() {
+        let fake = Fake::new(&[LISTING], &[]);
+        let (exit, out) = run_clean(&fake, &["simulators"], Mode::Clean, false);
+        assert!(!failed(exit), "{out}");
+        assert_eq!(fake.ran(), ["cargo simctl delete unavailable"]);
+    }
+
+    #[test]
+    fn a_dry_run_changes_nothing() {
+        let fake = Fake::new(&[LISTING], &[]);
+        let id = format!("simulators/{SHUT_DOWN}");
+        let (exit, out) = run_clean(&fake, &[&id, "plain", "xctest-devices"], Mode::Clean, true);
+        assert!(!failed(exit), "{out}");
+        assert!(fake.touched_nothing());
+        assert!(out.contains("Dry run: nothing was changed."), "{out}");
+        assert!(
+            out.contains(&format!("cargo simctl delete {SHUT_DOWN}")),
+            "{out}"
+        );
+        assert!(
+            out.contains("cargo simctl --set testing delete all"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_booted_simulator_is_skipped_even_when_named() {
+        for mode in [Mode::Clean, Mode::Erase] {
+            let fake = Fake::new(&[LISTING], &[]);
+            let booted = format!("simulators/{BOOTED}");
+            let shut_down = format!("simulators/{SHUT_DOWN}");
+            let (exit, out) = run_clean(&fake, &[&booted, &shut_down], mode, false);
+            assert!(failed(exit), "a named cache was left: {out}");
+            assert!(out.contains("skipped: booted; shut it down first"), "{out}");
+            let ran = fake.ran();
+            assert_eq!(ran.len(), 1, "the other one is still cleaned: {ran:?}");
+            assert!(ran[0].ends_with(SHUT_DOWN));
+            assert!(!ran.iter().any(|line| line.contains(BOOTED)));
+        }
+    }
+
+    #[test]
+    fn a_running_build_or_test_stops_every_simulator_action_and_is_named() {
+        for program in ["xcodebuild", "xctest"] {
+            let id = format!("simulators/{SHUT_DOWN}");
+            for (ids, mode) in [
+                (
+                    vec![id.as_str(), "simulators", "xctest-devices"],
+                    Mode::Clean,
+                ),
+                (vec![id.as_str()], Mode::Erase),
+            ] {
+                let fake = Fake::new(&[LISTING], &[program, "zsh"]);
+                let (exit, out) = run_clean(&fake, &ids, mode, false);
+                assert!(failed(exit), "{out}");
+                assert!(fake.touched_nothing(), "{:?}", fake.ran());
+                let message =
+                    format!("skipped: {program} is running; try again when it has finished");
+                assert_eq!(out.matches(&message).count(), ids.len(), "{out}");
+            }
+            // Caches that do not involve simulators are not held up.
+            let fake = Fake::new(&[LISTING], &[program]);
+            let (exit, out) = run_clean(&fake, &["plain"], Mode::Clean, false);
+            assert!(!failed(exit), "{out}");
+            assert_eq!(*fake.deleted.lock().unwrap(), ["plain"]);
+        }
+    }
+
+    #[test]
+    fn a_simulator_that_boots_after_the_plan_is_left_alone() {
+        let booted_since = LISTING.replace("\"state\": \"Shutdown\"", "\"state\": \"Booted\"");
+        // Discovery sees it shut down; the check just before erasing sees it booted.
+        let fake = Fake::new(&[LISTING, &booted_since], &[]);
+        let id = format!("simulators/{SHUT_DOWN}");
+        let (exit, out) = run_clean(&fake, &[&id], Mode::Erase, false);
+        assert!(failed(exit), "{out}");
+        assert!(fake.touched_nothing(), "{:?}", fake.ran());
+        assert!(
+            out.contains("skipped Simulators: iPhone 18 Pro, iOS 27.0: booted"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn erase_is_refused_for_caches_that_cannot_be_erased() {
+        let fake = Fake::new(&[LISTING], &[]);
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Erase,
+            recommended: false,
+            scanned: false,
+        };
+        let error = clean(
+            &context(),
+            &fake,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &caches,
+            &["plain".to_owned()],
+            &flags,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Plain cannot be erased, only cleaned");
+        assert!(fake.touched_nothing());
+        assert!(
+            clean(
+                &context(),
+                &fake,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &caches,
+                &["nope".to_owned()],
+                &flags
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_parent_id_selects_children_only_when_no_cache_has_that_id() {
+        let fake = Fake::new(&[LISTING], &[]);
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let set = select(&caches, &["simulators".to_owned()], false).unwrap();
+        assert_eq!(set.clean.len(), 1);
+        assert_eq!(set.clean[0].id, "simulators");
+        let twice = select(&caches, &["plain".to_owned(), "plain".to_owned()], false).unwrap();
+        assert_eq!(twice.clean.len(), 1);
+    }
+
+    #[test]
+    fn a_build_that_starts_mid_batch_stops_the_caches_after_it() {
+        let fake = Fake::new(&[LISTING], &[]);
+        // Read for the plan, then before each device: the build starts before the second.
+        *fake.running.lock().unwrap() = vec![vec![], vec![], vec!["xcodebuild"]];
+        let first = format!("simulators/{SHUT_DOWN}");
+        let second = "simulators/00000002-0000-4000-8000-000000000002";
+        let (exit, out) = run_clean(&fake, &[&first, second], Mode::Clean, false);
+        assert!(failed(exit), "{out}");
+        assert_eq!(
+            fake.ran(),
+            [format!("cargo simctl delete {SHUT_DOWN}")],
+            "only the device cleaned before the build started"
+        );
+        assert!(
+            out.contains("xcodebuild is running; try again when it has finished"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_failed_deletion_is_explained_on_stderr_and_the_rest_goes_on() {
+        let mut fake = Fake::new(&[LISTING], &[]);
+        fake.delete_fails = Some(
+            "another program was still writing into it, so part of it is left in /h/.carwash-trash-1-0-plain; the next scan offers to finish removing it. Nothing else was affected"
+                .to_owned(),
+        );
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Clean,
+            recommended: false,
+            scanned: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ids = ["plain".to_owned(), format!("simulators/{SHUT_DOWN}")];
+        let exit = clean(&context(), &fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        let (out, err) = (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        );
+        assert!(failed(exit));
+        assert!(
+            err.contains("failed to clean Plain: another program was still writing into it"),
+            "{err}"
+        );
+        assert!(err.contains("/h/.carwash-trash-1-0-plain"), "{err}");
+        assert!(
+            !out.contains("failed to clean"),
+            "problems are not output: {out}"
+        );
+        // The other cache was still cleaned.
+        assert_eq!(fake.ran(), [format!("cargo simctl delete {SHUT_DOWN}")]);
+        assert!(out.contains("freed"), "{out}");
+    }
+
+    #[test]
+    fn a_refusal_just_before_cleaning_goes_to_stderr() {
+        let booted_since = LISTING.replace("\"state\": \"Shutdown\"", "\"state\": \"Booted\"");
+        let fake = Fake::new(&[LISTING, &booted_since], &[]);
+        let home = tempfile::tempdir().unwrap();
+        let caches = caches(home.path(), &fake);
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Erase,
+            recommended: false,
+            scanned: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ids = [format!("simulators/{SHUT_DOWN}")];
+        let exit = clean(&context(), &fake, &mut out, &mut err, &caches, &ids, &flags).unwrap();
+        assert!(failed(exit));
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains("skipped Simulators: iPhone 18 Pro, iOS 27.0: booted"),
+            "{err}"
+        );
+        assert!(
+            !String::from_utf8(out)
+                .unwrap()
+                .contains("skipped Simulators")
+        );
+    }
+
+    #[test]
+    fn a_cache_is_cleaned_together_with_what_an_unfinished_clean_left_of_it() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in [
+            ".plain",
+            ".carwash-trash-7-0-.plain",
+            ".kids/one",
+            ".kids/.carwash-trash-7-1-two",
+        ] {
+            fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        let specs = caches::specs_with_overrides(
+            "schema = 1\n[[cache]]\nid = \"plain\"\nname = \"Plain\"\npaths = [\"~/.plain\"]\ndelete = true\n[[cache]]\nid = \"kids\"\nname = \"Kids\"\npaths = [\"~/.kids\"]\nchildren = true\ndelete = true\n",
+        )
+        .unwrap();
+        let specs: Vec<CacheSpec> = specs
+            .into_iter()
+            .filter(|s| matches!(s.id.as_str(), "plain" | "kids"))
+            .collect();
+        let found = caches::discover_on(&specs, home.path(), &NoDevicectl);
+        let whole = select(&found, &["plain".to_owned()], false).unwrap();
+        assert_eq!(
+            whole
+                .clean
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["plain", "plain/.carwash-trash-7-0-.plain"]
+        );
+        let parent = select(&found, &["kids".to_owned()], false).unwrap();
+        assert_eq!(
+            parent
+                .clean
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["kids/.carwash-trash-7-1-two", "kids/one"]
+        );
+        // And they are what `--recommended` takes.
+        let recommended = select(&found, &[], true).unwrap();
+        assert_eq!(recommended.clean.len(), 2);
+        assert!(
+            recommended
+                .clean
+                .iter()
+                .all(|c| matches!(c.detail, Some(Detail::Leftover { .. })))
+        );
+    }
+
+    /// `devicectl list devices` as captured: an iPad on 27.3 and an iPhone on 27.2.1, both
+    /// connected the day before `device_support_caches` is built.
+    const DEVICES_LISTING: &str =
+        include_str!("../../../carwash-core/tests/data/devicectl-list-devices.json");
+    const SUPPORT: &str = "Library/Developer/Xcode/iOS DeviceSupport";
+    const FOLDERS: [&str; 5] = [
+        "iPad16,3 26.7 (23H24)",
+        "iPad16,3 27.2 (24B119)",
+        "iPad16,3 27.3 (24C5037i)",
+        "iPhone14,3 27.0.1 (24A446)",
+        "iPhone14,3 27.2.1 (24B156)",
+    ];
+
+    /// Answers `devicectl` with the captured listing.
+    struct Devicectl;
+
+    impl Host for Devicectl {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            (argv == carwash_core::device_support::LIST)
+                .then(|| DEVICES_LISTING.as_bytes().to_vec())
+        }
+
+        /// The day after the listing was captured.
+        fn now(&self) -> SystemTime {
+            std::time::UNIX_EPOCH + Duration::from_secs(1_795_394_400 + 86_400)
+        }
+    }
+
+    fn device_support_caches(home: &Path) -> Vec<GlobalCache> {
+        device_support_caches_on(home, &Devicectl)
+    }
+
+    fn device_support_caches_on(home: &Path, host: &dyn Host) -> Vec<GlobalCache> {
+        for folder in FOLDERS {
+            fs::create_dir_all(home.join(SUPPORT).join(folder)).unwrap();
+        }
+        let mut specs: Vec<CacheSpec> = caches::builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "xcode-device-support")
+            .collect();
+        for path in &mut specs[0].paths {
+            *path = path.trim_start_matches("macos:").to_owned();
+        }
+        caches::discover_on(&specs, home, host)
+    }
+
+    /// A machine whose devicectl gives no answer.
+    struct NoDevicectl;
+
+    impl Host for NoDevicectl {
+        fn output(&self, _argv: &[&str]) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn nothing_is_cleaned_or_recommended_when_devices_cannot_be_checked() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches_on(home.path(), &NoDevicectl);
+        let parent = select(&caches, &["xcode-device-support".to_owned()], false).unwrap();
+        assert!(parent.clean.is_empty(), "{:?}", ids(&parent.clean));
+        assert_eq!(parent.kept.len(), 5);
+        assert_eq!(parent.kept[0].1, "connected devices could not be checked");
+        let recommended = select(&caches, &[], true).unwrap();
+        assert!(recommended.clean.is_empty());
+        // Named by its own id, an unknown folder is still cleaned: that is the user's call.
+        let named = "xcode-device-support/iPad16,3 26.7 (23H24)".to_owned();
+        let named = select(&caches, &[named], false).unwrap();
+        assert_eq!(ids(&named.clean), ["iPad16,3 26.7 (23H24)"]);
+    }
+
+    fn ids(caches: &[GlobalCache]) -> Vec<&str> {
+        caches
+            .iter()
+            .map(|c| c.id.rsplit('/').next().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_parent_id_leaves_out_the_device_support_still_in_use() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let all = select(&caches, &["xcode-device-support".to_owned()], false).unwrap();
+        assert_eq!(
+            ids(&all.clean),
+            [
+                "iPad16,3 26.7 (23H24)",
+                "iPad16,3 27.2 (24B119)",
+                "iPhone14,3 27.0.1 (24A446)"
+            ]
+        );
+        let kept: Vec<(&str, &str)> = all
+            .kept
+            .iter()
+            .map(|(c, reason)| (c.id.rsplit('/').next().unwrap(), reason.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("iPad16,3 27.3 (24C5037i)", "Test iPad runs it"),
+                ("iPhone14,3 27.2.1 (24B156)", "Test iPhone runs it"),
+            ]
+        );
+        // --recommended with no id finds the same three.
+        let recommended = select(&caches, &[], true).unwrap();
+        assert_eq!(ids(&recommended.clean), ids(&all.clean));
+        assert!(recommended.kept.is_empty());
+    }
+
+    #[test]
+    fn naming_a_kept_folder_cleans_it_unless_only_recommendations_were_asked_for() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let in_use = "xcode-device-support/iPad16,3 27.3 (24C5037i)".to_owned();
+        let named = select(&caches, std::slice::from_ref(&in_use), false).unwrap();
+        assert_eq!(ids(&named.clean), ["iPad16,3 27.3 (24C5037i)"]);
+        let narrowed = select(&caches, &[in_use], true).unwrap();
+        assert!(narrowed.clean.is_empty());
+        assert_eq!(narrowed.kept[0].1, "Test iPad runs it");
+    }
+
+    #[test]
+    fn a_child_named_with_its_parent_is_cleaned_in_either_order() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let parent = "xcode-device-support".to_owned();
+        let in_use = "xcode-device-support/iPad16,3 27.3 (24C5037i)".to_owned();
+        for order in [
+            [parent.clone(), in_use.clone()],
+            [in_use.clone(), parent.clone()],
+        ] {
+            let selection = select(&caches, &order, false).unwrap();
+            let mut clean = ids(&selection.clean);
+            clean.sort_unstable();
+            assert_eq!(
+                clean,
+                [
+                    "iPad16,3 26.7 (23H24)",
+                    "iPad16,3 27.2 (24B119)",
+                    "iPad16,3 27.3 (24C5037i)",
+                    "iPhone14,3 27.0.1 (24A446)",
+                ],
+                "{order:?}"
+            );
+            let kept: Vec<&str> = selection
+                .kept
+                .iter()
+                .map(|(c, _)| c.id.rsplit('/').next().unwrap())
+                .collect();
+            assert_eq!(kept, ["iPhone14,3 27.2.1 (24B156)"], "{order:?}");
+        }
+        // With every kept child named, nothing is left to hint at.
+        let other = "xcode-device-support/iPhone14,3 27.2.1 (24B156)".to_owned();
+        let fake = Fake::new(&[LISTING], &[]);
+        let flags = Flags {
+            yes: true,
+            dry_run: true,
+            mode: Mode::Clean,
+            recommended: false,
+            scanned: false,
+        };
+        let mut out = Vec::new();
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &mut Vec::new(),
+            &caches,
+            &[parent, in_use, other],
+            &flags,
+        )
+        .unwrap();
+        assert!(!failed(exit));
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("kept"), "{out}");
+        assert!(!out.contains("Name a kept cache"), "{out}");
+    }
+
+    /// Answers `rustup toolchain list` with the captured listing.
+    struct Rustup;
+
+    const TOOLCHAINS: &str =
+        include_str!("../../../carwash-core/tests/data/rustup-toolchain-list.txt");
+
+    impl Host for Rustup {
+        fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+            (argv == toolchains::LIST).then(|| TOOLCHAINS.as_bytes().to_vec())
+        }
+    }
+
+    /// The Rust toolchains of the captured listing, in a rustup home of the test's own.
+    fn toolchain_caches(home: &Path) -> Vec<GlobalCache> {
+        for line in TOOLCHAINS.lines() {
+            let name = line.split(' ').next().unwrap();
+            fs::create_dir_all(home.join(".rustup/toolchains").join(name)).unwrap();
+        }
+        fs::write(
+            home.join(".rustup/settings.toml"),
+            "default_toolchain = \"stable-aarch64-apple-darwin\"\n",
+        )
+        .unwrap();
+        let mut specs: Vec<CacheSpec> = caches::builtin_specs()
+            .into_iter()
+            .filter(|s| s.id == "rustup-toolchains")
+            .collect();
+        // Not wherever RUSTUP_HOME points on the machine running the tests.
+        specs[0].paths = vec!["~/.rustup/toolchains".into()];
+        caches::discover_on(&specs, home, &Rustup)
+    }
+
+    fn dry_run(caches: &[GlobalCache], id: &str, scanned: bool) -> (ExitCode, String, Fake) {
+        let fake = Fake::new(&[LISTING], &[]);
+        let flags = Flags {
+            yes: true,
+            dry_run: true,
+            mode: Mode::Clean,
+            recommended: false,
+            scanned,
+        };
+        let mut out = Vec::new();
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &mut Vec::new(),
+            caches,
+            &[id.to_owned()],
+            &flags,
+        )
+        .unwrap();
+        (exit, String::from_utf8(out).unwrap(), fake)
+    }
+
+    #[test]
+    fn a_parent_with_nothing_to_clean_says_what_to_do_next() {
+        // Toolchains nobody has checked against projects: all are kept.
+        let home = tempfile::tempdir().unwrap();
+        let toolchains = toolchain_caches(home.path());
+        assert_eq!(toolchains.len(), 18);
+        let (exit, out, fake) = dry_run(&toolchains, "rustup-toolchains", false);
+        assert!(!failed(exit), "{out}");
+        assert!(fake.touched_nothing());
+        assert!(out.contains("Nothing to clean: all 18 are kept."), "{out}");
+        assert!(
+            out.contains(
+                "Name a kept cache by its own id to clean it anyway, for example: carwash caches clean rustup-toolchains/"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "for example: carwash caches clean rustup-toolchains/1.88-aarch64-apple-darwin"
+            ),
+            "the example is one nothing is known against, not the default or nightly: {out}"
+        );
+        assert!(
+            out.contains("Rust toolchains were not checked against any projects. Add `--projects DIR` to have carwash find the ones no project under DIR needs, and clean only those."),
+            "{out}"
+        );
+        assert!(out.ends_with("Dry run: nothing was changed.\n"), "{out}");
+
+        // Checked against a folder with no Rust project: the reason says so, and there
+        // is no call to pass what was already passed.
+        let mut searched = toolchains.clone();
+        let mut nothing = Needs::default();
+        nothing.roots = vec![PathBuf::from("/work/web")];
+        caches::apply_needs(&mut searched, &nothing);
+        let (exit, out, _) = dry_run(&searched, "rustup-toolchains", true);
+        assert!(!failed(exit), "{out}");
+        assert!(
+            out.contains("no Rust project found under /work/web"),
+            "{out}"
+        );
+        assert!(out.contains("Nothing to clean: all 18 are kept."), "{out}");
+        assert!(!out.contains("--projects"), "{out}");
+
+        // Device support with nothing known about the devices: the newest are kept, the
+        // rest unknown, and the example id is quoted as a shell needs it.
+        let home = tempfile::tempdir().unwrap();
+        let support = device_support_caches_on(home.path(), &NoDevicectl);
+        let (exit, out, fake) = dry_run(&support, "xcode-device-support", false);
+        assert!(!failed(exit), "{out}");
+        assert!(fake.touched_nothing());
+        assert!(out.contains("Nothing to clean: all 5 are kept."), "{out}");
+        assert!(
+            out.contains(
+                "for example: carwash caches clean 'xcode-device-support/iPad16,3 26.7 (23H24)'"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("--projects"), "{out}");
+    }
+
+    #[test]
+    fn cleaning_device_support_says_what_it_kept() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let fake = Fake::new(&[LISTING], &[]);
+        let mut out = Vec::new();
+        let flags = Flags {
+            yes: true,
+            dry_run: false,
+            mode: Mode::Clean,
+            recommended: false,
+            scanned: false,
+        };
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &mut Vec::new(),
+            &caches,
+            &["xcode-device-support".to_owned()],
+            &flags,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(!failed(exit), "{out}");
+        let mut deleted = fake.deleted.lock().unwrap().clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            [
+                "xcode-device-support/iPad16,3 26.7 (23H24)",
+                "xcode-device-support/iPad16,3 27.2 (24B119)",
+                "xcode-device-support/iPhone14,3 27.0.1 (24A446)",
+            ]
+        );
+        assert!(
+            out.contains("kept  iOS device support: iPad16,3 27.3 (24C5037i)"),
+            "{out}"
+        );
+        assert!(out.contains("Test iPad runs it"), "{out}");
+        // Both are kept for a device that runs them: no command to remove one is offered.
+        assert!(
+            out.contains("Name a kept cache by its own id to clean it anyway."),
+            "{out}"
+        );
+        assert!(!out.contains("for example"), "{out}");
+        assert!(
+            !out.contains("Nothing to clean"),
+            "three were cleaned: {out}"
+        );
+    }
 }

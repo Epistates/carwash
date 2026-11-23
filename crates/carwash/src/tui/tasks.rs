@@ -54,7 +54,7 @@ pub enum After {
     /// Check the dependencies of the project at this path again.
     Recheck(PathBuf),
     /// Measure a cache again.
-    Remeasure { id: String, path: PathBuf },
+    Remeasure(String),
     /// Measure a system area again.
     RemeasureArea(String),
 }

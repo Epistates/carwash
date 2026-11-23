@@ -1126,10 +1126,19 @@ fn render_review(frame: &mut Frame, app: &App, review: &Review) {
                 ),
             ])];
             if let (Some(before), Some(after)) = (report.free_before, report.free_after) {
-                lines.push(Line::from(Span::styled(
-                    format!("Free space {} → {}", fmt::bytes(before), fmt::bytes(after)),
-                    t.subtle(),
-                )));
+                let change = crate::commands::FreeChange {
+                    before,
+                    after,
+                    freed: report.bytes,
+                    settles_late: report.settles_late && review.mode == DeleteMode::Permanent,
+                };
+                lines.push(Line::from(Span::styled(change.line(), t.subtle())));
+                if change.may_rise() {
+                    lines.push(Line::from(Span::styled(
+                        crate::commands::FreeChange::NOTE,
+                        t.muted(),
+                    )));
+                }
             }
             if review.mode == DeleteMode::Trash {
                 lines.push(Line::from(Span::styled(
@@ -1499,5 +1508,93 @@ mod tests {
         assert!(screen.contains("close Safari"), "{screen}");
         assert!(screen.contains("report"), "{screen}");
         assert!(screen.contains("About App caches."), "{screen}");
+    }
+
+    #[test]
+    fn marked_caches_show_their_mark_while_a_clean_awaits_its_second_press() {
+        use crate::tui::caches::tests::simulator;
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        app.update(crate::tui::app::Msg::CachesDiscovered(vec![
+            simulator("one"),
+            simulator("two"),
+            simulator("three"),
+        ]));
+        // The first row's size has arrived; the other two are still being measured.
+        app.update(crate::tui::app::Msg::CacheMeasured {
+            id: "one".into(),
+            size: carwash_core::Size::default(),
+            fingerprint: None,
+        });
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('d'));
+        let screen = draw(&mut app, 160, 16);
+        assert!(
+            screen.contains("Press d again to clean 2 caches"),
+            "{screen}"
+        );
+        assert!(screen.contains("2 marked"), "{screen}");
+        let row = |name: &str| {
+            screen
+                .lines()
+                .find(|line| line.contains(&format!("cargo delete {name}")))
+                .unwrap_or_else(|| panic!("no row for {name} in {screen}"))
+        };
+        // Each marked row shows its mark, the one still being measured included, and the
+        // third row does not.
+        let marked = app.glyphs.marked;
+        assert_eq!(app.caches.marked.len(), 2);
+        assert!(
+            app.caches
+                .marked
+                .iter()
+                .any(|id| app.caches.busy.contains(id)),
+            "one marked row is still being measured"
+        );
+        for id in ["one", "two", "three"] {
+            assert_eq!(
+                row(id).contains(marked),
+                app.caches.marked.contains(id),
+                "{}",
+                row(id)
+            );
+        }
+    }
+
+    #[test]
+    fn caches_tab_shows_when_simulators_were_used_and_which_are_left_alone() {
+        use crate::tui::caches::tests::{booted, simulator};
+        use carwash_core::caches::GlobalCache;
+        use std::time::Duration;
+        let mut app = app();
+        press(&mut app, KeyCode::Char('4'));
+        let named = |name: &str, days: u64, mut cache: GlobalCache| {
+            cache.name = name.into();
+            cache.last_used = Some(app.now - Duration::from_secs(days * 86_400));
+            cache
+        };
+        let caches = vec![
+            named("Simulators: iPhone 17 Pro, iOS 27.0", 3, booted("up")),
+            named("Simulators: iPad mini, iOS 26.5", 90, simulator("down")),
+        ];
+        app.update(crate::tui::app::Msg::CachesDiscovered(caches));
+        let screen = draw(&mut app, 160, 16);
+        assert!(screen.contains("ADVICE"), "{screen}");
+        assert!(
+            screen.contains("In use: booted; shut it down first"),
+            "{screen}"
+        );
+        assert!(screen.contains("USED"), "{screen}");
+        assert!(screen.contains("3d"), "{screen}");
+        assert!(screen.contains("3mo"), "{screen}");
+        assert!(
+            screen.contains("left alone: booted; shut it down first"),
+            "{screen}"
+        );
+        assert!(screen.contains("cargo delete down"), "{screen}");
+        assert!(screen.contains("last used 3d ago"), "{screen}");
+        // `e` is offered, and says what it would do.
+        assert!(screen.contains("erase"), "{screen}");
     }
 }

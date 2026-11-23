@@ -203,6 +203,17 @@ impl Size {
     pub fn shared(&self) -> u64 {
         self.on_disk.saturating_sub(self.reclaimable)
     }
+
+    /// Adds the totals of a separate tree.
+    pub fn merge(&mut self, other: Size) {
+        self.on_disk += other.on_disk;
+        self.reclaimable += other.reclaimable;
+        self.apparent += other.apparent;
+        self.files += other.files;
+        self.dirs += other.dirs;
+        self.newest = crate::measure::newest(self.newest, other.newest);
+        self.errors += other.errors;
+    }
 }
 
 /// Whether an artifact may be deleted without extra confirmation.
