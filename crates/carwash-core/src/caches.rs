@@ -552,40 +552,71 @@ pub struct LocalHost;
 impl LocalHost {
     /// Long enough for a tool that has to start its service first.
     const TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Runs `argv` and returns what it printed, if it exits successfully within `limit`.
+    ///
+    /// The limit is hard. The tool runs in a process group of its own, and when time is
+    /// up the whole group is killed, so a helper it started dies with it. The output is
+    /// read on another thread that is never waited for past the limit: should some process
+    /// outlive the group and keep the pipe open, the caller still gets its answer on time.
+    fn run(argv: &[&str], limit: Duration) -> Option<Vec<u8>> {
+        let (program, args) = argv.split_first()?;
+        find_program(program)?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().ok()?;
+        let mut stdout = child.stdout.take()?;
+        let (sender, output) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = stdout.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send(read);
+        });
+        let deadline = Instant::now() + limit;
+        // Kills the tool and everything in its group. Only called before the tool has been
+        // waited for: until then its process id, which names the group, cannot belong to
+        // anything else.
+        let kill = |child: &mut std::process::Child| {
+            #[cfg(unix)]
+            let _ = rustix::process::kill_process_group(
+                rustix::process::Pid::from_child(child),
+                rustix::process::Signal::KILL,
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+        };
+        // The output ends when the tool, and anything it started, has closed the pipe.
+        let Some(bytes) = output.recv_timeout(limit).ok().and_then(Result::ok) else {
+            kill(&mut child);
+            return None;
+        };
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success().then_some(bytes),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                _ => {
+                    kill(&mut child);
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 impl Host for LocalHost {
     fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
-        let (program, args) = argv.split_first()?;
-        find_program(program)?;
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let mut stdout = child.stdout.take()?;
-        let reader = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stdout.read_to_end(&mut bytes).map(|_| bytes)
-        });
-        let deadline = Instant::now() + Self::TIMEOUT;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-            }
-        };
-        let bytes = reader.join().ok()?.ok()?;
-        status?.success().then_some(bytes)
+        Self::run(argv, Self::TIMEOUT)
     }
 }
 
@@ -1124,6 +1155,45 @@ pub(crate) mod tests {
         fn now(&self) -> SystemTime {
             device_support::tests::now()
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_is_given_a_hard_time_limit() {
+        let sh = |script: &'static str, limit: u64| {
+            let started = Instant::now();
+            let output = LocalHost::run(&["sh", "-c", script], Duration::from_millis(limit));
+            (output, started.elapsed())
+        };
+        let (output, _) = sh("printf answer", 5_000);
+        assert_eq!(output.as_deref(), Some(&b"answer"[..]));
+        // A failing tool gives no answer, whatever it printed.
+        let (output, _) = sh("printf partial; exit 3", 5_000);
+        assert_eq!(output, None);
+        // A tool that hangs is cut off.
+        let (output, took) = sh("printf partial; sleep 30", 300);
+        assert_eq!(output, None);
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        // So is one that exits while a helper it started keeps the pipe open, and the helper
+        // is killed with it: the marker it would write is never written.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("helper-finished");
+        let script = format!("(sleep 1; : > '{}') & printf started", marker.display());
+        let started = Instant::now();
+        let output = LocalHost::run(&["sh", "-c", &script], Duration::from_millis(300));
+        assert_eq!(output, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(1_200));
+        assert!(!marker.exists(), "the helper outlived the time limit");
+        // A program that is not installed is not run.
+        assert_eq!(
+            LocalHost::run(&["carwash-no-such-tool"], Duration::from_secs(1)),
+            None
+        );
     }
 
     #[test]
