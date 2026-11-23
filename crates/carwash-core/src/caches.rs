@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 const BUILTIN: &str = include_str!("caches.toml");
@@ -614,8 +614,24 @@ impl LocalHost {
     }
 }
 
+/// Whether a developer directory is selected (Xcode or the Command Line Tools). `xcrun`
+/// is a stub that offers to install the tools when there is none, so it is only run once
+/// `xcode-select -p`, which prints the selected directory or fails, has said there is one
+/// and it exists. Asked once.
+fn developer_directory_selected() -> bool {
+    static SELECTED: OnceLock<bool> = OnceLock::new();
+    *SELECTED.get_or_init(|| {
+        LocalHost::run(&["xcode-select", "-p"], Duration::from_secs(5))
+            .and_then(|path| String::from_utf8(path).ok())
+            .is_some_and(|path| Path::new(path.trim()).is_dir())
+    })
+}
+
 impl Host for LocalHost {
     fn output(&self, argv: &[&str]) -> Option<Vec<u8>> {
+        if argv.first() == Some(&"xcrun") && !developer_directory_selected() {
+            return None;
+        }
         Self::run(argv, Self::TIMEOUT)
     }
 }
