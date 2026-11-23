@@ -394,12 +394,14 @@ struct Selection {
 }
 
 /// The caches `ids` name. An id is the cache with that id, or else every child of it;
-/// children carwash would keep (still needed, or in use) are left out unless named
-/// themselves. `recommended` narrows the result to what carwash recommends removing, among
-/// all caches when no id is given.
+/// children carwash would keep (still needed, not known, or in use) are left out unless
+/// named themselves. A cache named by its own id is always taken as named, wherever its
+/// parent stands among the arguments. `recommended` narrows the result to what carwash
+/// recommends removing, among all caches when no id is given.
 fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<Selection> {
     let mut selection = Selection::default();
-    let mut take = |cache: &GlobalCache, named: bool| {
+    let named = |cache: &GlobalCache| ids.contains(&cache.id);
+    let mut take = |cache: &GlobalCache| {
         let known = |list: &[GlobalCache]| list.iter().any(|c| c.id == cache.id);
         if known(&selection.clean) || selection.kept.iter().any(|(c, _)| c.id == cache.id) {
             return;
@@ -408,7 +410,7 @@ fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<S
             (_, Some(Verdict::Remove)) => None,
             (_, None) if !recommended => None,
             // Naming a cache is an explicit choice; what is in use is refused later, by name.
-            _ if named && !recommended => None,
+            _ if named(cache) && !recommended => None,
             (Some(advice), _) => Some(advice.reason.clone()),
             (None, _) => Some("not recommended for removal".to_owned()),
         };
@@ -420,20 +422,20 @@ fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<S
     if ids.is_empty() {
         for cache in caches {
             if cache.verdict() == Some(Verdict::Remove) {
-                take(cache, false);
+                take(cache);
             }
         }
         return Ok(selection);
     }
     for id in ids {
         if let Some(exact) = caches.iter().find(|c| &c.id == id) {
-            take(exact, true);
+            take(exact);
             // What an unfinished clean of this cache left beside it goes with it.
             let staged = format!("{id}/{}", carwash_core::discover::STAGING_PREFIX);
             for leftover in caches.iter().filter(|c| {
                 c.id.starts_with(&staged) && matches!(c.detail, Some(Detail::Leftover { .. }))
             }) {
-                take(leftover, false);
+                take(leftover);
             }
             continue;
         }
@@ -446,7 +448,7 @@ fn select(caches: &[GlobalCache], ids: &[String], recommended: bool) -> Result<S
             bail!("no cache `{id}` on this machine (see `carwash caches`)");
         }
         for child in children {
-            take(child, false);
+            take(child);
         }
     }
     Ok(selection)
@@ -1183,6 +1185,62 @@ mod tests {
         let narrowed = select(&caches, &[in_use], true).unwrap();
         assert!(narrowed.clean.is_empty());
         assert_eq!(narrowed.kept[0].1, "Test iPad runs it");
+    }
+
+    #[test]
+    fn a_child_named_with_its_parent_is_cleaned_in_either_order() {
+        let home = tempfile::tempdir().unwrap();
+        let caches = device_support_caches(home.path());
+        let parent = "xcode-device-support".to_owned();
+        let in_use = "xcode-device-support/iPad16,3 27.3 (24C5037i)".to_owned();
+        for order in [
+            [parent.clone(), in_use.clone()],
+            [in_use.clone(), parent.clone()],
+        ] {
+            let selection = select(&caches, &order, false).unwrap();
+            let mut clean = ids(&selection.clean);
+            clean.sort_unstable();
+            assert_eq!(
+                clean,
+                [
+                    "iPad16,3 26.7 (23H24)",
+                    "iPad16,3 27.2 (24B119)",
+                    "iPad16,3 27.3 (24C5037i)",
+                    "iPhone14,3 27.0.1 (24A446)",
+                ],
+                "{order:?}"
+            );
+            let kept: Vec<&str> = selection
+                .kept
+                .iter()
+                .map(|(c, _)| c.id.rsplit('/').next().unwrap())
+                .collect();
+            assert_eq!(kept, ["iPhone14,3 27.2.1 (24B156)"], "{order:?}");
+        }
+        // With every kept child named, nothing is left to hint at.
+        let other = "xcode-device-support/iPhone14,3 27.2.1 (24B156)".to_owned();
+        let fake = Fake::new(&[LISTING], &[]);
+        let flags = Flags {
+            yes: true,
+            dry_run: true,
+            mode: Mode::Clean,
+            recommended: false,
+        };
+        let mut out = Vec::new();
+        let exit = clean(
+            &context(),
+            &fake,
+            &mut out,
+            &mut Vec::new(),
+            &caches,
+            &[parent, in_use, other],
+            &flags,
+        )
+        .unwrap();
+        assert!(!failed(exit));
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("kept"), "{out}");
+        assert!(!out.contains("Name a kept cache"), "{out}");
     }
 
     #[test]
